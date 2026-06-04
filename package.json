@@ -1,0 +1,12 @@
+{
+  "name": "silver-community-h5",
+  "version": "1.0.0",
+  "private": true,
+  "description": "同城银发社群主理人活动展示 H5 与后台管理原型",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
