@@ -836,7 +836,25 @@ function handleStatic(req, res, pathname) {
     return;
   }
   if (pathname.startsWith("/uploads/")) {
-    const filePath = safeStaticPath(ROOT, pathname);
+    // 站点配置 GET
+    if (req.method === "GET" && pathname === "/api/site-config") {
+      return sendJson(res, 200, { config: readSiteConfig() });
+    }
+
+    // 站点配置 POST
+    if (req.method === "POST" && pathname === "/api/admin/site-config") {
+      const user = requireRole(req, res, ["admin"]);
+      if (!user) return;
+      const body = await readBody(req);
+      const cfg = readSiteConfig();
+      if (body.heroTitle !== undefined) cfg.heroTitle = body.heroTitle;
+      if (body.heroDesc !== undefined) cfg.heroDesc = body.heroDesc;
+      if (body.featuredIds !== undefined) cfg.featuredIds = body.featuredIds;
+      writeSiteConfig(cfg);
+      return sendJson(res, 200, { ok: true, config: cfg });
+    }
+
+        const filePath = safeStaticPath(ROOT, pathname);
     if (!filePath || !filePath.startsWith(UPLOAD_DIR)) {
       sendText(res, 403, "Forbidden");
       return;
