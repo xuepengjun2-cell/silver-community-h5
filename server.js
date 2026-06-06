@@ -11,6 +11,7 @@ const DATA_DIR = path.join(ROOT, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SESSION_FILE = path.join(DATA_DIR, "sessions.json");
 const SEED_ACTIVITIES_FILE = path.join(DATA_DIR, "seed-activities.json");
+const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 const VALID_ROLES = ["admin", "operator", "viewer", "member"];
 const VALID_ACTIVITY_STATUSES = ["published", "pending", "draft", "rejected"];
 
@@ -274,6 +275,15 @@ function readDb() {
 function writeDb(db) {
   writeJson(DB_FILE, db);
 }
+
+function readSiteConfig() {
+  return readJson(SITE_CONFIG_FILE, {
+    heroTitle: "让每座城市的银发社群都能办出好活动",
+    heroDesc: "精选活动方案，包含完整执行流程、物料清单、价格参考、风险控制，主理人学习即可落地执行。",
+    featuredIds: []
+  });
+}
+function writeSiteConfig(cfg) { writeJson(SITE_CONFIG_FILE, cfg); }
 
 function readSessions() {
   return global._sessions || (global._sessions = {});
