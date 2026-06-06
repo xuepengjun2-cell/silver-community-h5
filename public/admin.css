@@ -718,54 +718,58 @@ a { color: inherit; text-decoration: none; }
   .activity-row-actions { display: none; }
 }
 
-/* 强制修复主区域宽度 */
+/* =============================================
+   活动列表卡片修复
+   ============================================= */
 .layout { display: flex !important; }
-.sidebar { flex-shrink: 0; width: var(--sidebar-w); }
+.sidebar { flex-shrink: 0; width: var(--sidebar-w); position: relative !important; }
 .main { flex: 1; min-width: 0; margin-left: 0 !important; }
 
+.activity-row {
+  grid-template-columns: 60px 1fr 88px !important;
+  gap: 10px !important;
+  align-items: center !important;
+}
 
-/* 修复侧边栏遮挡问题 */
-.sidebar { position: relative !important; }
+.activity-row img {
+  width: 60px !important;
+  height: 45px !important;
+}
 
-
-/* 价格文字截断 */
-.activity-row-info > div:last-of-type {
+.activity-row-info h3 {
+  font-size: 13px !important;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 150px;
-  font-size: 11px;
-}
-.activity-row-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-  align-self: center;
+  max-width: 140px;
 }
 
-/* 活动列表卡片按钮竖向排列 */
-.activity-row {
-  grid-template-columns: 56px 1fr 52px !important;
-  gap: 8px !important;
-  padding: 10px 12px !important;
+.activity-row-info > div:last-of-type {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+  font-size: 11px;
+  color: var(--hint);
+  margin-top: 2px;
 }
-.activity-row img {
-  width: 56px !important;
-  height: 42px !important;
-}
+
 .activity-row-actions {
+  display: flex !important;
   flex-direction: column !important;
   gap: 4px !important;
+  flex-shrink: 0 !important;
   align-items: stretch !important;
+  width: 88px !important;
 }
+
 .activity-row-actions .btn {
   height: 26px !important;
-  padding: 0 6px !important;
+  padding: 0 8px !important;
   font-size: 11px !important;
   width: 100% !important;
   justify-content: center !important;
 }
-.activity-row-info h3 {
-  font-size: 13px !important;
-  margin-bottom: 2px !important;
-}
+
+/* 登录强制显示，隐藏关闭按钮 */
+.modal-close { display: none !important; }
