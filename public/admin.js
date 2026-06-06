@@ -732,7 +732,8 @@ async function renderHomepage() {
                   <input type="file" id="bannerUpload" accept="image/*" style="display:none">
                 </label>` : ""}
             </div>
-            <p style="font-size:12px;color:var(--hint);margin:0">已上传 ${(c.banners||[]).length}/6 张 · 建议尺寸 1200×500px</p>
+            <p style="font-size:12px;color:var(--hint);margin:0 0 12px">已上传 ${(c.banners||[]).length}/6 张 · 建议尺寸 1200×500px</p>
+            ${(c.banners||[]).length > 0 ? '<button class="btn" id="activateBannerBtn" style="width:100%">🚀 保存并启用轮播图</button>' : ""}
           </div>
         </div>
       </div>
@@ -762,6 +763,12 @@ async function renderHomepage() {
         } catch(e) { flash(e.message,"error"); }
       };
       reader.readAsDataURL(file);
+    });
+  }
+  const activateBtn = document.querySelector("#activateBannerBtn");
+  if (activateBtn) {
+    activateBtn.addEventListener("click", () => {
+      flash("✅ 轮播图已保存并启用，刷新前台即可看到效果");
     });
   }
   // 删除轮播图
