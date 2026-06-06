@@ -692,6 +692,7 @@ async function boot() {
     state.user = me.user;
   } catch { state.user = null; }
   if (!state.user) { state.loginOpen = true; }
+  setTimeout(() => startHeroCarousel(state.activities || []), 1000);
   try {
     const match = location.pathname.match(/^\/activity\/([^/]+)$/);
     if (match) await loadDetail(decodeURIComponent(match[1]));
