@@ -89,7 +89,7 @@ function loginModal() {
           <input class="input" name="password" type="password" autocomplete="current-password" placeholder="请输入密码">
         </div>
         <button class="btn" type="submit">进入学习</button>
-        <span class="help">演示账号：member / member123 &nbsp;|&nbsp; 管理员：admin / admin123</span>
+        
       </form>
     </div>`;
 }
