@@ -276,11 +276,11 @@ function writeDb(db) {
 }
 
 function readSessions() {
-  return readJson(SESSION_FILE, {});
+  return global._sessions || (global._sessions = {});
 }
 
 function writeSessions(sessions) {
-  writeJson(SESSION_FILE, sessions);
+  global._sessions = sessions;
 }
 
 function sendJson(res, status, payload, headers = {}) {
