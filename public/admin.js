@@ -72,7 +72,7 @@ function showLogin(error = "") {
           ${error ? `<div class="message error" style="margin-bottom:14px">${esc(error)}</div>` : ""}
           <form id="loginForm" style="display:flex;flex-direction:column;gap:14px">
             <div class="field"><label>账号</label><input class="input" id="username" value="admin" autocomplete="username"></div>
-            <div class="field"><label>密码</label><input class="input" id="password" type="password" value="admin123" autocomplete="current-password"></div>
+            <div class="field"><label>密码</label><input class="input" id="password" type="password" autocomplete="current-password"></div>
             <button class="btn" type="submit" style="margin-top:4px">进入后台</button>
           </form>
         </div>
