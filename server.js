@@ -543,6 +543,8 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if(req.method==="GET"&&pathname==="/api/site-config"){return sendJson(res,200,{config:readSiteConfig()});}
+  if(req.method==="POST"&&pathname==="/api/admin/site-config"){const u=requireRole(req,res,["admin"]);if(!u)return;const b=await readBody(req);const c=readSiteConfig();if(b.heroTitle!==undefined)c.heroTitle=b.heroTitle;if(b.heroDesc!==undefined)c.heroDesc=b.heroDesc;if(b.featuredIds!==undefined)c.featuredIds=b.featuredIds;writeSiteConfig(c);return sendJson(res,200,{ok:true,config:c});}
   if (req.method === "GET" && pathname === "/api/public/activities") {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const q = (url.searchParams.get("q") || "").trim().toLowerCase();
@@ -829,8 +831,6 @@ function handleStatic(req, res, pathname) {
     return;
   }
   if (pathname.startsWith("/uploads/")) {
-    if(req.method==="GET"&&pathname==="/api/site-config"){return sendJson(res,200,{config:readSiteConfig()});}
-    if(req.method==="POST"&&pathname==="/api/admin/site-config"){const u=requireRole(req,res,["admin"]);if(!u)return;const b=await readBody(req);const c=readSiteConfig();if(b.heroTitle!==undefined)c.heroTitle=b.heroTitle;if(b.heroDesc!==undefined)c.heroDesc=b.heroDesc;if(b.featuredIds!==undefined)c.featuredIds=b.featuredIds;writeSiteConfig(c);return sendJson(res,200,{ok:true,config:c});}
     const filePath = safeStaticPath(ROOT, pathname);
     if (!filePath || !filePath.startsWith(UPLOAD_DIR)) {
       sendText(res, 403, "Forbidden");
