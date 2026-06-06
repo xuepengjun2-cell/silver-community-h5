@@ -687,6 +687,32 @@ async function loadDetail(id) {
   renderDetail(data.activity);
 }
 
+function startHeroCarousel(activities) {
+  const featuredIds = (state.siteConfig && state.siteConfig.featuredIds) || [];
+  let items = featuredIds.length > 0
+    ? featuredIds.map(id => activities.find(a => a.id === id)).filter(Boolean)
+    : activities.filter(a => a.cover && a.status === "published").slice(0, 5);
+  if (!items.length) items = activities.filter(a => a.cover).slice(0, 5);
+  if (items.length < 2) return;
+  let idx = 0;
+  setInterval(() => {
+    idx = (idx + 1) % items.length;
+    const floatIdx = (idx + 1) % items.length;
+    const mainImg = document.querySelector("#heroMainImg");
+    const floatImg = document.querySelector("#heroFloatImg");
+    const title = document.querySelector("#heroTitle");
+    if (!mainImg) return;
+    mainImg.style.transition = "opacity 0.5s";
+    mainImg.style.opacity = "0";
+    setTimeout(() => {
+      mainImg.src = items[idx].cover;
+      if (floatImg) floatImg.src = items[floatIdx].cover;
+      if (title) title.textContent = items[idx].title;
+      mainImg.style.opacity = "1";
+    }, 500);
+  }, 3000);
+}
+
 async function boot() {
   try {
     const me = await api("/api/me");
