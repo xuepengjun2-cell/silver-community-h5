@@ -715,3 +715,7 @@ a { color: inherit; text-decoration: none; }
 .sidebar { flex-shrink: 0; width: var(--sidebar-w); }
 .main { flex: 1; min-width: 0; margin-left: 0 !important; }
 
+
+/* 修复侧边栏遮挡问题 */
+.sidebar { position: relative !important; }
+
