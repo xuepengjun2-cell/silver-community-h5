@@ -222,14 +222,21 @@ function renderList() {
           <div class="hero-stat"><strong>${state.cities.length || "全国"}+</strong><span>覆盖城市</span></div>
         </div>
       </div>
-      <div class="hero-visual">
-        <img class="hero-img-main" src="${esc(first?.cover || "/assets/people/cn-social-cafe.jpg")}" alt="活动展示">
-        ${state.activities[3] ? `<img class="hero-img-float" src="${esc(state.activities[3].cover || "/assets/people/cn-social-cafe.jpg")}" alt="活动展示">` : ""}
-        <div class="hero-badge">
-          <strong>${esc(first?.title || "精选活动方案")}</strong>
-          <span>${esc(first?.city || "同城")} · ${esc(first?.category || "银发社群")}</span>
+        <div class="hero-visual">
+          ${(state.banners||[]).length >= 1 ? `
+            <div style="position:relative;width:100%;height:100%;border-radius:16px;overflow:hidden">
+              ${(state.banners||[]).map((url,i) => `<img class="banner-slide" src="${esc(url)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.6s">`).join("")}
+              ${(state.banners||[]).length >= 2 ? `<div style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:2">${(state.banners||[]).map((_,i)=>`<span class="banner-dot" style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.5);cursor:pointer;transition:background 0.3s;display:block"></span>`).join("")}</div>` : ""}
+            </div>
+          ` : `
+            <img class="hero-img-main" src="${esc(first?.cover || "/assets/people/cn-social-cafe.jpg")}" alt="活动展示">
+            ${state.activities[3] ? `<img class="hero-img-float" src="${esc(state.activities[3].cover || "/assets/people/cn-social-cafe.jpg")}" alt="活动展示">` : ""}
+            <div class="hero-badge">
+              <strong>${esc(first?.title || "精选活动方案")}</strong>
+              <span>${esc(first?.city || "同城")} · ${esc(first?.category || "银发社群")}</span>
+            </div>
+          `}
         </div>
-      </div>
     </section>
 
     <!-- 快速分类入口 -->
