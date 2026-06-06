@@ -939,7 +939,7 @@ function renderImport() {
                     <td><strong>${esc(act.title)}</strong></td>
                     <td>${esc(act.region||act.city||"—")}</td>
                     <td>${statusTagHtml(act.status)}</td>
-                    <td><button class="btn secondary small" data-edit-import="${esc(act.id)}">编辑审核</button></td>
+                    <td style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small" style="background:var(--accent);color:#fff" data-approve="${esc(act.id)}">✅ 通过</button><button class="btn secondary small" style="color:#c0392b;border-color:#c0392b" data-reject="${esc(act.id)}">❌ 驳回</button><button class="btn secondary small" data-edit-import="${esc(act.id)}">编辑</button></td>
                   </tr>`).join("") : `<tr><td colspan="4" style="text-align:center;color:var(--muted);padding:32px">暂无待审核内容</td></tr>`}
               </tbody>
             </table>
@@ -957,6 +957,22 @@ function renderImport() {
       const data = await api("/api/admin/import-activities", { method:"POST", body:{ importSource:f.get("importSource"), activities }});
       await refreshData(); flash(`导入完成：新增 ${data.created} 个，更新 ${data.updated} 个，跳过 ${data.skipped} 个`); renderImport();
     } catch (err) { flash(err.message, "error"); renderImport(); }
+  });
+  document.querySelectorAll("[data-approve]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      try {
+        await api("/api/admin/activities/" + btn.dataset.approve, { method:"PATCH", body:{ status:"published" }});
+        flash("✅ 活动已发布"); await refreshData(); renderActivities();
+      } catch(e) { flash(e.message,"error"); }
+    });
+  });
+  document.querySelectorAll("[data-reject]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      try {
+        await api("/api/admin/activities/" + btn.dataset.reject, { method:"PATCH", body:{ status:"rejected" }});
+        flash("已驳回"); await refreshData(); renderActivities();
+      } catch(e) { flash(e.message,"error"); }
+    });
   });
   document.querySelectorAll("[data-edit-import]").forEach(btn => {
     btn.addEventListener("click", () => {
