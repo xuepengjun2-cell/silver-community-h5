@@ -690,12 +690,18 @@ async function loadDetail(id) {
 
 function startHeroCarousel(activities) {
   const banners = state.banners || [];
-  if (banners.length > 0) {
-    // 使用上传的轮播图
-    startBannerCarousel(banners);
+  if (banners.length >= 2) {
+    let idx = 0;
+    const go = (n) => {
+      idx = n;
+      document.querySelectorAll(".banner-slide").forEach((el,i) => el.style.opacity = i===n?"1":"0");
+      document.querySelectorAll(".banner-dot").forEach((el,i) => { el.style.background = i===n?"var(--accent)":"rgba(255,255,255,0.5)"; });
+    };
+    document.querySelectorAll(".banner-dot").forEach((dot,i) => dot.addEventListener("click", () => { go(i); clearInterval(timer); timer = setInterval(() => go((idx+1)%banners.length), 5000); }));
+    let timer = setInterval(() => go((idx+1)%banners.length), 5000);
+    go(0);
     return;
   }
-  // 没有轮播图时用活动封面
   const featuredIds = (state.siteConfig && state.siteConfig.featuredIds) || [];
   let items = featuredIds.length > 0
     ? featuredIds.map(id => activities.find(a => a.id === id)).filter(Boolean)
@@ -710,48 +716,6 @@ function startHeroCarousel(activities) {
     mainImg.style.opacity = "0";
     setTimeout(() => { mainImg.src = items[idx].cover; mainImg.style.opacity = "1"; }, 500);
   }, 5000);
-}
-
-function startBannerCarousel(banners) {
-  const wrap = document.querySelector("#heroBannerWrap");
-  if (!wrap) return;
-  let idx = 0;
-  const imgs = wrap.querySelectorAll(".banner-slide");
-  const dots = wrap.querySelectorAll(".banner-dot");
-  function go(n) {
-    imgs.forEach((el,i) => el.style.opacity = i===n?"1":"0");
-    dots.forEach((el,i) => { el.style.background = i===n?"var(--accent)":"rgba(255,255,255,0.5)"; });
-    idx = n;
-  }
-  dots.forEach((dot,i) => dot.addEventListener("click", () => { go(i); clearInterval(timer); timer = setInterval(next, 5000); }));
-  function next() { go((idx+1) % banners.length); }
-  let timer = setInterval(next, 5000);
-  go(0);
-}
-
-  const featuredIds = (state.siteConfig && state.siteConfig.featuredIds) || [];
-  let items = featuredIds.length > 0
-    ? featuredIds.map(id => activities.find(a => a.id === id)).filter(Boolean)
-    : activities.filter(a => a.cover && a.status === "published").slice(0, 5);
-  if (!items.length) items = activities.filter(a => a.cover).slice(0, 5);
-  if (items.length < 2) return;
-  let idx = 0;
-  setInterval(() => {
-    idx = (idx + 1) % items.length;
-    const floatIdx = (idx + 1) % items.length;
-    const mainImg = document.querySelector("#heroMainImg");
-    const floatImg = document.querySelector("#heroFloatImg");
-    const title = document.querySelector("#heroTitle");
-    if (!mainImg) return;
-    mainImg.style.transition = "opacity 0.5s";
-    mainImg.style.opacity = "0";
-    setTimeout(() => {
-      mainImg.src = items[idx].cover;
-      if (floatImg) floatImg.src = items[floatIdx].cover;
-      if (title) title.textContent = items[idx].title;
-      mainImg.style.opacity = "1";
-    }, 500);
-  }, 3000);
 }
 
 async function boot() {
