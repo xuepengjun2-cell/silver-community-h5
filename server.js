@@ -553,14 +553,16 @@ async function handleApi(req, res, pathname) {
   if (req.method === "POST" && pathname === "/api/admin/banners/upload") {
     const user = requireRole(req, res, ["admin"]);
     if (!user) return;
-    const { fields, files } = await parseMultipart(req);
-    if (!files.file) return sendJson(res, 400, { error: "没有文件" });
-    const file = files.file;
-    const ext = require("path").extname(file.filename || ".jpg").toLowerCase();
-    const name = "banner_" + Date.now() + ext;
-    const dest = require("path").join(UPLOAD_DIR, name);
-    require("fs").writeFileSync(dest, file.data);
-    const url = "/uploads/" + name;
+    const body = await parseBody(req, 24 * 1024 * 1024);
+    const dataUrl = String(body.dataUrl || "");
+    const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/);
+    if (!match) return sendJson(res, 400, { error: "请上传 png、jpg、webp 或 gif 图片" });
+    const extMap = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+    const buffer = Buffer.from(match[2], "base64");
+    if (buffer.length > 8 * 1024 * 1024) return sendJson(res, 400, { error: "单张图片不能超过8MB" });
+    const filename = "banner_" + Date.now() + "-" + crypto.randomBytes(4).toString("hex") + extMap[match[1]];
+    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
+    const url = "/uploads/" + filename;
     const cfg = readSiteConfig();
     cfg.banners = cfg.banners || [];
     if (cfg.banners.length >= 6) return sendJson(res, 400, { error: "最多6张轮播图" });

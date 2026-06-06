@@ -754,14 +754,14 @@ async function renderHomepage() {
     bannerUpload.addEventListener("change", async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const fd = new FormData();
-      fd.append("file", file);
-      try {
-        const res = await fetch("/api/admin/banners/upload", { method:"POST", body: fd });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || "上传失败");
-        flash("✅ 图片已上传"); renderHomepage();
-      } catch(e) { flash(e.message,"error"); }
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        try {
+          await api("/api/admin/banners/upload", { method:"POST", body:{ dataUrl: ev.target.result }});
+          flash("✅ 图片已上传"); renderHomepage();
+        } catch(e) { flash(e.message,"error"); }
+      };
+      reader.readAsDataURL(file);
     });
   }
   // 删除轮播图

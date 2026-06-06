@@ -760,7 +760,7 @@ async function boot() {
     state.user = me.user;
   } catch { state.user = null; }
   try { const sc = await api('/api/site-config'); state.siteConfig = sc.config || {}; } catch {}
-  try { const br = await api('/api/banners'); state.banners = br.banners || []; } catch { state.banners = []; }
+  try { const br = await fetch('/api/banners').then(r=>r.json()); state.banners = br.banners || []; } catch(e) { state.banners = []; }
   if (!state.user) { state.loginOpen = true; }
   setTimeout(() => startHeroCarousel(state.activities || []), 1000);
   try {
