@@ -10,8 +10,8 @@ const UPLOAD_DIR = path.join(ROOT, "uploads");
 const DATA_DIR = path.join(ROOT, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SESSION_FILE = path.join(DATA_DIR, "sessions.json");
+const SITE_CONFIG_FILE = require("path").join(__dirname, "data", "site-config.json");
 const SEED_ACTIVITIES_FILE = path.join(DATA_DIR, "seed-activities.json");
-const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 const VALID_ROLES = ["admin", "operator", "viewer", "member"];
 const VALID_ACTIVITY_STATUSES = ["published", "pending", "draft", "rejected"];
 
@@ -276,15 +276,8 @@ function writeDb(db) {
   writeJson(DB_FILE, db);
 }
 
-function readSiteConfig() {
-  return readJson(SITE_CONFIG_FILE, {
-    heroTitle: "让每座城市的银发社群都能办出好活动",
-    heroDesc: "精选活动方案，包含完整执行流程、物料清单、价格参考、风险控制，主理人学习即可落地执行。",
-    featuredIds: []
-  });
-}
-function writeSiteConfig(cfg) { writeJson(SITE_CONFIG_FILE, cfg); }
-
+function readSiteConfig(){return readJson(SITE_CONFIG_FILE,{heroTitle:"",heroDesc:"",featuredIds:[]});}
+function writeSiteConfig(c){writeJson(SITE_CONFIG_FILE,c);}
 function readSessions() {
   return global._sessions || (global._sessions = {});
 }
@@ -836,25 +829,9 @@ function handleStatic(req, res, pathname) {
     return;
   }
   if (pathname.startsWith("/uploads/")) {
-    // 站点配置 GET
-    if (req.method === "GET" && pathname === "/api/site-config") {
-      return sendJson(res, 200, { config: readSiteConfig() });
-    }
-
-    // 站点配置 POST
-    if (req.method === "POST" && pathname === "/api/admin/site-config") {
-      const user = requireRole(req, res, ["admin"]);
-      if (!user) return;
-      const body = await readBody(req);
-      const cfg = readSiteConfig();
-      if (body.heroTitle !== undefined) cfg.heroTitle = body.heroTitle;
-      if (body.heroDesc !== undefined) cfg.heroDesc = body.heroDesc;
-      if (body.featuredIds !== undefined) cfg.featuredIds = body.featuredIds;
-      writeSiteConfig(cfg);
-      return sendJson(res, 200, { ok: true, config: cfg });
-    }
-
-        const filePath = safeStaticPath(ROOT, pathname);
+    if(req.method==="GET"&&pathname==="/api/site-config"){return sendJson(res,200,{config:readSiteConfig()});}
+    if(req.method==="POST"&&pathname==="/api/admin/site-config"){const u=requireRole(req,res,["admin"]);if(!u)return;const b=await readBody(req);const c=readSiteConfig();if(b.heroTitle!==undefined)c.heroTitle=b.heroTitle;if(b.heroDesc!==undefined)c.heroDesc=b.heroDesc;if(b.featuredIds!==undefined)c.featuredIds=b.featuredIds;writeSiteConfig(c);return sendJson(res,200,{ok:true,config:c});}
+    const filePath = safeStaticPath(ROOT, pathname);
     if (!filePath || !filePath.startsWith(UPLOAD_DIR)) {
       sendText(res, 403, "Forbidden");
       return;
