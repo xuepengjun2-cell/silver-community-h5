@@ -296,7 +296,7 @@ a { color: inherit; text-decoration: none; }
 .activity-row {
   display: grid;
   grid-template-columns: 72px 1fr auto;
-  align-items: start;
+  align-items: center;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;
@@ -727,3 +727,18 @@ a { color: inherit; text-decoration: none; }
 /* 修复侧边栏遮挡问题 */
 .sidebar { position: relative !important; }
 
+
+/* 价格文字截断 */
+.activity-row-info > div:last-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+  font-size: 11px;
+}
+.activity-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  align-self: center;
+}

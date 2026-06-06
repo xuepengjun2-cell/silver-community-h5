@@ -1648,3 +1648,6 @@ img { display: block; }
     .app-shell { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   }
 }
+
+/* 强制登录时隐藏关闭按钮 */
+.modal-close { display: none !important; }
