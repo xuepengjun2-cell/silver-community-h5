@@ -101,7 +101,7 @@ function bindAuthEvents() {
   const logoutBtn = document.querySelector("#logoutBtn");
   if (logoutBtn) logoutBtn.addEventListener("click", async () => {
     await api("/api/logout", { method:"POST", body:{} });
-    state.user = null; state.loginOpen = true; rerenderCurrent();
+    state.user = null; window.location.reload();
   });
   const loginForm = document.querySelector("#loginForm");
   if (loginForm) loginForm.addEventListener("submit", async e => {
