@@ -6,6 +6,7 @@ const app = document.querySelector("#app");
 
 const state = {
   siteConfig: {},
+  banners: [],
   activities: [],
   cities: [],
   categories: [],
@@ -688,6 +689,46 @@ async function loadDetail(id) {
 }
 
 function startHeroCarousel(activities) {
+  const banners = state.banners || [];
+  if (banners.length > 0) {
+    // 使用上传的轮播图
+    startBannerCarousel(banners);
+    return;
+  }
+  // 没有轮播图时用活动封面
+  const featuredIds = (state.siteConfig && state.siteConfig.featuredIds) || [];
+  let items = featuredIds.length > 0
+    ? featuredIds.map(id => activities.find(a => a.id === id)).filter(Boolean)
+    : activities.filter(a => a.cover && a.status === "published").slice(0, 5);
+  if (!items.length) items = activities.filter(a => a.cover).slice(0, 5);
+  if (items.length < 2) return;
+  let idx = 0;
+  setInterval(() => {
+    idx = (idx + 1) % items.length;
+    const mainImg = document.querySelector("#heroMainImg");
+    if (!mainImg) return;
+    mainImg.style.opacity = "0";
+    setTimeout(() => { mainImg.src = items[idx].cover; mainImg.style.opacity = "1"; }, 500);
+  }, 5000);
+}
+
+function startBannerCarousel(banners) {
+  const wrap = document.querySelector("#heroBannerWrap");
+  if (!wrap) return;
+  let idx = 0;
+  const imgs = wrap.querySelectorAll(".banner-slide");
+  const dots = wrap.querySelectorAll(".banner-dot");
+  function go(n) {
+    imgs.forEach((el,i) => el.style.opacity = i===n?"1":"0");
+    dots.forEach((el,i) => { el.style.background = i===n?"var(--accent)":"rgba(255,255,255,0.5)"; });
+    idx = n;
+  }
+  dots.forEach((dot,i) => dot.addEventListener("click", () => { go(i); clearInterval(timer); timer = setInterval(next, 5000); }));
+  function next() { go((idx+1) % banners.length); }
+  let timer = setInterval(next, 5000);
+  go(0);
+}
+
   const featuredIds = (state.siteConfig && state.siteConfig.featuredIds) || [];
   let items = featuredIds.length > 0
     ? featuredIds.map(id => activities.find(a => a.id === id)).filter(Boolean)
@@ -719,6 +760,7 @@ async function boot() {
     state.user = me.user;
   } catch { state.user = null; }
   try { const sc = await api('/api/site-config'); state.siteConfig = sc.config || {}; } catch {}
+  try { const br = await api('/api/banners'); state.banners = br.banners || []; } catch { state.banners = []; }
   if (!state.user) { state.loginOpen = true; }
   setTimeout(() => startHeroCarousel(state.activities || []), 1000);
   try {

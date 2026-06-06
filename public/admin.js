@@ -716,23 +716,23 @@ async function renderHomepage() {
 
         <div class="panel">
           <div class="panel-header">
-            <h2>🌟 精选展示活动</h2>
-            <span style="font-size:12px;color:var(--muted)">最多5个，首页轮播展示</span>
+            <h2>🖼️ 首页轮播图</h2>
+            <span style="font-size:12px;color:var(--muted)">最多6张，每5秒自动切换</span>
           </div>
           <div class="panel-body">
-            <p style="font-size:13px;color:var(--muted);margin:0 0 12px">勾选要在首页展示的活动：</p>
-            <div style="max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
-              ${state.activities.filter(a=>a.status==="published").map(a => `
-                <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border-radius:8px;border:1px solid var(--line);cursor:pointer">
-                  <input type="checkbox" class="featured-check" value="${esc(a.id)}" ${featuredIds.includes(a.id)?"checked":""} style="width:16px;height:16px;accent-color:var(--accent)">
-                  <img src="${esc(a.cover||"/assets/people/cn-social-cafe.jpg")}" style="width:48px;height:36px;object-fit:cover;border-radius:4px">
-                  <div style="flex:1;min-width:0">
-                    <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.title)}</div>
-                    <div style="font-size:11px;color:var(--muted)">${esc(a.price||"")}</div>
-                  </div>
-                </label>`).join("")}
+            <div id="bannerList" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+              ${(c.banners||[]).map(url=>`
+                <div style="position:relative;border-radius:8px;overflow:hidden">
+                  <img src="${esc(url)}" style="width:100%;height:80px;object-fit:cover;display:block">
+                  <button class="btn-del-banner" data-url="${esc(url)}" style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:12px">✕</button>
+                </div>`).join("")}
+              ${(c.banners||[]).length < 6 ? `
+                <label style="height:80px;border:2px dashed var(--line);border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--muted);font-size:13px;flex-direction:column;gap:4px">
+                  <span style="font-size:24px">+</span><span>上传图片</span>
+                  <input type="file" id="bannerUpload" accept="image/*" style="display:none">
+                </label>` : ""}
             </div>
-            <button class="btn" id="saveFeaturedBtn" style="margin-top:12px">💾 保存精选活动</button>
+            <p style="font-size:12px;color:var(--hint);margin:0">已上传 ${(c.banners||[]).length}/6 张 · 建议尺寸 1200×500px</p>
           </div>
         </div>
       </div>
@@ -748,13 +748,30 @@ async function renderHomepage() {
     } catch(e) { flash(e.message,"error"); renderHomepage(); }
   });
 
-  document.querySelector("#saveFeaturedBtn").addEventListener("click", async () => {
-    const checked = [...document.querySelectorAll(".featured-check:checked")].map(x=>x.value);
-    if (checked.length > 5) { flash("最多选5个活动","error"); return; }
-    try {
-      await api("/api/admin/site-config", { method:"POST", body:{ featuredIds: checked }});
-      flash("✅ 精选活动已保存"); renderHomepage();
-    } catch(e) { flash(e.message,"error"); renderHomepage(); }
+  // 上传轮播图
+  const bannerUpload = document.querySelector("#bannerUpload");
+  if (bannerUpload) {
+    bannerUpload.addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch("/api/admin/banners/upload", { method:"POST", body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "上传失败");
+        flash("✅ 图片已上传"); renderHomepage();
+      } catch(e) { flash(e.message,"error"); }
+    });
+  }
+  // 删除轮播图
+  document.querySelectorAll(".btn-del-banner").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      try {
+        await api("/api/admin/banners/delete", { method:"POST", body:{ url: btn.dataset.url }});
+        flash("已删除"); renderHomepage();
+      } catch(e) { flash(e.message,"error"); }
+    });
   });
 }
 

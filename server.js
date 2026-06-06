@@ -543,6 +543,43 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  // 轮播图 GET
+  if (req.method === "GET" && pathname === "/api/banners") {
+    const cfg = readSiteConfig();
+    return sendJson(res, 200, { banners: cfg.banners || [] });
+  }
+
+  // 轮播图上传 POST
+  if (req.method === "POST" && pathname === "/api/admin/banners/upload") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const { fields, files } = await parseMultipart(req);
+    if (!files.file) return sendJson(res, 400, { error: "没有文件" });
+    const file = files.file;
+    const ext = require("path").extname(file.filename || ".jpg").toLowerCase();
+    const name = "banner_" + Date.now() + ext;
+    const dest = require("path").join(UPLOAD_DIR, name);
+    require("fs").writeFileSync(dest, file.data);
+    const url = "/uploads/" + name;
+    const cfg = readSiteConfig();
+    cfg.banners = cfg.banners || [];
+    if (cfg.banners.length >= 6) return sendJson(res, 400, { error: "最多6张轮播图" });
+    cfg.banners.push(url);
+    writeSiteConfig(cfg);
+    return sendJson(res, 200, { ok: true, url, banners: cfg.banners });
+  }
+
+  // 轮播图删除 DELETE
+  if (req.method === "POST" && pathname === "/api/admin/banners/delete") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const body = await parseBody(req);
+    const cfg = readSiteConfig();
+    cfg.banners = (cfg.banners || []).filter(b => b !== body.url);
+    writeSiteConfig(cfg);
+    return sendJson(res, 200, { ok: true, banners: cfg.banners });
+  }
+
   if(req.method==="GET"&&pathname==="/api/site-config"){return sendJson(res,200,{config:readSiteConfig()});}
   if(req.method==="POST"&&pathname==="/api/admin/site-config"){const u=requireRole(req,res,["admin"]);if(!u)return;const b=await parseBody(req);const c=readSiteConfig();if(b.heroTitle!==undefined)c.heroTitle=b.heroTitle;if(b.heroDesc!==undefined)c.heroDesc=b.heroDesc;if(b.featuredIds!==undefined)c.featuredIds=b.featuredIds;writeSiteConfig(c);return sendJson(res,200,{ok:true,config:c});}
   if (req.method === "GET" && pathname === "/api/public/activities") {
