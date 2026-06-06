@@ -10,8 +10,8 @@ const UPLOAD_DIR = path.join(ROOT, "uploads");
 const DATA_DIR = path.join(ROOT, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SESSION_FILE = path.join(DATA_DIR, "sessions.json");
-const SITE_CONFIG_FILE = require("path").join(__dirname, "data", "site-config.json");
 const SEED_ACTIVITIES_FILE = path.join(DATA_DIR, "seed-activities.json");
+const SITE_CONFIG_FILE = path.join(DATA_DIR, "site-config.json");
 const VALID_ROLES = ["admin", "operator", "viewer", "member"];
 const VALID_ACTIVITY_STATUSES = ["published", "pending", "draft", "rejected"];
 
