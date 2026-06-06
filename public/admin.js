@@ -68,7 +68,6 @@ function showLogin(error = "") {
       <div class="login-panel">
         <div class="login-card">
           <h2>登录后台</h2>
-          <p>admin / admin123 &nbsp;·&nbsp; city / city123 &nbsp;·&nbsp; member / member123</p>
           ${error ? `<div class="message error" style="margin-bottom:14px">${esc(error)}</div>` : ""}
           <form id="loginForm" style="display:flex;flex-direction:column;gap:14px">
             <div class="field"><label>账号</label><input class="input" id="username" value="admin" autocomplete="username"></div>
