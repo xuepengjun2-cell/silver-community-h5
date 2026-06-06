@@ -128,6 +128,9 @@ function renderShell() {
             <span class="nav-icon">🔗</span>前台链接
           </button>
           ${isAdmin ? `<span class="nav-section-label">系统</span>
+          <button data-tab="homepage" class="${state.activeTab==="homepage"?"active":""}">
+            <span class="nav-icon">🏠</span>首页设置
+          </button>
           <button data-tab="users" class="${state.activeTab==="users"?"active":""}">
             <span class="nav-icon">👥</span>账号权限
           </button>` : ""}
@@ -154,7 +157,8 @@ function renderShell() {
 }
 
 function renderContent() {
-  if (state.activeTab === "users") renderUsers();
+  if (state.activeTab === "homepage") renderHomepage();
+  else if (state.activeTab === "users") renderUsers();
   else if (state.activeTab === "import") renderImport();
   else if (state.activeTab === "preview") renderPreview();
   else renderActivities();
@@ -679,6 +683,79 @@ function bindActivityEvents() {
       }
       await refreshData(); state.draft = null; renderActivities();
     } catch (err) { flash(err.message, "error"); renderActivities(); }
+  });
+}
+
+
+// ---- 首页设置 ----
+async function renderHomepage() {
+  const content = document.querySelector("#content");
+  const cfg = await api("/api/site-config");
+  const c = cfg.config || {};
+  const featuredIds = c.featuredIds || [];
+
+  content.innerHTML = `
+    <div class="topbar"><div><h1>首页设置</h1><p>配置首页展示内容，修改后立即生效。</p></div></div>
+    <div class="content-area">
+      ${state.message}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+
+        <div class="panel">
+          <div class="panel-header"><h2>📝 文字内容</h2></div>
+          <div class="panel-body">
+            <div class="field">
+              <label>首页大标题</label>
+              <textarea class="textarea" id="cfgTitle" style="min-height:80px">${esc(c.heroTitle||"")}</textarea>
+            </div>
+            <div class="field">
+              <label>首页描述文字</label>
+              <textarea class="textarea" id="cfgDesc">${esc(c.heroDesc||"")}</textarea>
+            </div>
+            <button class="btn" id="saveTextBtn">💾 保存文字</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h2>🌟 精选展示活动</h2>
+            <span style="font-size:12px;color:var(--muted)">最多5个，首页轮播展示</span>
+          </div>
+          <div class="panel-body">
+            <p style="font-size:13px;color:var(--muted);margin:0 0 12px">勾选要在首页展示的活动：</p>
+            <div style="max-height:400px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+              ${state.activities.filter(a=>a.status==="published").map(a => `
+                <label style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--card);border-radius:8px;border:1px solid var(--line);cursor:pointer">
+                  <input type="checkbox" class="featured-check" value="${esc(a.id)}" ${featuredIds.includes(a.id)?"checked":""} style="width:16px;height:16px;accent-color:var(--accent)">
+                  <img src="${esc(a.cover||"/assets/people/cn-social-cafe.jpg")}" style="width:48px;height:36px;object-fit:cover;border-radius:4px">
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(a.title)}</div>
+                    <div style="font-size:11px;color:var(--muted)">${esc(a.price||"")}</div>
+                  </div>
+                </label>`).join("")}
+            </div>
+            <button class="btn" id="saveFeaturedBtn" style="margin-top:12px">💾 保存精选活动</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  document.querySelector("#saveTextBtn").addEventListener("click", async () => {
+    try {
+      await api("/api/admin/site-config", { method:"POST", body:{
+        heroTitle: document.querySelector("#cfgTitle").value,
+        heroDesc: document.querySelector("#cfgDesc").value
+      }});
+      flash("✅ 文字内容已保存"); renderHomepage();
+    } catch(e) { flash(e.message,"error"); renderHomepage(); }
+  });
+
+  document.querySelector("#saveFeaturedBtn").addEventListener("click", async () => {
+    const checked = [...document.querySelectorAll(".featured-check:checked")].map(x=>x.value);
+    if (checked.length > 5) { flash("最多选5个活动","error"); return; }
+    try {
+      await api("/api/admin/site-config", { method:"POST", body:{ featuredIds: checked }});
+      flash("✅ 精选活动已保存"); renderHomepage();
+    } catch(e) { flash(e.message,"error"); renderHomepage(); }
   });
 }
 

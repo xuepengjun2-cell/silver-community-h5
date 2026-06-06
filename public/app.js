@@ -5,6 +5,7 @@
 const app = document.querySelector("#app");
 
 const state = {
+  siteConfig: {},
   activities: [],
   cities: [],
   categories: [],
@@ -207,7 +208,7 @@ function renderList() {
           全国同城主理人 · 活动 SOP 学习平台
         </div>
         <h1>让每座城市的<br><em>银发社群</em>都能<br>办出好活动</h1>
-        <p>精选 ${state.activities.length} 套活动方案，包含完整执行流程、物料清单、价格参考、风险控制，主理人学习即可落地执行。</p>
+        <p>${state.siteConfig.heroDesc || '精选 '+state.activities.length+' 套活动方案，包含完整执行流程、物料清单、价格参考、风险控制，主理人学习即可落地执行。'}</p>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <a class="btn" href="#activity-list">浏览活动库</a>
           ${state.user
@@ -691,6 +692,7 @@ async function boot() {
     const me = await api("/api/me");
     state.user = me.user;
   } catch { state.user = null; }
+  try { const sc = await api('/api/site-config'); state.siteConfig = sc.config || {}; } catch {}
   if (!state.user) { state.loginOpen = true; }
   setTimeout(() => startHeroCarousel(state.activities || []), 1000);
   try {
