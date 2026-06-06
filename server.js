@@ -268,7 +268,7 @@ function readDb() {
   if (!fs.existsSync(DB_FILE)) {
     writeJson(DB_FILE, seedDb());
   }
-  return readJson(DB_FILE, seedDb());
+  return readJson(DB_FILE, {});
 }
 
 function writeDb(db) {
