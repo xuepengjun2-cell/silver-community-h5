@@ -691,6 +691,7 @@ async function boot() {
     const me = await api("/api/me");
     state.user = me.user;
   } catch { state.user = null; }
+  if (!state.user) { state.loginOpen = true; }
   try {
     const match = location.pathname.match(/^\/activity\/([^/]+)$/);
     if (match) await loadDetail(decodeURIComponent(match[1]));
