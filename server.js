@@ -611,6 +611,19 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (req.method === "PATCH" && pathname.startsWith("/api/admin/activities/")) {
+    const user = requireRole(req, res, ["admin", "operator"]);
+    if (!user) return;
+    const id = pathname.split("/").pop();
+    const body = await parseBody(req);
+    const db = readDb();
+    const idx = db.activities.findIndex(a => a.id === id);
+    if (idx === -1) return sendJson(res, 404, { error: "活动不存在" });
+    db.activities[idx] = { ...db.activities[idx], ...body, updatedAt: new Date().toISOString() };
+    writeDb(db);
+    return sendJson(res, 200, { ok: true, activity: db.activities[idx] });
+  }
+
   if (req.method === "POST" && pathname === "/api/admin/activities") {
     const user = requireRole(req, res, ["admin", "operator"]);
     if (!user) return;
