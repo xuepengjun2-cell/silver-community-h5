@@ -173,7 +173,56 @@ function emptyActivity() {
 }
 
 function currentActivity() {
-  return state.activities.find(x => x.id === state.editingId) || emptyActivity();
+  const base = state.activities.find(x => x.id === state.editingId) || emptyActivity();
+  return loadDraftToActivity(base);
+}
+
+
+function saveFormToState() {
+  const f = document.querySelector("#activityForm");
+  if (!f) return;
+  const fd = new FormData(f);
+  state.draft = state.draft || {};
+  for (const [k, v] of fd.entries()) state.draft[k] = v;
+  state.draft._tags = [...state.tags];
+  state.draft._scheduleRows = state.scheduleRows.map(x => ({...x}));
+  state.draft._imageUrls = [...state.imageUrls];
+}
+
+function loadDraftToActivity(a) {
+  if (!state.draft) return a;
+  const d = state.draft;
+  return {
+    ...a,
+    status: d.status || a.status,
+    title: d.title ?? a.title,
+    city: d.city ?? a.city,
+    region: d.region ?? a.region,
+    category: d.category ?? a.category,
+    activityType: d.activityType ?? a.activityType,
+    price: d.price ?? a.price,
+    capacity: d.capacity ?? a.capacity,
+    duration: d.duration ?? a.duration,
+    location: d.location ?? a.location,
+    contact: d.contact ?? a.contact,
+    intro: d.intro ?? a.intro,
+    highlights: d.highlights ?? (Array.isArray(a.highlights) ? a.highlights.join("\n") : a.highlights),
+    tags: d._tags || a.tags,
+    schedule: d._scheduleRows || a.schedule,
+    images: d._imageUrls || a.images,
+    cover: d.cover ?? a.cover,
+    videos: d.videos ?? (Array.isArray(a.videos) ? a.videos.join("\n") : a.videos),
+    references: d.references ?? (Array.isArray(a.references) ? a.references.join("\n") : a.references),
+    plan: {
+      target: d.target ?? a.plan?.target,
+      materials: d.materials ?? a.plan?.materials,
+      staffing: d.staffing ?? a.plan?.staffing,
+      conversion: d.conversion ?? a.plan?.conversion,
+      risk: d.risk ?? a.plan?.risk,
+    },
+    reviewNote: d.reviewNote ?? a.reviewNote,
+    downloadEnabled: d.downloadEnabled ? d.downloadEnabled === "on" : a.downloadEnabled,
+  };
 }
 
 function renderActivities() {
@@ -504,17 +553,17 @@ const STEPS = ["basic","content","sop","media"];
 function bindActivityEvents() {
   // 新建
   document.querySelector("#newActivityBtn")?.addEventListener("click", () => {
-    state.editingId = null; state.formStep = "basic"; clearFlash(); renderActivities();
+    state.editingId = null; state.formStep = "basic"; state.draft = null; clearFlash(); renderActivities();
   });
   // 清空
   document.querySelector("#resetFormBtn")?.addEventListener("click", () => {
-    state.editingId = null; state.formStep = "basic"; clearFlash(); renderActivities();
+    state.editingId = null; state.formStep = "basic"; state.draft = null; clearFlash(); renderActivities();
   });
   // 点击列表编辑
   document.querySelectorAll(".activity-row[data-edit]").forEach(row => {
     row.addEventListener("click", e => {
       if (e.target.closest(".activity-row-actions")) return;
-      state.editingId = row.dataset.edit; state.formStep = "basic"; clearFlash(); renderActivities();
+      state.editingId = row.dataset.edit; state.formStep = "basic"; state.draft = null; clearFlash(); renderActivities();
     });
   });
   // 删除
@@ -530,14 +579,14 @@ function bindActivityEvents() {
   });
   // Step Tab 切换
   document.querySelectorAll("[data-step]").forEach(btn => {
-    btn.addEventListener("click", () => { state.formStep = btn.dataset.step; renderActivities(); });
+    btn.addEventListener("click", () => { saveFormToState(); state.formStep = btn.dataset.step; renderActivities(); });
   });
   // 上下步骤按钮
   document.querySelectorAll(".form-tab-nav").forEach(btn => {
     btn.addEventListener("click", () => {
       const idx = STEPS.indexOf(state.formStep);
       const next = STEPS[idx + Number(btn.dataset.dir)];
-      if (next) { state.formStep = next; renderActivities(); }
+      if (next) { saveFormToState(); state.formStep = next; renderActivities(); }
     });
   });
   // 流程行 添加/删除/输入
@@ -628,7 +677,7 @@ function bindActivityEvents() {
         state.editingId = data.activity.id;
         flash("✅ 活动已创建");
       }
-      await refreshData(); renderActivities();
+      await refreshData(); state.draft = null; renderActivities();
     } catch (err) { flash(err.message, "error"); renderActivities(); }
   });
 }
