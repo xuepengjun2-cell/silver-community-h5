@@ -709,3 +709,9 @@ a { color: inherit; text-decoration: none; }
   .activity-row { grid-template-columns: 60px 1fr; }
   .activity-row-actions { display: none; }
 }
+
+/* 强制修复主区域宽度 */
+.layout { display: flex !important; }
+.sidebar { flex-shrink: 0; width: var(--sidebar-w); }
+.main { flex: 1; min-width: 0; margin-left: 0 !important; }
+
