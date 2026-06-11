@@ -582,6 +582,65 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, banners: cfg.banners });
   }
 
+  // 留言列表 GET /api/posts?activityId=xxx
+  if (req.method === "GET" && pathname === "/api/posts") {
+    const u2 = new URL(req.url, "http://localhost");
+    const aid = u2.searchParams.get("activityId") || "";
+    const db = readDb();
+    const posts = (db.posts || []).filter(p => p.activityId === aid)
+      .sort((x, y) => (y.createdAt || "").localeCompare(x.createdAt || ""));
+    return sendJson(res, 200, { posts });
+  }
+
+  // 发布留言 POST /api/posts
+  if (req.method === "POST" && pathname === "/api/posts") {
+    const user = requireRole(req, res, ["admin", "operator", "member", "city"]);
+    if (!user) return;
+    const body = await parseBody(req, 24 * 1024 * 1024);
+    const text = String(body.content || "").trim();
+    if (!text) return sendJson(res, 400, { error: "内容不能为空" });
+    if (text.length > 2000) return sendJson(res, 400, { error: "内容不能超过2000字" });
+    const imgs = [];
+    if (Array.isArray(body.images)) {
+      for (const dataUrl of body.images.slice(0, 3)) {
+        const m = String(dataUrl).match(/^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/);
+        if (!m) continue;
+        const extMap = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+        const buf = Buffer.from(m[2], "base64");
+        if (buf.length > 5 * 1024 * 1024) continue;
+        const fname = "post_" + Date.now() + "-" + crypto.randomBytes(4).toString("hex") + extMap[m[1]];
+        fs.writeFileSync(path.join(UPLOAD_DIR, fname), buf);
+        imgs.push("/uploads/" + fname);
+      }
+    }
+    const db = readDb();
+    db.posts = db.posts || [];
+    const post = {
+      id: "post_" + Date.now() + "_" + crypto.randomBytes(3).toString("hex"),
+      activityId: String(body.activityId || ""),
+      author: user.name || user.username || "用户",
+      role: user.role === "admin" ? "总部管理员" : (user.role === "city" ? "城市主理人" : "学习用户"),
+      content: text,
+      images: imgs,
+      likes: 0,
+      createdAt: new Date().toISOString()
+    };
+    db.posts.push(post);
+    writeDb(db);
+    return sendJson(res, 200, { ok: true, post });
+  }
+
+  // 删除留言 POST /api/admin/posts/delete（仅admin）
+  if (req.method === "POST" && pathname === "/api/admin/posts/delete") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const body = await parseBody(req);
+    const db = readDb();
+    db.posts = (db.posts || []).filter(p => p.id !== body.id);
+    writeDb(db);
+    return sendJson(res, 200, { ok: true });
+  }
+
   if(req.method==="GET"&&pathname==="/api/site-config"){return sendJson(res,200,{config:readSiteConfig()});}
   if(req.method==="POST"&&pathname==="/api/admin/site-config"){const u=requireRole(req,res,["admin"]);if(!u)return;const b=await parseBody(req);const c=readSiteConfig();if(b.heroTitle!==undefined)c.heroTitle=b.heroTitle;if(b.heroDesc!==undefined)c.heroDesc=b.heroDesc;if(b.featuredIds!==undefined)c.featuredIds=b.featuredIds;writeSiteConfig(c);return sendJson(res,200,{ok:true,config:c});}
   if (req.method === "GET" && pathname === "/api/public/activities") {

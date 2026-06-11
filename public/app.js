@@ -467,13 +467,14 @@ function tabCommunity(a) {
       <div class="community-intro">
         <div>
           <h4>主理人交流区</h4>
-          <p>分享执行心得、踩坑记录、本地化改良方案；优质内容可申请提交为正式活动方案，经总部审核后上架展示。</p>
+          <p>分享执行心得、踩坑记录、本地化改良方案。</p>
         </div>
         <button style="display:none" class="btn small ghost" style="white-space:nowrap" ${state.user ? "" : "data-open-login"}>
           📝 提交我的方案
         </button>
       </div>
       ${composeBlock}
+      <div id="postsList" style="margin-top:18px"></div>
       <div class="post-list">${postCards}</div>
     </div>`;
 }
@@ -660,13 +661,82 @@ function renderDetail(a) {
   });
 
   // 发帖
+  // ---- 发布经验（真实接口） ----
   const submitBtn = document.querySelector("#submitPostBtn");
-  if (submitBtn) submitBtn.addEventListener("click", () => {
-    const ta = document.querySelector("#postTextarea");
-    if (!ta || !ta.value.trim()) return;
-    alert("感谢分享！内容审核后将显示在交流区。");
-    ta.value = "";
-  });
+  const ta = document.querySelector("#postTextarea");
+  const upBtn = document.querySelector("#uploadImgBtn");
+  let pendingImgs = [];
+  if (upBtn) {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.multiple = true;
+    fileInput.style.display = "none";
+    document.body.appendChild(fileInput);
+    upBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", () => {
+      const files = [...fileInput.files].slice(0, 3 - pendingImgs.length);
+      files.forEach(f => {
+        const r = new FileReader();
+        r.onload = ev => {
+          pendingImgs.push(ev.target.result);
+          upBtn.textContent = "📎 已选 " + pendingImgs.length + " 张";
+        };
+        r.readAsDataURL(f);
+      });
+      fileInput.value = "";
+    });
+  }
+  if (submitBtn && ta) {
+    submitBtn.addEventListener("click", async () => {
+      const text = ta.value.trim();
+      if (!text) { alert("请先输入内容"); return; }
+      submitBtn.disabled = true;
+      submitBtn.textContent = "发布中...";
+      try {
+        await api("/api/posts", { method: "POST", body: { activityId: a.id, content: text, images: pendingImgs } });
+        ta.value = "";
+        pendingImgs = [];
+        if (upBtn) upBtn.textContent = "📎 上传图片";
+        await loadPosts();
+      } catch (e) { alert(e.message || "发布失败"); }
+      submitBtn.disabled = false;
+      submitBtn.textContent = "发布经验";
+    });
+  }
+  // ---- 加载留言列表 ----
+  async function loadPosts() {
+    try {
+      const r = await fetch("/api/posts?activityId=" + encodeURIComponent(a.id)).then(x => x.json());
+      const posts = r.posts || [];
+      const wrap = document.querySelector("#postsList");
+      if (!wrap) return;
+      if (!posts.length) {
+        wrap.innerHTML = '<div style="text-align:center;color:var(--muted);padding:24px 0;font-size:14px">还没有经验分享，来发布第一条吧</div>';
+        return;
+      }
+      const fmtTime = iso => {
+        const d = new Date(iso); const diff = (Date.now() - d.getTime()) / 86400000;
+        if (diff < 1) return "今天"; if (diff < 2) return "昨天";
+        if (diff < 7) return Math.floor(diff) + "天前";
+        return d.getMonth() + 1 + "月" + d.getDate() + "日";
+      };
+      wrap.innerHTML = posts.map(p => `
+        <div class="post-card" style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+            <div class="author-avatar">${esc((p.author || "用").slice(0, 1))}</div>
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:14px">${esc(p.author)}</div>
+              <div style="font-size:12px;color:var(--muted)">${esc(p.role || "")}</div>
+            </div>
+            <span style="font-size:12px;color:var(--muted)">${fmtTime(p.createdAt)}</span>
+          </div>
+          <div style="font-size:14px;line-height:1.8;white-space:pre-wrap">${esc(p.content)}</div>
+          ${(p.images || []).length ? '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">' + p.images.map(u => `<img src="${esc(u)}" style="width:120px;height:90px;object-fit:cover;border-radius:8px;cursor:pointer" onclick="window.open('${esc(u)}')">`).join("") + "</div>" : ""}
+        </div>`).join("");
+    } catch (e) {}
+  }
+  loadPosts();
 
   bindAuthEvents();
 }
