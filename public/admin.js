@@ -692,59 +692,12 @@ function bindActivityEvents() {
 
 // ---- 首页设置 ----
 // ---- 留言管理 ----
-async function renderPosts(filterStatus) {
-  const main = document.querySelector("#adminMain") || document.querySelector(".admin-main") || document.querySelector("main");
-  if (!main) return;
-  filterStatus = filterStatus || "pending";
-  let posts = [];
-  try {
-    const r = await api("/api/admin/posts");
-    posts = r.posts || [];
-  } catch (e) { main.innerHTML = '<div class="topbar"><div><h1>留言管理</h1><p>' + esc(e.message) + '</p></div></div>'; return; }
-  const pendingCount = posts.filter(p => (p.status || "approved") !== "approved").length;
-  const shown = filterStatus === "all" ? posts : posts.filter(p => filterStatus === "pending" ? (p.status || "approved") !== "approved" : (p.status || "approved") === "approved");
-  const fmtT = iso => { const d = new Date(iso); return (d.getMonth()+1) + "月" + d.getDate() + "日 " + String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"); };
-  main.innerHTML = `
-    <div class="topbar"><div><h1>留言管理</h1><p>审核用户发布的经验分享，待审核 ${pendingCount} 条。</p></div></div>
-    <div style="display:flex;gap:8px;margin:16px 0">
-      <button class="btn ${filterStatus==="pending"?"":"secondary"} small" data-pf="pending">待审核 (${pendingCount})</button>
-      <button class="btn ${filterStatus==="approved"?"":"secondary"} small" data-pf="approved">已通过</button>
-      <button class="btn ${filterStatus==="all"?"":"secondary"} small" data-pf="all">全部</button>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:12px">
-      ${shown.length ? shown.map(p => `
-        <div class="panel" style="padding:16px 20px">
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-            <strong>${esc(p.author)}</strong>
-            <span style="font-size:12px;color:var(--muted)">${esc(p.role||"")}</span>
-            <span style="font-size:12px;color:var(--muted)">· ${esc(p.activityTitle||"")}</span>
-            <span style="font-size:12px;color:var(--muted)">· ${fmtT(p.createdAt)}</span>
-            ${(p.status||"approved")!=="approved" ? '<span style="font-size:12px;color:#c8742c;background:#fdf3ea;padding:2px 8px;border-radius:10px">待审核</span>' : '<span style="font-size:12px;color:#2e7d32;background:#edf7ee;padding:2px 8px;border-radius:10px">已通过</span>'}
-          </div>
-          <div style="font-size:14px;line-height:1.7;white-space:pre-wrap;margin-bottom:8px">${esc(p.content)}</div>
-          ${(p.images||[]).length ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">' + p.images.map(u => `<img src="${esc(u)}" style="width:100px;height:75px;object-fit:cover;border-radius:6px;cursor:pointer" onclick="window.open('${esc(u)}')">`).join("") + "</div>" : ""}
-          <div style="display:flex;gap:8px">
-            ${(p.status||"approved")!=="approved" ? `<button class="btn small" data-pa="${esc(p.id)}" style="background:#2e7d32;color:#fff">✅ 通过</button>` : ""}
-            <button class="btn secondary small" data-pd="${esc(p.id)}" style="color:#c0392b;border-color:#c0392b">❌ 删除</button>
-          </div>
-        </div>`).join("") : '<div class="panel" style="padding:32px;text-align:center;color:var(--muted)">暂无留言</div>'}
-    </div>`;
-  main.querySelectorAll("[data-pf]").forEach(b => b.addEventListener("click", () => renderPosts(b.dataset.pf)));
-  main.querySelectorAll("[data-pa]").forEach(b => b.addEventListener("click", async () => {
-    try { await api("/api/admin/posts/approve", { method:"POST", body:{ id: b.dataset.pa } }); flash("✅ 已通过"); renderPosts(filterStatus); }
-    catch (e) { flash(e.message, "error"); }
-  }));
-  main.querySelectorAll("[data-pd]").forEach(b => b.addEventListener("click", async () => {
-    if (!confirm("确定删除这条留言？不可恢复。")) return;
-    try { await api("/api/admin/posts/delete", { method:"POST", body:{ id: b.dataset.pd } }); flash("已删除"); renderPosts(filterStatus); }
-    catch (e) { flash(e.message, "error"); }
-  }));
-}
+
 
 // ---- 留言管理 ----
 let postsFilter = "pending";
 async function renderPosts() {
-  const main = document.querySelector(".main-content") || document.querySelector("main");
+  const main = document.querySelector("#content");
   main.innerHTML = '<div class="topbar"><div><h1>留言管理</h1><p>审核、删除用户在活动交流区发布的内容。</p></div></div><div id="postsAdminBody" style="padding:0 24px 24px">加载中...</div>';
   let posts = [];
   try {
