@@ -587,9 +587,14 @@ async function handleApi(req, res, pathname) {
     const u2 = new URL(req.url, "http://localhost");
     const aid = u2.searchParams.get("activityId") || "";
     const db = readDb();
+    let viewer = null;
+    try { viewer = getAuthedUser(req); } catch (e) {}
+    const isAdmin = viewer && viewer.role === "admin";
+    const vname = viewer ? (viewer.name || viewer.username || "") : "";
     const posts = (db.posts || []).filter(p => p.activityId === aid)
+      .filter(p => isAdmin || (p.status || "approved") === "approved" || p.author === vname)
       .sort((x, y) => (y.createdAt || "").localeCompare(x.createdAt || ""));
-    return sendJson(res, 200, { posts });
+    return sendJson(res, 200, { posts, isAdmin });
   }
 
   // 发布留言 POST /api/posts
@@ -623,11 +628,25 @@ async function handleApi(req, res, pathname) {
       content: text,
       images: imgs,
       likes: 0,
+      status: user.role === "admin" ? "approved" : "pending",
       createdAt: new Date().toISOString()
     };
     db.posts.push(post);
     writeDb(db);
     return sendJson(res, 200, { ok: true, post });
+  }
+
+  // 审核通过 POST /api/admin/posts/approve（仅admin）
+  if (req.method === "POST" && pathname === "/api/admin/posts/approve") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const body = await parseBody(req);
+    const db = readDb();
+    const p = (db.posts || []).find(x => x.id === body.id);
+    if (!p) return sendJson(res, 404, { error: "留言不存在" });
+    p.status = "approved";
+    writeDb(db);
+    return sendJson(res, 200, { ok: true });
   }
 
   // 删除留言 POST /api/admin/posts/delete（仅admin）
