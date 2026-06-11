@@ -883,6 +883,35 @@ function handleStatic(req, res, pathname) {
     return;
   }
   if (pathname.startsWith("/uploads/")) {
+        // [TEMP] 数据迁移导出接口（迁移完成后可删除）
+    if (pathname === '/api/export-all' && req.method === 'GET') {
+      try {
+        const __u = new URL(req.url, 'http://localhost');
+        if (__u.searchParams.get('key') !== 'kkhc-migrate-2026') {
+          res.writeHead(403, { 'Content-Type': 'text/plain' });
+          return res.end('forbidden');
+        }
+        const __fs = require('fs');
+        const __path = require('path');
+        const __candidates = ['/app/data', __path.join(__dirname, 'data')];
+        let __dir = null;
+        for (const c of __candidates) { if (__fs.existsSync(c)) { __dir = c; break; } }
+        const __out = {};
+        if (__dir) {
+          for (const f of __fs.readdirSync(__dir)) {
+            if (f.endsWith('.json')) {
+              __out[f] = __fs.readFileSync(__path.join(__dir, f), 'utf-8');
+            }
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ dir: __dir, files: __out }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'text/plain' });
+        return res.end('error: ' + e.message);
+      }
+    }
+
     const filePath = safeStaticPath(ROOT, pathname);
     if (!filePath || !filePath.startsWith(UPLOAD_DIR)) {
       sendText(res, 403, "Forbidden");
