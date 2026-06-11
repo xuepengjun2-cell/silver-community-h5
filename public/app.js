@@ -612,7 +612,7 @@ function renderDetail(a) {
       const rv = v => {
         if (v == null || v === "") return "";
         if (Array.isArray(v)) return "<ul>" + v.map(x => "<li>" + (typeof x === "object" ? rv(x) : e2(x)) + "</li>").join("") + "</ul>";
-        if (typeof v === "object") return Object.entries(v).map(([k,val]) => '<div class="row"><span class="k">' + e2(k) + '</span><div class="v">' + rv(val) + "</div></div>").join("");
+        if (typeof v === "object") { const KM = {target:"目标人群",materials:"核心物料",staffing:"人力配置",conversion:"转化承接",risk:"风险控制",time:"时间",item:"事项"}; return Object.entries(v).map(([k,val]) => '<div class="row"><span class="k">' + e2(KM[k]||k) + '</span><div class="v">' + rv(val) + "</div></div>").join(""); }
         return e2(v).replace(/\n/g, "<br>");
       };
       const sec = (t, v) => { const b = rv(v); return b ? "<section><h2>" + t + "</h2>" + b + "</section>" : ""; };
@@ -635,9 +635,10 @@ function renderDetail(a) {
         + "<span>推荐地点 <b>" + e2(a.location||"-") + "</b></span>"
         + "</div></div>"
         + sec("活动介绍", a.intro)
+        + "<section><h2>执行三阶段</h2><div class=\'row\'><span class=\'k\'>📋 活动前</span><div class=\'v\'>确认报名人数、场地动线、物料备齐、老师/摄影落实、用户提醒和应急预案。</div></div><div class=\'row\'><span class=\'k\'>🎯 活动中</span><div class=\'v\'>先签到分组，再破冰控场，确保每个用户都有被照顾和被记录的体验点。</div></div><div class=\'row\'><span class=\'k\'>✅ 活动后</span><div class=\'v\'>24小时内发布作品，复盘用户标签，私聊反馈，并承接下次活动或课程。</div></div></section>"
         + sec("活动亮点", a.highlights)
         + sec("执行方案", a.plan)
-        + sec("活动流程", a.schedule)
+        + (Array.isArray(a.schedule) && a.schedule.length ? "<section><h2>活动流程</h2><table style=\'width:100%;border-collapse:collapse\'>" + a.schedule.map(s => "<tr><td style=\'width:90px;padding:7px 10px;border-bottom:1px solid #eee8de;font-weight:600;color:#c8742c;white-space:nowrap;vertical-align:top\'>" + e2(s.time||"") + "</td><td style=\'padding:7px 10px;border-bottom:1px solid #eee8de\'>" + e2(s.item||"") + "</td></tr>").join("") + "</table></section>" : "")
         + '<div class="foot">开开华彩 · 活动SOP学习平台 · 打印时选择「另存为PDF」即可保存</div>'
         + "<scr" + "ipt>window.onload=()=>setTimeout(()=>window.print(),300);</scr" + "ipt></body></html>";
       const w = window.open("", "_blank");
