@@ -588,14 +588,28 @@ function renderDetail(a) {
   // 复制链接
   const copyBtn = document.querySelector("#copyBtn");
   if (copyBtn) copyBtn.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(location.href);
-    copyBtn.textContent = "✓ 已复制";
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(location.href);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = location.href;
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      copyBtn.textContent = "✓ 已复制";
+    } catch (e) {
+      copyBtn.textContent = "复制失败";
+    }
     setTimeout(() => copyBtn.textContent = "复制链接", 1500);
   });
 
   // 下载 SOP
-  const dlBtn = document.querySelector("#downloadSopBtn");
-  if (dlBtn) dlBtn.addEventListener("click", async () => {
+  document.querySelectorAll("#downloadSopBtn").forEach(dlBtn => {
+  dlBtn.addEventListener("click", async () => {
     const tip = document.querySelector("#downloadTip");
     try {
       const res = await fetch(`/api/public/activities/${encodeURIComponent(a.id)}/download`, { credentials:"same-origin" });
@@ -612,6 +626,7 @@ function renderDetail(a) {
     } catch (err) {
       if (tip) tip.textContent = err.message;
     }
+  });
   });
 
   // 点赞
