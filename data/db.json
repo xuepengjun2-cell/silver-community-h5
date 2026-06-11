@@ -48,7 +48,7 @@
       "capacity": "每场限8人",
       "duration": "3小时",
       "location": "合作的高端国风茶室、艺术空间或专业肖像馆",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_001.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -120,7 +120,7 @@
       "capacity": "20-40人",
       "duration": "3小时",
       "location": "同城高端纯K豪华大包厢（车程<30min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_002.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -192,7 +192,7 @@
       "capacity": "每场6组家庭",
       "duration": "2.5小时",
       "location": "阳光通透的美学独立咖啡厅（车程<45min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_003.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -264,7 +264,7 @@
       "capacity": "30-60人",
       "duration": "4小时",
       "location": "社区多功能厅或影剧院（车程<30min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_004.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -336,7 +336,7 @@
       "capacity": "10-15人",
       "duration": "3小时",
       "location": "人文创意园区/古建筑平坦群落（车程<40min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_005.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -408,7 +408,7 @@
       "capacity": "15-25人",
       "duration": "2.5小时",
       "location": "专业录音棚或静谧会议室（车程<30min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_006.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -480,7 +480,7 @@
       "capacity": "15-20人",
       "duration": "2小时",
       "location": "怀旧主题茶馆或艺术沙龙（车程<30min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_007.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -552,7 +552,7 @@
       "capacity": "10-16人",
       "duration": "2小时",
       "location": "高档音乐清吧或品牌音响馆（车程<30min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_008.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -628,7 +628,7 @@
       "capacity": "15-30人",
       "duration": "1.5小时",
       "location": "户外平坦草坪或宽敞舞蹈房（车程<45min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_009.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -700,7 +700,7 @@
       "capacity": "20-40人",
       "duration": "2小时",
       "location": "专业合唱排练厅或多功能音响厅（车程<30min）",
-      "cover": "/assets/people/cn-singing-salon.jpg",
+      "cover": "/assets/covers/act_010.svg",
       "images": [
         "/assets/people/cn-singing-salon.jpg"
       ],
@@ -772,7 +772,7 @@
       "capacity": "20-40人（男女各半）",
       "duration": "3小时",
       "location": "格调高雅、采光充足的独立西餐厅包场或高档会所茶室",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_011.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -844,7 +844,7 @@
       "capacity": "15-25人",
       "duration": "2.5小时",
       "location": "宽敞卫生的烘焙工坊或私厨空间（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_012.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -916,7 +916,7 @@
       "capacity": "20-35人",
       "duration": "2小时",
       "location": "地道地方菜馆包间或老字号茶楼（车程<40min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_013.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -988,7 +988,7 @@
       "capacity": "20-30人",
       "duration": "2小时",
       "location": "俱乐部基地或合作书店大厅（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_014.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1060,7 +1060,7 @@
       "capacity": "12-20人",
       "duration": "2小时",
       "location": "暖色调榻榻米茶室或私密冥想室（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_015.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1132,7 +1132,7 @@
       "capacity": "8-15人",
       "duration": "2小时",
       "location": "大学周边安静咖啡厅或图书馆（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_016.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1204,7 +1204,7 @@
       "capacity": "12-18人",
       "duration": "3小时",
       "location": "主理人精心布置的私人大厨房（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_017.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1276,7 +1276,7 @@
       "capacity": "16-32人（4人一桌）",
       "duration": "4小时",
       "location": "高级棋牌会所或俱乐部活动厅（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_018.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1348,7 +1348,7 @@
       "capacity": "20-40人",
       "duration": "2小时",
       "location": "俱乐部专属无障碍宴会厅（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_019.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1420,7 +1420,7 @@
       "capacity": "20-40人",
       "duration": "2小时",
       "location": "同城开开华彩线下俱乐部基地（车程<20min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_020.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -1492,7 +1492,7 @@
       "capacity": "12-20人",
       "duration": "3小时",
       "location": "本地知名酒庄、西式私密美学空间",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_021.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1564,7 +1564,7 @@
       "capacity": "10-16人",
       "duration": "3小时",
       "location": "本地黑珍珠级特色私房菜馆（车程<45min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_022.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1636,7 +1636,7 @@
       "capacity": "8-16人",
       "duration": "3小时",
       "location": "烤箱防护绝对到位的专业烘焙坊（车程<30min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_023.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1708,7 +1708,7 @@
       "capacity": "12-20人",
       "duration": "2小时",
       "location": "采光良好的温室或合作阳光花园（车程<40min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_024.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1780,7 +1780,7 @@
       "capacity": "8-16人",
       "duration": "2.5小时",
       "location": "新中式复古庭院茶空间（车程<40min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_025.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1852,7 +1852,7 @@
       "capacity": "10-16人",
       "duration": "2.5小时",
       "location": "鲜花环绕的美学工作室/阳光房（车程<30min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_026.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1924,7 +1924,7 @@
       "capacity": "8-12人",
       "duration": "2小时",
       "location": "精品意式咖啡馆（车程<20min，铺满防烫垫）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_027.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -1996,7 +1996,7 @@
       "capacity": "10-20人",
       "duration": "2小时",
       "location": "铺设厚地毯的专业隔音冥想室（车程<30min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_028.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -2068,7 +2068,7 @@
       "capacity": "10-16人",
       "duration": "2.5小时",
       "location": "高档旗袍高定工坊或美学馆（车程<30min）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_029.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -2140,7 +2140,7 @@
       "capacity": "10-16人",
       "duration": "3小时",
       "location": "光线充足的独立画室（车程<30min，无障碍）",
-      "cover": "/assets/people/cn-flower-salon.jpg",
+      "cover": "/assets/covers/act_030.svg",
       "images": [
         "/assets/people/cn-flower-salon.jpg"
       ],
@@ -2212,7 +2212,7 @@
       "capacity": "15-25人",
       "duration": "3小时",
       "location": "市级大型博物馆/美术馆（车程<45min，走直梯）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_031.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2284,7 +2284,7 @@
       "capacity": "15-25人",
       "duration": "2小时",
       "location": "复古风格历史书店沙龙区（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_032.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2356,7 +2356,7 @@
       "capacity": "10-18人",
       "duration": "3小时",
       "location": "专业非遗传承基地/大工作室（车程<50min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_033.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2428,7 +2428,7 @@
       "capacity": "10-15人",
       "duration": "2.5小时",
       "location": "笔墨纸砚齐全的高档画廊（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_034.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2500,7 +2500,7 @@
       "capacity": "15-25人",
       "duration": "2小时",
       "location": "全平坦城市公园或多媒体厅（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_035.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2572,7 +2572,7 @@
       "capacity": "15-25人",
       "duration": "3小时",
       "location": "城市受保护历史建筑内礼堂（车程<40min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_036.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2644,7 +2644,7 @@
       "capacity": "12-20人",
       "duration": "3.5小时",
       "location": "本地老字号国医馆大厅、高端中医养生会所",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_037.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2716,7 +2716,7 @@
       "capacity": "12-20人",
       "duration": "2小时",
       "location": "警备完善的私人收藏馆红木厅（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_038.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2788,7 +2788,7 @@
       "capacity": "20-50人",
       "duration": "2小时",
       "location": "社区大学或俱乐部基地大教室（车程<20min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_039.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2860,7 +2860,7 @@
       "capacity": "12-20人",
       "duration": "2.5小时",
       "location": "铺设温暖地暖的无镜面大练功房（车程<30min）",
-      "cover": "/assets/people/cn-social-cafe.jpg",
+      "cover": "/assets/covers/act_040.svg",
       "images": [
         "/assets/people/cn-social-cafe.jpg"
       ],
@@ -2932,7 +2932,7 @@
       "capacity": "15-30人",
       "duration": "4小时",
       "location": "国家级森林公园、全平坦木栈道风景区",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_041.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3004,7 +3004,7 @@
       "capacity": "10-20人",
       "duration": "全天（约8小时）",
       "location": "车程<1.5h直达的名山静谧古寺",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_042.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3088,7 +3088,7 @@
       "capacity": "20-35人",
       "duration": "5小时",
       "location": "道路全平整的高标准大棚有机园（车程<1.2h）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_043.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3160,7 +3160,7 @@
       "capacity": "20-40人",
       "duration": "每次1.5小时",
       "location": "空气清新无积水的城市广场（车程<20min）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_044.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3232,7 +3232,7 @@
       "capacity": "20-40人",
       "duration": "约18小时（次日返回）",
       "location": "地面全草坪无碎石的近郊成熟营地（车程<1.5h）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_045.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3308,7 +3308,7 @@
       "capacity": "15-25人",
       "duration": "全天（约8小时）",
       "location": "地面军工防滑地垫的五星级温泉度假村（车程<1h）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_046.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3380,7 +3380,7 @@
       "capacity": "20-40人",
       "duration": "3小时",
       "location": "地势极其开阔、周边无高压线的风筝草坪（车程<30min）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_047.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3452,7 +3452,7 @@
       "capacity": "15-25人",
       "duration": "3小时",
       "location": "平路平坦、每隔500米有干净洗手间的古老街区（车程<30min）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_048.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3524,7 +3524,7 @@
       "capacity": "15-25人",
       "duration": "6小时",
       "location": "防护设施完善、地面全硬化无泥泞的垂钓园（车程<45min）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_049.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
@@ -3596,7 +3596,7 @@
       "capacity": "20-35人",
       "duration": "全天（约9小时）",
       "location": "商业配套极其成熟、无石板陡坡的江南古镇（两日一夜）",
-      "cover": "/assets/people/cn-rhythm-class.jpg",
+      "cover": "/assets/covers/act_050.svg",
       "images": [
         "/assets/people/cn-rhythm-class.jpg"
       ],
