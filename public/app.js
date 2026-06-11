@@ -469,7 +469,7 @@ function tabCommunity(a) {
           <h4>主理人交流区</h4>
           <p>分享执行心得、踩坑记录、本地化改良方案；优质内容可申请提交为正式活动方案，经总部审核后上架展示。</p>
         </div>
-        <button class="btn small ghost" style="white-space:nowrap" ${state.user ? "" : "data-open-login"}>
+        <button style="display:none" class="btn small ghost" style="white-space:nowrap" ${state.user ? "" : "data-open-login"}>
           📝 提交我的方案
         </button>
       </div>
@@ -586,46 +586,66 @@ function renderDetail(a) {
   });
 
   // 复制链接
-  const copyBtn = document.querySelector("#copyBtn");
-  if (copyBtn) copyBtn.addEventListener("click", async () => {
+  document.querySelectorAll("#copyBtn").forEach(copyBtn => {
+  copyBtn.addEventListener("click", () => {
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(location.href);
-      } else {
-        const ta = document.createElement("textarea");
-        ta.value = location.href;
-        ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        ta.remove();
-      }
+      const ta = document.createElement("textarea");
+      ta.value = location.href;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
       copyBtn.textContent = "✓ 已复制";
-    } catch (e) {
-      copyBtn.textContent = "复制失败";
-    }
+    } catch (e) { copyBtn.textContent = "复制失败"; }
     setTimeout(() => copyBtn.textContent = "复制链接", 1500);
+  });
   });
 
   // 下载 SOP
   document.querySelectorAll("#downloadSopBtn").forEach(dlBtn => {
   dlBtn.addEventListener("click", async () => {
-    const tip = document.querySelector("#downloadTip");
     try {
       const res = await fetch(`/api/public/activities/${encodeURIComponent(a.id)}/download`, { credentials:"same-origin" });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || "下载失败"); }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url; link.download = `${a.title}-SOP.txt`;
-      document.body.appendChild(link); link.click(); link.remove();
-      URL.revokeObjectURL(url);
-      if (tip) tip.textContent = "✓ SOP 已开始下载";
-      dlBtn.textContent = "✓ 已下载";
+      const e2 = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      const rv = v => {
+        if (v == null || v === "") return "";
+        if (Array.isArray(v)) return "<ul>" + v.map(x => "<li>" + (typeof x === "object" ? rv(x) : e2(x)) + "</li>").join("") + "</ul>";
+        if (typeof v === "object") return Object.entries(v).map(([k,val]) => '<div class="row"><span class="k">' + e2(k) + '</span><div class="v">' + rv(val) + "</div></div>").join("");
+        return e2(v).replace(/\n/g, "<br>");
+      };
+      const sec = (t, v) => { const b = rv(v); return b ? "<section><h2>" + t + "</h2>" + b + "</section>" : ""; };
+      const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + e2(a.title) + ' - SOP</title><style>'
+        + "body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;color:#2d2a26;max-width:780px;margin:0 auto;padding:32px 24px;line-height:1.8}"
+        + ".head{border-bottom:3px solid #c8742c;padding-bottom:16px;margin-bottom:24px}"
+        + "h1{font-size:26px;margin:0 0 8px}"
+        + ".meta{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:14px;color:#6b6258;margin-top:10px}.meta b{color:#c8742c}"
+        + "section{margin-bottom:22px;page-break-inside:avoid}"
+        + "h2{font-size:17px;color:#c8742c;border-left:4px solid #c8742c;padding-left:10px;margin:0 0 10px}"
+        + "ul{margin:6px 0;padding-left:22px}li{margin:4px 0}"
+        + '.row{display:flex;gap:12px;margin:6px 0}.k{flex:0 0 110px;font-weight:600;color:#8a5a23}.v{flex:1}'
+        + ".foot{margin-top:32px;padding-top:12px;border-top:1px solid #e5ded4;font-size:12px;color:#a39a8d;text-align:center}"
+        + "@media print{body{padding:0}}"
+        + "</style></head><body>"
+        + '<div class="head"><h1>' + e2(a.title) + '</h1><div class="meta">'
+        + "<span>参考价格 <b>" + e2(a.price||"-") + "</b></span>"
+        + "<span>适合人数 <b>" + e2(a.capacity||"-") + "</b></span>"
+        + "<span>活动时长 <b>" + e2(a.duration||"-") + "</b></span>"
+        + "<span>推荐地点 <b>" + e2(a.location||"-") + "</b></span>"
+        + "</div></div>"
+        + sec("活动介绍", a.intro)
+        + sec("活动亮点", a.highlights)
+        + sec("执行方案", a.plan)
+        + sec("活动流程", a.schedule)
+        + '<div class="foot">开开华彩 · 活动SOP学习平台 · 打印时选择「另存为PDF」即可保存</div>'
+        + "<scr" + "ipt>window.onload=()=>setTimeout(()=>window.print(),300);</scr" + "ipt></body></html>";
+      const w = window.open("", "_blank");
+      w.document.write(html);
+      w.document.close();
+      dlBtn.textContent = "✓ 已生成";
       setTimeout(() => dlBtn.textContent = "⬇ 下载 SOP", 2000);
-    } catch (err) {
-      if (tip) tip.textContent = err.message;
-    }
+    } catch (err) { alert(err.message); }
   });
   });
 
