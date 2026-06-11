@@ -636,6 +636,18 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, post });
   }
 
+  // 管理员留言列表 GET /api/admin/posts
+  if (req.method === "GET" && pathname === "/api/admin/posts") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const db = readDb();
+    const titleMap = {};
+    (db.activities || []).forEach(a => { titleMap[a.id] = a.title; });
+    const posts = (db.posts || []).map(p => ({ ...p, activityTitle: titleMap[p.activityId] || p.activityId }))
+      .sort((x, y) => (y.createdAt || "").localeCompare(x.createdAt || ""));
+    return sendJson(res, 200, { posts });
+  }
+
   // 审核通过 POST /api/admin/posts/approve（仅admin）
   if (req.method === "POST" && pathname === "/api/admin/posts/approve") {
     const user = requireRole(req, res, ["admin"]);

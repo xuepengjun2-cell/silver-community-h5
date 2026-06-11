@@ -722,7 +722,6 @@ function renderDetail(a) {
         if (diff < 7) return Math.floor(diff) + "天前";
         return d.getMonth() + 1 + "月" + d.getDate() + "日";
       };
-      const isAdmin = !!r.isAdmin;
       wrap.innerHTML = posts.map(p => `
         <div class="post-card" style="background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:14px${(p.status||'approved')!=='approved' ? ';opacity:0.75;border-style:dashed' : ''}">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
@@ -735,18 +734,8 @@ function renderDetail(a) {
           </div>
           <div style="font-size:14px;line-height:1.8;white-space:pre-wrap">${esc(p.content)}</div>
           ${(p.images || []).length ? '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">' + p.images.map(u => `<img src="${esc(u)}" style="width:120px;height:90px;object-fit:cover;border-radius:8px;cursor:pointer" onclick="window.open('${esc(u)}')">`).join("") + "</div>" : ""}
-          ${isAdmin ? `<div style="display:flex;gap:8px;margin-top:12px;padding-top:10px;border-top:1px dashed var(--line)">${(p.status||'approved')!=='approved' ? `<button class="btn small" data-approve-post="${esc(p.id)}" style="background:#2e7d32;color:#fff">✅ 通过</button>` : ''}<button class="btn secondary small" data-del-post="${esc(p.id)}" style="color:#c0392b;border-color:#c0392b">❌ 删除</button></div>` : ''}
         </div>`).join("");
-      // 管理员操作
-      wrap.querySelectorAll("[data-approve-post]").forEach(b => b.addEventListener("click", async () => {
-        try { await api("/api/admin/posts/approve", { method:"POST", body:{ id: b.dataset.approvePost } }); await loadPosts(); }
-        catch (e) { alert(e.message); }
-      }));
-      wrap.querySelectorAll("[data-del-post]").forEach(b => b.addEventListener("click", async () => {
-        if (!confirm("确定删除这条留言？")) return;
-        try { await api("/api/admin/posts/delete", { method:"POST", body:{ id: b.dataset.delPost } }); await loadPosts(); }
-        catch (e) { alert(e.message); }
-      }));
+
     } catch (e) {}
   }
   loadPosts();
