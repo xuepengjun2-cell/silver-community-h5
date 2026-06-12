@@ -835,3 +835,11 @@ a { color: inherit; text-decoration: none; }
   background: inherit;
   padding-bottom: 12px;
 }
+
+/* ===== 修复：固定侧边栏后主内容让位 ===== */
+.sidebar {
+  width: 240px !important;
+}
+.main {
+  margin-left: 240px !important;
+}
