@@ -817,3 +817,21 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 1100px) {
   .stat-cards { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ===== 修复：左下角按钮固定不跳动 ===== */
+.sidebar {
+  position: fixed !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+}
+.sidebar .side-foot {
+  margin-top: auto !important;
+  position: sticky !important;
+  bottom: 0 !important;
+  background: inherit;
+  padding-bottom: 12px;
+}
