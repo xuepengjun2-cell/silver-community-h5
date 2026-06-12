@@ -858,3 +858,45 @@ a { color: inherit; text-decoration: none; }
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 .activity-row { border-radius: 10px; }
+
+/* ===== 左右面板等高对齐 + 保存栏固定底部 ===== */
+/* 右侧编辑面板：固定高度，内部滚动 */
+#editPanel {
+  display: flex !important;
+  flex-direction: column !important;
+  height: calc(100vh - 310px) !important;
+  overflow: hidden !important;
+}
+#editPanel form {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  display: flex !important;
+  flex-direction: column !important;
+  scrollbar-width: thin;
+}
+#editPanel form::-webkit-scrollbar { width: 6px; }
+#editPanel form::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 3px; }
+
+/* 保存/上一步/下一步：钉在面板底部，始终可见 */
+.form-actions {
+  position: sticky !important;
+  bottom: 0 !important;
+  margin-top: auto !important;
+  background: var(--card, #fff) !important;
+  padding: 12px 16px !important;
+  box-shadow: 0 -4px 12px rgba(0,0,0,.06) !important;
+  z-index: 5;
+}
+
+/* 左侧列表面板：和右面板同高，列表区撑满剩余空间 */
+.panel:has(.act-scroll) {
+  display: flex !important;
+  flex-direction: column !important;
+  height: calc(100vh - 310px) !important;
+  overflow: hidden !important;
+}
+.act-scroll {
+  flex: 1 1 auto !important;
+  height: auto !important;
+  max-height: none !important;
+}
