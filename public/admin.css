@@ -900,3 +900,25 @@ a { color: inherit; text-decoration: none; }
   height: auto !important;
   max-height: none !important;
 }
+
+/* ===== 消息提示改为右上角浮动toast，不挤压页面 ===== */
+.message {
+  position: fixed !important;
+  top: 20px !important;
+  right: 24px !important;
+  left: auto !important;
+  z-index: 999 !important;
+  margin: 0 !important;
+  padding: 12px 20px !important;
+  border-radius: 10px !important;
+  box-shadow: 0 6px 24px rgba(0,0,0,.15) !important;
+  animation: toastInOut 2.6s ease forwards;
+  pointer-events: none;
+  max-width: 320px;
+}
+@keyframes toastInOut {
+  0%   { opacity: 0; transform: translateY(-12px); }
+  8%   { opacity: 1; transform: translateY(0); }
+  80%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-8px); }
+}
