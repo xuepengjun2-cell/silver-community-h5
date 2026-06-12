@@ -403,7 +403,7 @@ function renderActivities() {
               <div class="field">
                 <label>活动时间线</label>
                 <div class="schedule-editor" id="scheduleEditor">
-                  ${renderScheduleRows(canEdit)}
+                  <div id="scheduleRowsBox">${renderScheduleRows(canEdit)}</div>
                 </div>
                 ${canEdit ? `<button class="add-row-btn" type="button" id="addScheduleRow">＋ 添加流程节点</button>` : ""}
               </div>
@@ -507,110 +507,8 @@ function renderActivities() {
   bindActivityEvents();
 }
 
-function renderScheduleRows(canEdit) {
-  if (!state.scheduleRows.length) state.scheduleRows = [{ time:"", item:"" }];
-  return state.scheduleRows.map((row, i) => `
-    <div class="schedule-row" data-row-idx="${i}">
-      <input class="input" type="text" data-time placeholder="14:00" value="${esc(row.time)}" ${canEdit?"":"disabled"}>
-      <input class="input" type="text" data-item placeholder="流程节点描述" value="${esc(row.item)}" ${canEdit?"":"disabled"}>
-      ${canEdit ? `<button class="del-row-btn" type="button" data-del-row="${i}" title="删除">×</button>` : "<span></span>"}
-    </div>`).join("");
-}
-
-function renderTagChips(canEdit) {
-  return state.tags.map((tag, i) => `
-    <span class="tag-chip">
-      ${esc(tag)}
-      ${canEdit ? `<button type="button" data-del-tag="${i}">×</button>` : ""}
-    </span>`).join("");
-}
-
-function renderThumbs() {
-  return state.imageUrls.map((url, i) => `
-    <div class="thumb ${i===0?"cover-thumb":""}">
-      <img src="${esc(url)}" alt="图${i+1}">
-      <button class="thumb-del" type="button" data-remove-image="${i}" title="删除">×</button>
-    </div>`).join("");
-}
-
-function syncImages() {
-  const input = document.querySelector("#imagesInput");
-  const cover = document.querySelector("#coverInput");
-  const preview = document.querySelector("#imagePreview");
-  if (input) input.value = state.imageUrls.join("\n");
-  if (cover && !cover.value && state.imageUrls[0]) cover.value = state.imageUrls[0];
-  if (preview) {
-    preview.innerHTML = renderThumbs();
-    preview.querySelectorAll("[data-remove-image]").forEach(btn =>
-      btn.addEventListener("click", () => {
-        state.imageUrls.splice(Number(btn.dataset.removeImage), 1);
-        syncImages();
-      }));
-  }
-}
-
-function readFile(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(file);
-  });
-}
-
-const STEPS = ["basic","content","sop","media"];
-
-function bindActivityEvents() {
-  // 新建
-  document.querySelector("#newActivityBtn")?.addEventListener("click", () => {
-    state.editingId = null; state.formStep = "basic"; state.draft = null; clearFlash(); renderActivities();
-  });
-  // 清空
-  document.querySelector("#resetFormBtn")?.addEventListener("click", () => {
-    state.editingId = null; state.formStep = "basic"; state.draft = null; clearFlash(); renderActivities();
-  });
-  // 点击列表编辑
-  document.querySelectorAll(".activity-row[data-edit]").forEach(row => {
-    row.addEventListener("click", e => {
-      if (e.target.closest(".activity-row-actions")) return;
-      state.editingId = row.dataset.edit; state.formStep = "basic"; state.draft = null; clearFlash(); renderActivities();
-    });
-  });
-  // 删除
-  document.querySelectorAll("[data-delete]").forEach(btn => {
-    btn.addEventListener("click", async e => {
-      e.stopPropagation();
-      if (!confirm("确认删除这个活动？删除后无法恢复。")) return;
-      try {
-        await api(`/api/admin/activities/${encodeURIComponent(btn.dataset.delete)}`, { method:"DELETE" });
-        await refreshData(); state.editingId = null; flash("活动已删除"); renderActivities();
-      } catch (err) { flash(err.message, "error"); renderActivities(); }
-    });
-  });
-  // Step Tab 切换
-  document.querySelectorAll("[data-step]").forEach(btn => {
-    btn.addEventListener("click", () => { saveFormToState(); state.formStep = btn.dataset.step; renderActivities(); });
-  });
-  // 上下步骤按钮
-  document.querySelectorAll(".form-tab-nav").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const idx = STEPS.indexOf(state.formStep);
-      const next = STEPS[idx + Number(btn.dataset.dir)];
-      if (next) { saveFormToState(); state.formStep = next; renderActivities(); }
-    });
-  });
-  // 流程行 添加/删除/输入
-  document.querySelector("#addScheduleRow")?.addEventListener("click", () => {
-    state.scheduleRows.push({ time:"", item:"" }); renderActivities();
-    document.querySelector("[data-step='content']")?.click();
-  });
-  document.querySelectorAll("[data-del-row]").forEach(btn => {
-    btn.addEventListener("click", () => {
-      state.scheduleRows.splice(Number(btn.dataset.delRow), 1);
-      if (!state.scheduleRows.length) state.scheduleRows.push({ time:"", item:"" });
-      renderActivities(); document.querySelector("[data-step='content']")?.click();
-    });
-  });
+function bindScheduleRowEvents() {
+  bindScheduleRowEvents();
   document.querySelectorAll(".schedule-row").forEach(row => {
     const idx = Number(row.dataset.rowIdx);
     row.querySelector("[data-time]")?.addEventListener("input", e => { state.scheduleRows[idx].time = e.target.value; });
