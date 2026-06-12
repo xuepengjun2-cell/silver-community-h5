@@ -235,9 +235,12 @@ function loadDraftToActivity(a) {
 function renderActivities() {
   const content = document.querySelector("#content");
   const a = currentActivity();
-  state.imageUrls = Array.isArray(a.images) ? [...a.images] : [];
-  state.scheduleRows = Array.isArray(a.schedule) ? a.schedule.map(x => ({...x})) : [];
-  state.tags = Array.isArray(a.tags) ? [...a.tags] : [];
+  if (state._formForId !== state.editingId) {
+    state._formForId = state.editingId;
+    state.imageUrls = Array.isArray(a.images) ? [...a.images] : [];
+    state.scheduleRows = Array.isArray(a.schedule) ? a.schedule.map(x => ({...x})) : [];
+    state.tags = Array.isArray(a.tags) ? [...a.tags] : [];
+  }
 
   const published = state.activities.filter(x => x.status === "published").length;
   const pending = state.activities.filter(x => x.status === "pending").length;
