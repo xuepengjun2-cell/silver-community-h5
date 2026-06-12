@@ -275,7 +275,7 @@ function renderActivities() {
             <h2>活动列表</h2>
             <span style="font-size:12px;color:var(--muted)">共 ${state.activities.length} 个</span>
           </div>
-          <div style="padding:12px;max-height:calc(100vh - 260px);overflow-y:auto">
+          <div style="padding:12px 12px 24px;height:calc(100vh - 300px);overflow-y:auto" class="act-scroll">
             <div class="activity-list">
               ${state.activities.map(act => `
                 <div class="activity-row ${act.id === state.editingId ? "editing" : ""}" data-edit="${esc(act.id)}">
