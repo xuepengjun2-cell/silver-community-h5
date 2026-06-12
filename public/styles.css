@@ -1663,3 +1663,17 @@ img { display: block; }
   object-fit: contain !important;
   background: #1a1714;
 }
+
+/* ===== 详情页：底部操作卡固定 + 内容滚动让位 ===== */
+.detail-float, .detail-action-bar, .float-bar {
+  position: fixed !important;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px !important;
+  z-index: 200 !important;
+  width: min(92%, 1000px);
+}
+/* 给页面底部留出操作卡的高度，最后的内容不被遮住 */
+.detail-shell {
+  padding-bottom: 120px !important;
+}
