@@ -13,6 +13,7 @@ const state = {
   user: null,
   loginOpen: false,
   authMessage: "",
+  authTab: "login",
   currentActivity: null,
   activeTab: "intro",
   favorites: new Set(JSON.parse(localStorage.getItem("kk_favs") || "[]")),
@@ -74,13 +75,22 @@ function authBar() {
 // ---- 登录弹窗 ----
 function loginModal() {
   if (!state.loginOpen) return "";
-  return `
+  const isLogin = state.authTab !== "register";
+  const tabs = `
+    <div class="auth-tabs">
+      <button type="button" class="auth-tab ${isLogin?"active":""}" data-auth-tab="login">登录</button>
+      <button type="button" class="auth-tab ${!isLogin?"active":""}" data-auth-tab="register">申请注册</button>
+    </div>`;
+  const msg = state.authMessage ? `<div class="message ${state.authOk?"":"error"}">${esc(state.authMessage)}</div>` : "";
+  if (isLogin) {
+    return `
     <div class="modal-mask">
       <form class="login-modal" id="loginForm">
         <button class="modal-close" type="button" data-close-login>×</button>
         <h2>登录学习平台</h2>
         <p>登录后可查看完整活动 SOP，权限开通后可下载文件。</p>
-        ${state.authMessage ? `<div class="message error">${esc(state.authMessage)}</div>` : ""}
+        ${tabs}
+        ${msg}
         <div class="field">
           <label>账号</label>
           <input class="input" name="username" autocomplete="username" placeholder="请输入账号">
@@ -90,14 +100,39 @@ function loginModal() {
           <input class="input" name="password" type="password" autocomplete="current-password" placeholder="请输入密码">
         </div>
         <button class="btn" type="submit">进入学习</button>
-        
+      </form>
+    </div>`;
+  }
+  return `
+    <div class="modal-mask">
+      <form class="login-modal" id="registerForm">
+        <button class="modal-close" type="button" data-close-login>×</button>
+        <h2>申请学习账号</h2>
+        <p>提交申请后，管理员审核开通即可登录学习。</p>
+        ${tabs}
+        ${msg}
+        <div class="field">
+          <label>账号</label>
+          <input class="input" name="username" autocomplete="username" placeholder="设置登录账号">
+        </div>
+        <div class="field">
+          <label>姓名/昵称</label>
+          <input class="input" name="name" placeholder="方便管理员识别">
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input class="input" name="password" type="password" autocomplete="new-password" placeholder="至少6位">
+        </div>
+        <button class="btn" type="submit">提交申请</button>
       </form>
     </div>`;
 }
 
 function bindAuthEvents() {
   document.querySelectorAll("[data-open-login]").forEach(btn =>
-    btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; rerenderCurrent(); }));
+    btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authOk = false; state.authTab = "login"; rerenderCurrent(); }));
+  document.querySelectorAll("[data-auth-tab]").forEach(btn =>
+    btn.addEventListener("click", () => { state.authTab = btn.dataset.authTab; state.authMessage = ""; state.authOk = false; rerenderCurrent(); }));
   document.querySelectorAll("[data-close-login]").forEach(btn =>
     btn.addEventListener("click", () => { state.loginOpen = false; rerenderCurrent(); }));
   const logoutBtn = document.querySelector("#logoutBtn");
@@ -112,7 +147,19 @@ function bindAuthEvents() {
     try {
       const data = await api("/api/login", { method:"POST", body:{ username:f.get("username"), password:f.get("password") } });
       state.user = data.user; state.loginOpen = false; state.authMessage = ""; rerenderCurrent();
-    } catch (err) { state.authMessage = err.message; rerenderCurrent(); }
+    } catch (err) { state.authMessage = err.message; state.authOk = false; rerenderCurrent(); }
+  });
+  const registerForm = document.querySelector("#registerForm");
+  if (registerForm) registerForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    try {
+      const data = await api("/api/register", { method:"POST", body:{ username:f.get("username"), password:f.get("password"), name:f.get("name") } });
+      state.authTab = "login";
+      state.authOk = true;
+      state.authMessage = (data && data.message) || "申请已提交，请等待管理员开通后登录";
+      rerenderCurrent();
+    } catch (err) { state.authMessage = err.message; state.authOk = false; rerenderCurrent(); }
   });
 }
 

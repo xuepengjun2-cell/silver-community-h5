@@ -1677,3 +1677,30 @@ img { display: block; }
 .detail-shell {
   padding-bottom: 120px !important;
 }
+
+/* ===== 登录/注册切换标签 ===== */
+.auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 16px;
+  border-bottom: 1px solid var(--line, #eee);
+}
+.auth-tab {
+  flex: 1;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-size: 15px;
+  color: var(--muted, #888);
+  cursor: pointer;
+}
+.auth-tab.active {
+  color: var(--brand, #c0502a);
+  border-bottom-color: var(--brand, #c0502a);
+  font-weight: 600;
+}
+.message.message:not(.error) {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
