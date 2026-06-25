@@ -958,3 +958,22 @@ a { color: inherit; text-decoration: none; }
 .user-detail-panel.open .row:first-child {
   margin-top: 4px;
 }
+
+/* ===== 账号编辑弹窗：内部白底黑字，文字清晰 ===== */
+.user-detail-panel.open {
+  background: #fff !important;
+}
+.user-detail-panel.open label,
+.user-detail-panel.open .field label {
+  color: #1a1a1a !important;
+  font-weight: 600;
+}
+.user-detail-panel.open .input,
+.user-detail-panel.open .select {
+  background: #fff !important;
+  color: #1a1a1a !important;
+  border: 1px solid #d0d0d0 !important;
+}
+.user-detail-panel.open .input::placeholder {
+  color: #9a9a9a !important;
+}
