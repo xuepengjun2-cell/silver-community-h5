@@ -510,6 +510,42 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (req.method === "POST" && pathname === "/api/register") {
+    const body = await parseBody(req);
+    const username = String(body.username || "").trim();
+    const password = String(body.password || "").trim();
+    const name = String(body.name || username).trim();
+    if (!username || !password) {
+      sendJson(res, 400, { error: "请填写账号和密码" });
+      return;
+    }
+    if (password.length < 6) {
+      sendJson(res, 400, { error: "密码至少6位" });
+      return;
+    }
+    const db = readDb();
+    if (db.users.some(x => x.username === username)) {
+      sendJson(res, 409, { error: "该账号已被使用，请换一个" });
+      return;
+    }
+    const salt = crypto.randomBytes(8).toString("hex");
+    const newUser = {
+      id: createId("u"),
+      username,
+      name,
+      role: "member",
+      status: "disabled",
+      canDownload: false,
+      salt,
+      passwordHash: hashPassword(password, salt),
+      createdAt: now()
+    };
+    db.users.push(newUser);
+    writeDb(db);
+    sendJson(res, 201, { ok: true, message: "申请已提交，请等待管理员开通后登录" });
+    return;
+  }
+
   if (req.method === "POST" && pathname === "/api/login") {
     const body = await parseBody(req);
     const db = readDb();
