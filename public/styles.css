@@ -1750,3 +1750,13 @@ img { display: block; }
 @media (max-width: 560px) {
   .contribute-modal .row.two { grid-template-columns: 1fr; }
 }
+
+/* ===== 共创弹窗：四步合并为单长表单 ===== */
+/* 隐藏顶部 1-4 步骤标签 */
+.contribute-modal .form-tabs { display: none !important; }
+/* 四步内容全部展开显示，不再分步 */
+.contribute-modal .form-pane { display: block !important; }
+/* 隐藏上一步/下一步导航按钮 */
+.contribute-modal [data-c-nav] { display: none !important; }
+/* 各部分之间加点间距，长表单更清晰 */
+.contribute-modal .form-pane { margin-bottom: 8px; }
