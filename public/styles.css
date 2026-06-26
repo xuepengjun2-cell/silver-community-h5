@@ -1704,3 +1704,26 @@ img { display: block; }
   background: #e8f5e9;
   color: #2e7d32;
 }
+
+/* ===== 我要共创 入口 + 弹窗 ===== */
+.contribute-entry {
+  cursor: pointer;
+  color: var(--brand, #c0502a);
+  font-weight: 600;
+  padding: 6px 14px;
+  border: 1px solid var(--brand, #c0502a);
+  border-radius: 999px;
+}
+.contribute-entry:hover { background: var(--brand, #c0502a); color: #fff; }
+.contribute-modal { max-height: 86vh; overflow-y: auto; }
+.contribute-modal textarea.input { resize: vertical; font-family: inherit; }
+.contribute-row {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 8px;
+}
+.contribute-time { flex: 0 0 90px; }
+.contribute-item { flex: 1; }
+.contribute-del {
+  flex: 0 0 32px; height: 38px; border: 1px solid #ddd;
+  background: #fafafa; border-radius: 8px; cursor: pointer; color: #999;
+}
+.contribute-del:hover { background: #fde8e8; color: #c0392b; }

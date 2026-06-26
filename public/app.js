@@ -14,6 +14,10 @@ const state = {
   loginOpen: false,
   authMessage: "",
   authTab: "login",
+  contributeOpen: false,
+  contributeMsg: "",
+  contributeOk: false,
+  contributeRows: [{ time: "", item: "" }],
   currentActivity: null,
   activeTab: "intro",
   favorites: new Set(JSON.parse(localStorage.getItem("kk_favs") || "[]")),
@@ -73,6 +77,47 @@ function authBar() {
 }
 
 // ---- 登录弹窗 ----
+function contributeRowsHtml() {
+  return state.contributeRows.map((r, i) => `
+    <div class="contribute-row" data-row="${i}">
+      <input class="input contribute-time" data-c-time placeholder="14:00" value="${esc(r.time)}">
+      <input class="input contribute-item" data-c-item placeholder="流程节点描述" value="${esc(r.item)}">
+      <button type="button" class="contribute-del" data-c-del="${i}">×</button>
+    </div>`).join("");
+}
+
+function contributeModal() {
+  if (!state.contributeOpen) return "";
+  const msg = state.contributeMsg ? `<div class="message ${state.contributeOk?"":"error"}">${esc(state.contributeMsg)}</div>` : "";
+  return `
+    <div class="modal-mask">
+      <form class="login-modal contribute-modal" id="contributeForm">
+        <button class="modal-close" type="button" data-close-contribute>×</button>
+        <h2>我要共创活动</h2>
+        <p>提交你的活动方案，经总部审核通过后即可上线，供全国主理人学习。</p>
+        ${msg}
+        <div class="field">
+          <label>活动标题 *</label>
+          <input class="input" name="title" placeholder="简洁有力，10字以内最佳">
+        </div>
+        <div class="field">
+          <label>活动简介</label>
+          <textarea class="input" name="intro" rows="3" placeholder="一段话说清楚这个活动是什么、适合谁、体验感是什么"></textarea>
+        </div>
+        <div class="field">
+          <label>活动亮点（每行一条）</label>
+          <textarea class="input" name="highlights" rows="3" placeholder="例如：&#10;专业摄影师一对一服务&#10;提供旗袍/中山装"></textarea>
+        </div>
+        <div class="field">
+          <label>活动流程时间线</label>
+          <div id="contributeRowsBox">${contributeRowsHtml()}</div>
+          <button type="button" class="btn secondary small" id="contributeAddRow" style="margin-top:8px">+ 添加流程节点</button>
+        </div>
+        <button class="btn" type="submit" style="margin-top:8px">提交申请</button>
+      </form>
+    </div>`;
+}
+
 function loginModal() {
   if (!state.loginOpen) return "";
   const isLogin = state.authTab !== "register";
@@ -149,6 +194,40 @@ function bindAuthEvents() {
       state.user = data.user; state.loginOpen = false; state.authMessage = ""; rerenderCurrent();
     } catch (err) { state.authMessage = err.message; state.authOk = false; rerenderCurrent(); }
   });
+  // ---- 共创提交事件 ----
+  document.querySelectorAll("[data-open-contribute]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      state.contributeOpen = true; state.contributeMsg = ""; state.contributeOk = false;
+      state.contributeRows = [{ time: "", item: "" }]; rerenderCurrent();
+    }));
+  document.querySelectorAll("[data-close-contribute]").forEach(btn =>
+    btn.addEventListener("click", () => { state.contributeOpen = false; rerenderCurrent(); }));
+  const addRowBtn = document.querySelector("#contributeAddRow");
+  if (addRowBtn) addRowBtn.addEventListener("click", () => {
+    syncContributeRows();
+    state.contributeRows.push({ time: "", item: "" });
+    const box = document.querySelector("#contributeRowsBox");
+    if (box) { box.innerHTML = contributeRowsHtml(); bindContributeRows(); }
+  });
+  bindContributeRows();
+  const contributeForm = document.querySelector("#contributeForm");
+  if (contributeForm) contributeForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    syncContributeRows();
+    const f = new FormData(e.currentTarget);
+    const highlights = String(f.get("highlights") || "").split("\n").map(s => s.trim()).filter(Boolean);
+    const schedule = state.contributeRows.filter(r => r.item.trim()).map(r => ({ time: r.time.trim(), item: r.item.trim() }));
+    try {
+      const data = await api("/api/my-activities", { method:"POST", body:{
+        title: f.get("title"), intro: f.get("intro"), highlights, schedule
+      }});
+      state.contributeOk = true;
+      state.contributeMsg = (data && data.message) || "已提交，等待总部审核通过后上线";
+      state.contributeRows = [{ time: "", item: "" }];
+      rerenderCurrent();
+    } catch (err) { state.contributeOk = false; state.contributeMsg = err.message; rerenderCurrent(); }
+  });
+
   const registerForm = document.querySelector("#registerForm");
   if (registerForm) registerForm.addEventListener("submit", async e => {
     e.preventDefault();
@@ -244,6 +323,7 @@ function renderList() {
         <a href="#quick-entry">分类入口</a>
         <a href="#activity-list">活动库</a>
         ${state.user?.role === "admin" ? `<a href="/admin">管理后台</a>` : ""}
+        ${state.user ? `<a class="contribute-entry" data-open-contribute>+ 我要共创</a>` : ""}
         <div class="auth-actions">${authBar()}</div>
       </nav>
     </header>
@@ -317,7 +397,7 @@ function renderList() {
       </div>
     </section>
 
-    ${loginModal()}`;
+    ${loginModal()}${contributeModal()}`;
 
   // 筛选事件
   document.querySelector("#q").addEventListener("input", e => {
@@ -613,7 +693,7 @@ function renderDetail(a) {
       </div>
     </div>
 
-    ${loginModal()}`;
+    ${loginModal()}${contributeModal()}`;
 
   // Tab 切换
   document.querySelectorAll(".detail-tab").forEach(btn => {
@@ -856,3 +936,23 @@ async function boot() {
 }
 
 boot();
+
+
+function syncContributeRows() {
+  document.querySelectorAll("#contributeRowsBox .contribute-row").forEach(row => {
+    const i = Number(row.dataset.row);
+    if (!state.contributeRows[i]) return;
+    state.contributeRows[i].time = row.querySelector("[data-c-time]")?.value || "";
+    state.contributeRows[i].item = row.querySelector("[data-c-item]")?.value || "";
+  });
+}
+function bindContributeRows() {
+  document.querySelectorAll("#contributeRowsBox [data-c-del]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      syncContributeRows();
+      state.contributeRows.splice(Number(btn.dataset.cDel), 1);
+      if (!state.contributeRows.length) state.contributeRows.push({ time: "", item: "" });
+      const box = document.querySelector("#contributeRowsBox");
+      if (box) { box.innerHTML = contributeRowsHtml(); bindContributeRows(); }
+    }));
+}
