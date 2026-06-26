@@ -243,7 +243,7 @@ function renderList() {
       <nav>
         <a href="#quick-entry">分类入口</a>
         <a href="#activity-list">活动库</a>
-        <a href="/admin">管理后台</a>
+        ${state.user?.role === "admin" ? `<a href="/admin">管理后台</a>` : ""}
         <div class="auth-actions">${authBar()}</div>
       </nav>
     </header>
@@ -260,7 +260,7 @@ function renderList() {
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <a class="btn" href="#activity-list">浏览活动库</a>
           ${state.user
-            ? `<a class="btn secondary" href="/admin">进入后台</a>`
+            ? (state.user.role === "admin" ? `<a class="btn secondary" href="/admin">进入后台</a>` : "")
             : `<button class="btn secondary" type="button" data-open-login>登录学习</button>`}
         </div>
         <div class="hero-stats">

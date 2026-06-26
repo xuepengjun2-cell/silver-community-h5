@@ -767,7 +767,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/admin/activities") {
-    const user = requireRole(req, res, ["admin", "operator", "viewer"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const db = readDb();
     sendJson(res, 200, {
@@ -777,7 +777,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "PATCH" && pathname.startsWith("/api/admin/activities/")) {
-    const user = requireRole(req, res, ["admin", "operator"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const id = pathname.split("/").pop();
     const body = await parseBody(req);
@@ -820,7 +820,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "POST" && pathname === "/api/admin/activities") {
-    const user = requireRole(req, res, ["admin", "operator"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const body = await parseBody(req);
     const db = readDb();
@@ -840,7 +840,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "POST" && pathname === "/api/admin/import-activities") {
-    const user = requireRole(req, res, ["admin", "operator"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const body = await parseBody(req, 32 * 1024 * 1024);
     const items = Array.isArray(body.activities) ? body.activities : (Array.isArray(body.items) ? body.items : []);
@@ -893,7 +893,7 @@ async function handleApi(req, res, pathname) {
 
   const adminActivity = pathname.match(/^\/api\/admin\/activities\/([^/]+)$/);
   if (adminActivity && req.method === "PUT") {
-    const user = requireRole(req, res, ["admin", "operator"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const body = await parseBody(req);
     const db = readDb();
@@ -911,7 +911,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (adminActivity && req.method === "DELETE") {
-    const user = requireRole(req, res, ["admin", "operator"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const db = readDb();
     const next = db.activities.filter(x => x.id !== adminActivity[1]);
@@ -926,7 +926,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "POST" && pathname === "/api/admin/upload-image") {
-    const user = requireRole(req, res, ["admin", "operator"]);
+    const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const body = await parseBody(req, 24 * 1024 * 1024);
     const dataUrl = String(body.dataUrl || "");
