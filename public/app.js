@@ -113,7 +113,10 @@ function contributeModal() {
           <div id="contributeRowsBox">${contributeRowsHtml()}</div>
           <button type="button" class="btn secondary small" id="contributeAddRow" style="margin-top:8px">+ 添加流程节点</button>
         </div>
-        <button class="btn" type="submit" style="margin-top:8px">提交申请</button>
+        <div style="display:flex;gap:10px;margin-top:8px">
+          <button class="btn" type="submit">提交申请</button>
+          <button class="btn secondary" type="button" data-close-contribute>取消</button>
+        </div>
       </form>
     </div>`;
 }
