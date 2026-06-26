@@ -85,6 +85,7 @@ function showLogin(error = "") {
         password: document.querySelector("#password").value
       }});
       state.user = data.user;
+      if (state.user.role !== "admin") { window.location.replace("/"); return; }
       await refreshData();
       renderShell();
     } catch (err) { showLogin(err.message); }
@@ -1099,6 +1100,7 @@ async function boot() {
     const data = await api("/api/me");
     if (!data.user) { showLogin(); return; }
     state.user = data.user;
+    if (state.user.role !== "admin") { window.location.replace("/"); return; }
     await refreshData();
     renderShell();
   } catch { showLogin(); }
