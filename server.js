@@ -789,6 +789,36 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, activity: db.activities[idx] });
   }
 
+  if (req.method === "POST" && pathname === "/api/my-activities") {
+    let user = null;
+    try { user = getAuthedUser(req); } catch (e) {}
+    if (!user) {
+      sendJson(res, 401, { error: "请先登录后再提交" });
+      return;
+    }
+    const body = await parseBody(req);
+    const db = readDb();
+    const activity = normalizeActivity(body);
+    if (!activity.title) {
+      sendJson(res, 400, { error: "请填写活动标题" });
+      return;
+    }
+    // 强制收紧：用户提交一律待审核，记录提交人，禁止自定义敏感字段
+    activity.id = createId("act");
+    activity.createdAt = now();
+    activity.status = "pending";
+    activity.ownerId = user.id;
+    activity.submittedBy = user.id;
+    activity.submittedByName = user.name || user.username;
+    activity.sortOrder = 9999;
+    activity.importSource = "前台共创提交";
+    if (!activity.cover && activity.images[0]) activity.cover = activity.images[0];
+    db.activities.unshift(activity);
+    writeDb(db);
+    sendJson(res, 201, { ok: true, message: "已提交，等待总部审核通过后上线" });
+    return;
+  }
+
   if (req.method === "POST" && pathname === "/api/admin/activities") {
     const user = requireRole(req, res, ["admin", "operator"]);
     if (!user) return;
