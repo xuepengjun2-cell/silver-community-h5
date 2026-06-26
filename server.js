@@ -789,6 +789,23 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true, activity: db.activities[idx] });
   }
 
+  if (req.method === "POST" && pathname === "/api/my-upload-image") {
+    let user = null;
+    try { user = getAuthedUser(req); } catch (e) {}
+    if (!user) { sendJson(res, 401, { error: "请先登录" }); return; }
+    const body = await parseBody(req, 24 * 1024 * 1024);
+    const dataUrl = String(body.dataUrl || "");
+    const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/);
+    if (!match) { sendJson(res, 400, { error: "请上传 png、jpg、webp 或 gif 图片" }); return; }
+    const extMap = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
+    const buffer = Buffer.from(match[2], "base64");
+    if (buffer.length > 8 * 1024 * 1024) { sendJson(res, 400, { error: "单张图片不能超过8MB" }); return; }
+    const filename = `${Date.now()}-${crypto.randomBytes(5).toString("hex")}${extMap[match[1]]}`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
+    sendJson(res, 201, { url: `/uploads/${filename}` });
+    return;
+  }
+
   if (req.method === "POST" && pathname === "/api/my-activities") {
     let user = null;
     try { user = getAuthedUser(req); } catch (e) {}

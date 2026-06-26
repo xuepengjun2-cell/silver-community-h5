@@ -19,6 +19,7 @@ const state = {
   contributeOk: false,
   contributeStep: "basic",
   contributeDraft: {},
+  contributeImages: [],
   contributeRows: [{ time: "", item: "" }],
   currentActivity: null,
   activeTab: "intro",
@@ -85,6 +86,15 @@ function contributeRowsHtml() {
       <input class="input contribute-time" data-c-time placeholder="14:00" value="${esc(r.time)}">
       <input class="input contribute-item" data-c-item placeholder="流程节点描述" value="${esc(r.item)}">
       <button type="button" class="contribute-del" data-c-del="${i}">×</button>
+    </div>`).join("");
+}
+
+function contributeThumbsHtml() {
+  return (state.contributeImages || []).map((url, i) => `
+    <div class="contribute-thumb">
+      <img src="${esc(url)}" alt="">
+      ${i === 0 ? `<span class="contribute-cover-tag">封面</span>` : ""}
+      <button type="button" class="contribute-thumb-del" data-img-del="${i}">×</button>
     </div>`).join("");
 }
 
@@ -157,7 +167,16 @@ function contributeModal() {
         </div>
 
         <div class="form-pane ${step==="media"?"active":""}">
-          <div class="field"><label>封面图地址</label><input class="input" name="cover" value="${esc(d.cover)}" placeholder="粘贴图片链接，留空可由总部审核时补充"></div>
+          <div class="field">
+            <label>活动图片（可上传多张，第一张作封面）</label>
+            <label class="contribute-upload-zone" for="contributeImageInput">
+              <div class="upload-icon">📷</div>
+              <p>点击上传图片（支持多选）<br>支持 png/jpg/webp/gif，单张≤8MB</p>
+              <input type="file" id="contributeImageInput" accept="image/*" multiple style="display:none">
+            </label>
+            <div class="contribute-thumbs" id="contributeThumbs">${contributeThumbsHtml()}</div>
+          </div>
+          <div class="field"><label>封面图地址（可选，留空则用上传的第一张）</label><input class="input" name="cover" value="${esc(d.cover)}" placeholder="也可直接粘贴图片链接"></div>
           <div class="field"><label>视频参考链接（每行一个）</label><textarea class="input" name="videos" rows="2" placeholder="可粘贴视频号、小程序或素材库链接">${esc(d.videos)}</textarea></div>
           <div class="field"><label>方案参考链接（每行一个）</label><textarea class="input" name="references" rows="2" placeholder="飞书文档、内部素材、方案链接">${esc(d.references)}</textarea></div>
           <label class="checkline" style="display:flex;align-items:center;gap:8px">
@@ -259,6 +278,7 @@ function bindAuthEvents() {
     btn.addEventListener("click", () => {
       state.contributeOpen = true; state.contributeMsg = ""; state.contributeOk = false;
       state.contributeStep = "basic"; state.contributeDraft = {};
+      state.contributeImages = [];
       state.contributeRows = [{ time: "", item: "" }]; rerenderCurrent();
     }));
   document.querySelectorAll("[data-close-contribute]").forEach(btn =>
@@ -279,6 +299,32 @@ function bindAuthEvents() {
     if (box) { box.innerHTML = contributeRowsHtml(); bindContributeRows(); }
   });
   bindContributeRows();
+  const imgInput = document.querySelector("#contributeImageInput");
+  if (imgInput) imgInput.addEventListener("change", async e => {
+    saveContributeForm();
+    const files = Array.from(e.target.files || []);
+    for (const file of files) {
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result);
+          r.onerror = reject;
+          r.readAsDataURL(file);
+        });
+        const data = await api("/api/my-upload-image", { method: "POST", body: { dataUrl, fileName: file.name } });
+        state.contributeImages.push(data.url);
+      } catch (err) {
+        state.contributeMsg = err.message; state.contributeOk = false;
+      }
+    }
+    rerenderCurrent();
+  });
+  document.querySelectorAll("[data-img-del]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      saveContributeForm();
+      state.contributeImages.splice(Number(btn.dataset.imgDel), 1);
+      rerenderCurrent();
+    }));
   const contributeForm = document.querySelector("#contributeForm");
   if (contributeForm) contributeForm.addEventListener("submit", async e => {
     e.preventDefault();
@@ -296,16 +342,18 @@ function bindAuthEvents() {
     const tags = String(d.tags || "").split(/[,，]/).map(s => s.trim()).filter(Boolean);
     const schedule = state.contributeRows.filter(r => r.item.trim()).map(r => ({ time: r.time.trim(), item: r.item.trim() }));
     const plan = { target: d.target || "", materials: d.materials || "", staffing: d.staffing || "", conversion: d.conversion || "", risk: d.risk || "" };
+    const images = state.contributeImages || [];
+    const cover = (d.cover && d.cover.trim()) ? d.cover.trim() : (images[0] || "");
     try {
       const data = await api("/api/my-activities", { method: "POST", body: {
         title: d.title, intro: d.intro, city: d.city, region: d.region, category: d.category,
         activityType: d.activityType, price: d.price, capacity: d.capacity, duration: d.duration,
-        location: d.location, contact: d.contact, cover: d.cover, downloadEnabled: d.downloadEnabled,
-        highlights, videos, references, tags, schedule, plan
+        location: d.location, contact: d.contact, cover: cover, downloadEnabled: d.downloadEnabled,
+        highlights, videos, references, tags, schedule, plan, images
       }});
       state.contributeOk = true;
       state.contributeMsg = (data && data.message) || "已提交，等待总部审核通过后上线";
-      state.contributeDraft = {}; state.contributeRows = [{ time: "", item: "" }]; state.contributeStep = "basic";
+      state.contributeDraft = {}; state.contributeImages = []; state.contributeRows = [{ time: "", item: "" }]; state.contributeStep = "basic";
       rerenderCurrent();
     } catch (err) { state.contributeOk = false; state.contributeMsg = err.message; rerenderCurrent(); }
   });
