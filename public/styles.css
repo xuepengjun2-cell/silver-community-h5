@@ -1727,3 +1727,26 @@ img { display: block; }
   background: #fafafa; border-radius: 8px; cursor: pointer; color: #999;
 }
 .contribute-del:hover { background: #fde8e8; color: #c0392b; }
+
+/* ===== 共创弹窗加宽 + 两列布局 ===== */
+.contribute-modal {
+  width: min(94vw, 720px) !important;
+  max-width: 720px !important;
+}
+/* 两列字段铺开 */
+.contribute-modal .row.two {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+/* 修正：弹窗内按钮不要被拉成100%宽 */
+.contribute-modal .form-actions .btn { width: auto !important; margin-top: 0 !important; }
+.contribute-modal #contributeAddRow { width: auto !important; margin-top: 8px !important; }
+/* 主提交按钮稍宽一点更醒目 */
+.contribute-modal .form-actions .btn[type="submit"] { min-width: 120px; }
+/* 长文本框加高，方便多行输入 */
+.contribute-modal textarea.input { min-height: 70px; }
+/* 窄屏（手机）回退成单列 */
+@media (max-width: 560px) {
+  .contribute-modal .row.two { grid-template-columns: 1fr; }
+}
