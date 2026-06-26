@@ -1727,3 +1727,27 @@ img { display: block; }
   background: #fafafa; border-radius: 8px; cursor: pointer; color: #999;
 }
 .contribute-del:hover { background: #fde8e8; color: #c0392b; }
+
+/* ===== 共创弹窗四步Tab ===== */
+.contribute-modal .form-tabs {
+  display: flex; gap: 4px; margin: 12px 0 16px;
+  border-bottom: 1px solid var(--line, #eee);
+}
+.contribute-modal .form-tab {
+  flex: 1; padding: 10px 4px; background: none; border: none;
+  border-bottom: 2px solid transparent; cursor: pointer;
+  font-size: 14px; color: var(--muted, #888); display: flex;
+  align-items: center; justify-content: center; gap: 4px;
+}
+.contribute-modal .form-tab.active {
+  color: var(--brand, #c0502a); border-bottom-color: var(--brand, #c0502a); font-weight: 600;
+}
+.contribute-modal .form-tab-num {
+  display: inline-flex; width: 18px; height: 18px; border-radius: 50%;
+  background: #eee; color: #888; font-size: 11px; align-items: center; justify-content: center;
+}
+.contribute-modal .form-tab.active .form-tab-num { background: var(--brand, #c0502a); color: #fff; }
+.contribute-modal .form-pane { display: none; }
+.contribute-modal .form-pane.active { display: block; }
+.contribute-modal .row.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.contribute-modal textarea.input { resize: vertical; font-family: inherit; }

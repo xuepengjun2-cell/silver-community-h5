@@ -17,6 +17,7 @@ const state = {
   contributeOpen: false,
   contributeMsg: "",
   contributeOk: false,
+  contributeStep: "basic",
   contributeRows: [{ time: "", item: "" }],
   currentActivity: null,
   activeTab: "intro",
@@ -88,7 +89,9 @@ function contributeRowsHtml() {
 
 function contributeModal() {
   if (!state.contributeOpen) return "";
+  const step = state.contributeStep;
   const msg = state.contributeMsg ? `<div class="message ${state.contributeOk?"":"error"}">${esc(state.contributeMsg)}</div>` : "";
+  const tab = (k, n, t) => `<button type="button" class="form-tab ${step===k?"active":""}" data-c-step="${k}"><span class="form-tab-num">${n}</span>${t}</button>`;
   return `
     <div class="modal-mask">
       <form class="login-modal contribute-modal" id="contributeForm">
@@ -96,24 +99,77 @@ function contributeModal() {
         <h2>我要共创活动</h2>
         <p>提交你的活动方案，经总部审核通过后即可上线，供全国主理人学习。</p>
         ${msg}
-        <div class="field">
-          <label>活动标题 *</label>
-          <input class="input" name="title" placeholder="简洁有力，10字以内最佳">
+        <div class="form-tabs">
+          ${tab("basic","1","基本信息")}${tab("content","2","活动内容")}${tab("sop","3","执行方案")}${tab("media","4","素材&设置")}
         </div>
-        <div class="field">
-          <label>活动简介</label>
-          <textarea class="input" name="intro" rows="3" placeholder="一段话说清楚这个活动是什么、适合谁、体验感是什么"></textarea>
+
+        <div class="form-pane ${step==="basic"?"active":""}">
+          <div class="row two">
+            <div class="field"><label>所属城市</label><input class="input" name="city" placeholder="例如：北京"></div>
+            <div class="field"><label>地区备注</label><input class="input" name="region" placeholder="例如：朝阳区"></div>
+          </div>
+          <div class="row two">
+            <div class="field"><label>活动大类</label><input class="input" name="category" placeholder="例如：同城社交与情感系列"></div>
+            <div class="field"><label>细分活动类型</label><input class="input" name="activityType" placeholder="例如：KTV欢唱、掼蛋"></div>
+          </div>
+          <div class="field"><label>活动标题 *</label><input class="input" name="title" placeholder="简洁有力，10字以内最佳"></div>
+          <div class="field"><label>活动简介</label><textarea class="input" name="intro" rows="3" placeholder="一段话说清楚这个活动是什么、适合谁、体验感是什么"></textarea></div>
+          <div class="row two">
+            <div class="field"><label>参考价格</label><input class="input" name="price" placeholder="例如：69元/人"></div>
+            <div class="field"><label>适合人数</label><input class="input" name="capacity" placeholder="例如：20-40人"></div>
+          </div>
+          <div class="row two">
+            <div class="field"><label>活动时长</label><input class="input" name="duration" placeholder="例如：3小时"></div>
+            <div class="field"><label>推荐地点</label><input class="input" name="location" placeholder="例如：同城KTV包厢"></div>
+          </div>
+          <div class="field"><label>报名/咨询提示</label><input class="input" name="contact" placeholder="显示在详情页底部"></div>
         </div>
-        <div class="field">
-          <label>活动亮点（每行一条）</label>
-          <textarea class="input" name="highlights" rows="3" placeholder="例如：&#10;专业摄影师一对一服务&#10;提供旗袍/中山装"></textarea>
+
+        <div class="form-pane ${step==="content"?"active":""}">
+          <div class="field">
+            <label>活动亮点（每行一条）</label>
+            <textarea class="input" name="highlights" rows="4" placeholder="大字歌单&#10;副歌高光录制&#10;活动后群内作品发布"></textarea>
+          </div>
+          <div class="field">
+            <label>活动流程时间线</label>
+            <div id="contributeRowsBox">${contributeRowsHtml()}</div>
+            <button type="button" class="btn secondary small" id="contributeAddRow" style="margin-top:8px">+ 添加流程节点</button>
+          </div>
+          <div class="field">
+            <label>活动标签（用逗号分隔）</label>
+            <input class="input" name="tags" placeholder="例如：声乐,社交,怀旧">
+          </div>
         </div>
-        <div class="field">
-          <label>活动流程时间线</label>
-          <div id="contributeRowsBox">${contributeRowsHtml()}</div>
-          <button type="button" class="btn secondary small" id="contributeAddRow" style="margin-top:8px">+ 添加流程节点</button>
+
+        <div class="form-pane ${step==="sop"?"active":""}">
+          <div class="row two">
+            <div class="field"><label>🎯 运营目标</label><textarea class="input" name="target" rows="2" placeholder="这场活动的核心目的是什么？筛选什么样的用户？"></textarea></div>
+            <div class="field"><label>📦 核心物料清单</label><textarea class="input" name="materials" rows="2" placeholder="例如：大字歌单、麦克风、补光灯"></textarea></div>
+          </div>
+          <div class="row two">
+            <div class="field"><label>👥 人力配置</label><textarea class="input" name="staffing" rows="2" placeholder="例如：1名主理人、1名控场主持"></textarea></div>
+            <div class="field"><label>🔄 转化承接</label><textarea class="input" name="conversion" rows="2" placeholder="活动后如何把参与者转化为下次活动/课程用户？"></textarea></div>
+          </div>
+          <div class="field"><label>⚠️ 风险控制</label><textarea class="input" name="risk" rows="2" placeholder="安全提示、场地注意事项、应急预案等"></textarea></div>
         </div>
-        <button class="btn" type="submit" style="margin-top:8px">提交申请</button>
+
+        <div class="form-pane ${step==="media"?"active":""}">
+          <div class="field"><label>封面图地址</label><input class="input" name="cover" placeholder="粘贴图片链接，留空可由总部审核时补充"></div>
+          <div class="field"><label>视频参考链接（每行一个）</label><textarea class="input" name="videos" rows="2" placeholder="可粘贴视频号、小程序或素材库链接"></textarea></div>
+          <div class="field"><label>方案参考链接（每行一个）</label><textarea class="input" name="references" rows="2" placeholder="飞书文档、内部素材、方案链接"></textarea></div>
+          <label class="checkline" style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" name="downloadEnabled" checked>
+            <span>允许有权限的用户下载 SOP 文件</span>
+          </label>
+        </div>
+
+        <div class="form-actions" style="display:flex;align-items:center;gap:8px;margin-top:16px">
+          <button class="btn" type="submit">提交申请</button>
+          <div style="display:flex;gap:6px;margin-left:auto">
+            <button type="button" class="btn secondary small" data-c-nav="-1">← 上一步</button>
+            <button type="button" class="btn secondary small" data-c-nav="1">下一步 →</button>
+          </div>
+        </div>
       </form>
     </div>`;
 }
@@ -198,16 +254,58 @@ function bindAuthEvents() {
   document.querySelectorAll("[data-open-contribute]").forEach(btn =>
     btn.addEventListener("click", () => {
       state.contributeOpen = true; state.contributeMsg = ""; state.contributeOk = false;
-      state.contributeRows = [{ time: "", item: "" }]; rerenderCurrent();
+      state.contributeStep = "basic"; state.contributeRows = [{ time: "", item: "" }];
+      rerenderCurrent();
     }));
   document.querySelectorAll("[data-close-contribute]").forEach(btn =>
     btn.addEventListener("click", () => { state.contributeOpen = false; rerenderCurrent(); }));
+  document.querySelectorAll("[data-c-step]").forEach(btn =>
+    btn.addEventListener("click", () => { saveContributeForm(); state.contributeStep = btn.dataset.cStep; rerenderCurrent(); }));
+  document.querySelectorAll("[data-c-nav]").forEach(btn =>
+    btn.addEventListener("click", () => {
+      const steps = ["basic","content","sop","media"];
+      const i = steps.indexOf(state.contributeStep) + Number(btn.dataset.cNav);
+      if (i >= 0 && i < steps.length) { saveContributeForm(); state.contributeStep = steps[i]; rerenderCurrent(); }
+    }));
   const addRowBtn = document.querySelector("#contributeAddRow");
   if (addRowBtn) addRowBtn.addEventListener("click", () => {
     syncContributeRows();
     state.contributeRows.push({ time: "", item: "" });
     const box = document.querySelector("#contributeRowsBox");
     if (box) { box.innerHTML = contributeRowsHtml(); bindContributeRows(); }
+  });
+  bindContributeRows();
+  const contributeForm = document.querySelector("#contributeForm");
+  if (contributeForm) contributeForm.addEventListener("submit", async e => {
+    e.preventDefault();
+    saveContributeForm();
+    syncContributeRows();
+    const d = state.contributeDraft || {};
+    if (!String(d.title || "").trim()) {
+      state.contributeOk = false; state.contributeMsg = "请填写活动标题";
+      state.contributeStep = "basic"; rerenderCurrent(); return;
+    }
+    const highlights = String(d.highlights || "").split("
+").map(s => s.trim()).filter(Boolean);
+    const videos = String(d.videos || "").split("
+").map(s => s.trim()).filter(Boolean);
+    const references = String(d.references || "").split("
+").map(s => s.trim()).filter(Boolean);
+    const tags = String(d.tags || "").split(/[,，]/).map(s => s.trim()).filter(Boolean);
+    const schedule = state.contributeRows.filter(r => r.item.trim()).map(r => ({ time: r.time.trim(), item: r.item.trim() }));
+    const plan = { target:d.target||"", materials:d.materials||"", staffing:d.staffing||"", conversion:d.conversion||"", risk:d.risk||"" };
+    try {
+      const data = await api("/api/my-activities", { method:"POST", body:{
+        title:d.title, intro:d.intro, city:d.city, region:d.region, category:d.category,
+        activityType:d.activityType, price:d.price, capacity:d.capacity, duration:d.duration,
+        location:d.location, contact:d.contact, cover:d.cover, downloadEnabled:d.downloadEnabled,
+        highlights, videos, references, tags, schedule, plan
+      }});
+      state.contributeOk = true;
+      state.contributeMsg = (data && data.message) || "已提交，等待总部审核通过后上线";
+      state.contributeDraft = {}; state.contributeRows = [{ time: "", item: "" }]; state.contributeStep = "basic";
+      rerenderCurrent();
+    } catch (err) { state.contributeOk = false; state.contributeMsg = err.message; rerenderCurrent(); }
   });
   bindContributeRows();
   const contributeForm = document.querySelector("#contributeForm");
@@ -955,4 +1053,25 @@ function bindContributeRows() {
       const box = document.querySelector("#contributeRowsBox");
       if (box) { box.innerHTML = contributeRowsHtml(); bindContributeRows(); }
     }));
+}
+
+
+function saveContributeForm() {
+  const form = document.querySelector("#contributeForm");
+  if (!form) return;
+  state.contributeDraft = state.contributeDraft || {};
+  form.querySelectorAll("[name]").forEach(el => {
+    if (el.type === "checkbox") state.contributeDraft[el.name] = el.checked;
+    else state.contributeDraft[el.name] = el.value;
+  });
+}
+
+function fillContributeDraft() {
+  const form = document.querySelector("#contributeForm");
+  if (!form || !state.contributeDraft) return;
+  Object.entries(state.contributeDraft).forEach(([k, v]) => {
+    const el = form.querySelector(`[name="${k}"]`);
+    if (!el) return;
+    if (el.type === "checkbox") el.checked = !!v; else el.value = v ?? "";
+  });
 }
