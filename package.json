@@ -4,9 +4,14 @@
   "private": true,
   "description": "同城银发社群主理人活动展示 H5 与后台管理原型",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js && node --check public/admin.js"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@volcengine/tos-sdk": "^2.9.1",
+    "mysql2": "^3.11.0"
   }
 }
