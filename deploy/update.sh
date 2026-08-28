@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# 代码更新脚本 · 每次 GitHub 推送后在服务器上执行
-# 使用：bash /opt/kaikai-sop/deploy/update.sh
+# GitHub-first 发布检查脚本。
+# 服务器运行目录不作为 Git 工作树，也不接受无目标的 git pull。
+# 完整发布由部署机按 GitHub commit 生成发布包后执行。
 
 set -euo pipefail
 
-APP_DIR="/opt/kaikai-sop"
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 开始更新..."
+TARGET_COMMIT="${1:-}"
+APP_DIR="${APP_DIR:-/var/www/silver-community-h5}"
 
-cd "$APP_DIR"
+if [[ -z "$TARGET_COMMIT" || ! "$TARGET_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+  echo "用法：$0 <GitHub commit SHA>" >&2
+  exit 2
+fi
 
-# 拉取最新代码
-git pull origin main
+if [[ ! -d "$APP_DIR" ]]; then
+  echo "应用目录不存在：$APP_DIR" >&2
+  exit 1
+fi
 
-# 重启应用（zero-downtime：PM2 reload 不中断现有连接）
-pm2 reload kaikai-sop
+if [[ -e "$APP_DIR/.git" ]]; then
+  echo "拒绝：生产目录不应作为 Git 工作树，请使用 GitHub commit 发布包。" >&2
+  exit 1
+fi
 
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] 更新完成，当前版本："
-git log --oneline -3
-pm2 list
+echo "已校验目标 GitHub commit：$TARGET_COMMIT"
+echo "当前脚本只负责阻止服务器侧漂移；发布请按 DEPLOYMENT.md 执行。"
