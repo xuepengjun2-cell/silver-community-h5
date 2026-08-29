@@ -2276,7 +2276,7 @@ function renderCasePage(caseId) {
             </article>`;
         }
 		    const body = m.type === "image"
-		      ? `<img src="${esc(m.url)}" alt="${esc(c.title)}" loading="lazy">`
+		      ? `<img src="${esc(m.url)}" alt="${esc(c.title)}" loading="lazy" data-case-image-view="${m.index}">`
 		      : m.type === "video"
 		      ? `<button class="case-video-poster" type="button" data-case-video-play="${esc(m.url)}">
 		          <video class="case-video-thumb" data-thumb-src="${esc(m.url)}#t=0.5" muted playsinline preload="metadata"></video>
@@ -2424,6 +2424,11 @@ function renderCasePage(caseId) {
 	    const video = wrap.querySelector("video");
 	    video?.addEventListener("play", () => { void trackMediaView("case_media", caseId, Number(btn.closest("[data-case-media-index]")?.dataset.caseMediaIndex)); }, { once: true });
 	  }));
+	  document.querySelectorAll("[data-case-image-view]").forEach(image => {
+	    const send = () => { void trackMediaView("case_media", caseId, Number(image.dataset.caseImageView)); };
+	    image.addEventListener("load", send, { once: true });
+	    if (image.complete) send();
+	  });
 	  document.querySelectorAll("[data-case-login]").forEach(btn => btn.addEventListener("click", () => {
     state.loginOpen = true; state.authMessage = ""; state.authOk = false; state.authTab = "login";
     renderCasePage(caseId);
