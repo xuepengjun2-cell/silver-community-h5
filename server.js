@@ -885,7 +885,11 @@ async function recordAuditLog(req, input = {}, actor) {
         resourceType,
         auditText(input.resourceId, 190),
         auditText(input.resourceTitle, 255),
-        Number.isInteger(Number(input.mediaIndex)) ? Number(input.mediaIndex) : null,
+        input.mediaIndex === null || input.mediaIndex === undefined || input.mediaIndex === ""
+          ? null
+          : Number.isInteger(Number(input.mediaIndex))
+            ? Number(input.mediaIndex)
+            : null,
         auditText(input.mediaType, 32),
         auditText(input.filename, 255),
         auditText(input.outcome || "success", 16),
