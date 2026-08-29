@@ -106,7 +106,7 @@ function lines(v) { return Array.isArray(v) ? v.join("\n") : String(v || ""); }
 function parseLines(v) { return String(v || "").split("\n").map(x => x.trim()).filter(Boolean); }
 
 function roleLabel(r) {
-  return { admin:"总部管理员", operator:"城市主理人", viewer:"只读账号", member:"普通学习用户" }[r] || r;
+  return { admin:"总部管理员", operator:"城市主理人", viewer:"只读账号", member:"普通学习用户", guest:"游客" }[r] || r;
 }
 
 function statusLabel(s) {
@@ -331,7 +331,9 @@ function auditActor(row) {
 
 function auditSubject(row) {
   const resource = AUDIT_RESOURCE_LABELS[row.resourceType] || row.resourceType || "资源";
-  const position = Number.isInteger(Number(row.mediaIndex)) ? ` · 第${Number(row.mediaIndex) + 1}个` : "";
+  const hasMediaIndex = row.mediaIndex !== null && row.mediaIndex !== undefined && row.mediaIndex !== ""
+    && Number.isInteger(Number(row.mediaIndex));
+  const position = hasMediaIndex ? ` · 第${Number(row.mediaIndex) + 1}个` : "";
   return `<strong>${esc(row.resourceTitle || "未命名资源")}</strong><small>${esc(resource)}${esc(position)}</small>`;
 }
 
