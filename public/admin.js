@@ -13,6 +13,7 @@ const state = {
   activities: [],
   activityProjects: [],
   users: [],
+  auditSummary: [],
   activeTab: "activities",
   editingId: null,
   imageUrls: [],
@@ -23,6 +24,10 @@ const state = {
   caseMediaTab: "",
   message: "",
   deliveryFilters: { q: "", owner: "", city: "", dateLabel: "" },
+  auditLogs: [],
+  auditUserSummary: [],
+  auditPagination: { page: 1, pageSize: 30, total: 0, totalPages: 1 },
+  auditFilters: { q: "", action: "", resourceType: "", userId: "", from: "", to: "" },
   sessionToken: localStorage.getItem(AUTH_TOKEN_KEY) || ""
 };
 
@@ -152,16 +157,49 @@ function showLogin(error = "") {
 // ---- 数据刷新 ----
 async function refreshData() {
   const isAdmin = state.user?.role === "admin";
-  const [activityResult, userResult, projectResult] = await Promise.all([
+  const [activityResult, userResult, projectResult, auditResult] = await Promise.all([
     api("/api/admin/activities"),
     isAdmin ? api("/api/admin/users") : Promise.resolve({ users: [] }),
-    isAdmin ? api("/api/admin/activity-projects") : Promise.resolve({ projects: [] })
+    isAdmin ? api("/api/admin/activity-projects") : Promise.resolve({ projects: [] }),
+    isAdmin ? api("/api/admin/audit-summary") : Promise.resolve({ summaries: [] })
   ]);
   state.activities = activityResult.activities || [];
+  state.auditSummary = auditResult.summaries || [];
   if (isAdmin) {
     state.users = userResult.users || [];
-    state.activityProjects = projectResult.projects || [];
+    state.activityProjects = (projectResult.projects || []).map(applyAuditCountsToProject);
+    state.activities = state.activities.map(applyAuditCountsToActivity);
   }
+}
+
+function auditSummaryCount(resourceType, resourceId, action, mediaIndex) {
+  const items = (state.auditSummary || []).filter(x =>
+    x.resourceType === resourceType && x.resourceId === resourceId && x.action === action
+      && (mediaIndex === undefined || (mediaIndex === null ? x.mediaIndex === null : Number(x.mediaIndex) === Number(mediaIndex)))
+  );
+  return items.reduce((sum, item) => sum + Number(item.count || 0), 0);
+}
+
+function projectAuditCount(project, action) {
+  return (state.auditSummary || [])
+    .filter(x => x.resourceType === "activity_project_media" && x.resourceId === project.id && x.action === action)
+    .reduce((sum, x) => sum + Number(x.count || 0), 0);
+}
+
+function applyAuditCountsToActivity(activity) {
+  return {
+    ...activity,
+    viewCount: auditSummaryCount("activity", activity.id, "view"),
+    downloadCount: auditSummaryCount("activity_sop", activity.id, "download")
+  };
+}
+
+function applyAuditCountsToProject(project) {
+  return {
+    ...project,
+    viewCount: projectAuditCount(project, "view"),
+    downloadCount: projectAuditCount(project, "download")
+  };
 }
 
 // ---- 主框架 ----
@@ -211,6 +249,9 @@ function renderShell() {
           <button data-tab="users" class="${state.activeTab==="users"?"active":""}">
             <span class="nav-icon">👥</span>账号权限${userBadge}
           </button>` : ""}
+          ${isAdmin ? `<button data-tab="audit" class="${state.activeTab==="audit"?"active":""}">
+            <span class="nav-icon">🧾</span>访问日志
+          </button>` : ""}
         </nav>
         <div class="side-foot">
           <a class="btn secondary small" href="${homeHref()}" target="_blank" style="margin-bottom:8px;display:flex">🌐 打开前台</a>
@@ -241,6 +282,7 @@ function renderContent() {
   else if (state.activeTab === "preview") renderPreview();
   else if (state.activeTab === "cases") renderCasesAdmin();
   else if (state.activeTab === "delivery") renderDeliveryProjects();
+  else if (state.activeTab === "audit") renderAuditLogs();
   else renderActivities();
 }
 
@@ -255,6 +297,155 @@ function openDeliveryProject(projectId) {
     const card = [...document.querySelectorAll("[data-delivery-project]")].find(el => el.dataset.deliveryProject === String(projectId));
     card?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, 0);
+}
+
+// ---- 访问日志 ----
+const AUDIT_ACTION_LABELS = { view: "观看", download: "下载" };
+const AUDIT_RESOURCE_LABELS = {
+  activity: "活动方案页面",
+  case: "精彩案例页面",
+  activity_project_media: "活动相册素材",
+  case_media: "精彩案例素材",
+  activity_sop: "活动 SOP"
+};
+
+function auditTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || "-";
+  return date.toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+  });
+}
+
+function auditDateBoundary(value, end = false) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return "";
+  const suffix = end ? "T23:59:59.999+08:00" : "T00:00:00.000+08:00";
+  return new Date(`${value}${suffix}`).toISOString();
+}
+
+function auditActor(row) {
+  const label = row.userName || row.username || "游客";
+  return `<strong>${esc(label)}</strong><small>@${esc(row.username || "guest")} · ${esc(roleLabel(row.role || "guest"))}</small>`;
+}
+
+function auditSubject(row) {
+  const resource = AUDIT_RESOURCE_LABELS[row.resourceType] || row.resourceType || "资源";
+  const position = Number.isInteger(Number(row.mediaIndex)) ? ` · 第${Number(row.mediaIndex) + 1}个` : "";
+  return `<strong>${esc(row.resourceTitle || "未命名资源")}</strong><small>${esc(resource)}${esc(position)}</small>`;
+}
+
+async function loadAuditLogs(page = state.auditPagination.page || 1) {
+  const f = state.auditFilters;
+  const params = new URLSearchParams({ page: String(page), pageSize: String(state.auditPagination.pageSize || 30) });
+  if (f.q) params.set("q", f.q);
+  if (f.action) params.set("action", f.action);
+  if (f.resourceType) params.set("resourceType", f.resourceType);
+  if (f.userId) params.set("userId", f.userId);
+  const from = auditDateBoundary(f.from);
+  const to = auditDateBoundary(f.to, true);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const body = document.querySelector("#auditLogsBody");
+  if (body) body.innerHTML = `<div class="audit-loading">正在加载日志…</div>`;
+  try {
+    const data = await api(`/api/admin/audit-logs?${params.toString()}`);
+    state.auditLogs = data.logs || [];
+    state.auditUserSummary = data.summaryByUser || [];
+    state.auditPagination = data.pagination || { page, pageSize: 30, total: 0, totalPages: 1 };
+    state.auditError = "";
+  } catch (err) {
+    state.auditLogs = [];
+    state.auditUserSummary = [];
+    state.auditPagination = { page, pageSize: state.auditPagination.pageSize || 30, total: 0, totalPages: 1 };
+    state.auditError = err.message || "日志加载失败";
+  }
+  if (state.activeTab === "audit") renderAuditLogBody();
+}
+
+function renderAuditLogs() {
+  const content = document.querySelector("#content");
+  const userOptions = (state.users || [])
+    .slice()
+    .sort((a, b) => String(a.username || "").localeCompare(String(b.username || "")))
+    .map(u => `<option value="${esc(u.id)}" ${state.auditFilters.userId === u.id ? "selected" : ""}>${esc(u.name || u.username)} @${esc(u.username)}</option>`)
+    .join("");
+  const f = state.auditFilters;
+  content.innerHTML = `
+    <div class="topbar"><div><h1>访问日志</h1><p>记录每个账号观看、下载活动素材和 SOP 的操作，游客访问会标记为“游客”。</p></div></div>
+    <div class="content-area">
+      <div class="panel audit-filter-panel">
+        <div class="panel-header"><div><h2>筛选日志</h2><p>可按账号、动作、资源和时间范围定位记录</p></div><button class="btn ghost small" type="button" id="auditClearBtn">清除筛选</button></div>
+        <form id="auditFilterForm" class="audit-filter-grid">
+          <label><span>关键词</span><input class="input" name="q" value="${esc(f.q)}" placeholder="账号 / 活动 / 文件名 / IP"></label>
+          <label><span>动作</span><select class="select" name="action"><option value="">全部动作</option><option value="view" ${f.action === "view" ? "selected" : ""}>观看</option><option value="download" ${f.action === "download" ? "selected" : ""}>下载</option></select></label>
+          <label><span>资源类型</span><select class="select" name="resourceType"><option value="">全部资源</option><option value="activity" ${f.resourceType === "activity" ? "selected" : ""}>活动方案页面</option><option value="activity_sop" ${f.resourceType === "activity_sop" ? "selected" : ""}>活动 SOP</option><option value="activity_project_media" ${f.resourceType === "activity_project_media" ? "selected" : ""}>活动相册素材</option><option value="case" ${f.resourceType === "case" ? "selected" : ""}>精彩案例页面</option><option value="case_media" ${f.resourceType === "case_media" ? "selected" : ""}>精彩案例素材</option></select></label>
+          <label><span>账号</span><select class="select" name="userId"><option value="">全部账号</option>${userOptions}</select></label>
+          <label><span>开始日期</span><input class="input" type="date" name="from" value="${esc(f.from)}"></label>
+          <label><span>结束日期</span><input class="input" type="date" name="to" value="${esc(f.to)}"></label>
+          <div class="audit-filter-actions"><button class="btn" type="submit">查询日志</button></div>
+        </form>
+      </div>
+      <div id="auditLogsBody"></div>
+    </div>`;
+  document.querySelector("#auditFilterForm")?.addEventListener("submit", e => {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    state.auditFilters = {
+      q: String(form.get("q") || "").trim(), action: String(form.get("action") || ""),
+      resourceType: String(form.get("resourceType") || ""), userId: String(form.get("userId") || ""),
+      from: String(form.get("from") || ""), to: String(form.get("to") || "")
+    };
+    state.auditPagination.page = 1;
+    loadAuditLogs(1);
+  });
+  document.querySelector("#auditClearBtn")?.addEventListener("click", () => {
+    state.auditFilters = { q: "", action: "", resourceType: "", userId: "", from: "", to: "" };
+    state.auditPagination.page = 1;
+    renderAuditLogs();
+  });
+  loadAuditLogs(state.auditPagination.page || 1);
+}
+
+function renderAuditLogBody() {
+  const body = document.querySelector("#auditLogsBody");
+  if (!body) return;
+  if (state.auditError) {
+    body.innerHTML = `<div class="panel"><div class="audit-empty">${esc(state.auditError)}</div></div>`;
+    return;
+  }
+  const p = state.auditPagination || { page: 1, pageSize: 30, total: 0, totalPages: 1 };
+  const summary = state.auditUserSummary || [];
+  const views = summary.reduce((sum, x) => sum + Number(x.viewCount || 0), 0);
+  const downloads = summary.reduce((sum, x) => sum + Number(x.downloadCount || 0), 0);
+  const actors = summary.length;
+  const rows = state.auditLogs.map(row => `
+    <tr>
+      <td class="audit-time">${esc(auditTime(row.createdAt))}</td>
+      <td class="audit-actor">${auditActor(row)}</td>
+      <td><span class="audit-action ${esc(row.action)}">${esc(AUDIT_ACTION_LABELS[row.action] || row.action)}</span></td>
+      <td class="audit-subject">${auditSubject(row)}</td>
+      <td class="audit-file" title="${esc(row.filename || "")}">${esc(row.filename || "-")}</td>
+      <td class="audit-ip" title="${esc(row.userAgent || "")}">${esc(row.ipAddress || "-")}</td>
+    </tr>`).join("");
+  body.innerHTML = `
+    <div class="stat-cards audit-stats">
+      <div class="stat-card"><span>筛选结果</span><strong>${p.total}</strong><em>条记录</em></div>
+      <div class="stat-card"><span>筛选范围观看</span><strong>${views}</strong><em>次</em></div>
+      <div class="stat-card"><span>筛选范围下载</span><strong>${downloads}</strong><em>次</em></div>
+      <div class="stat-card"><span>涉及账号</span><strong>${actors}</strong><em>个主体</em></div>
+    </div>
+    <div class="panel audit-summary-panel">
+      <div class="panel-header"><div><h2>账号汇总</h2><p>按当前关键词、动作、资源和日期筛选后的完整结果汇总</p></div></div>
+      <div class="audit-table-wrap">${summary.length ? `<table class="table audit-table audit-account-table"><thead><tr><th>账号</th><th>角色</th><th>观看次数</th><th>下载次数</th><th>合计</th></tr></thead><tbody>${summary.map(row => `<tr><td class="audit-actor">${auditActor(row)}</td><td>${esc(roleLabel(row.role || "guest"))}</td><td><strong>${Number(row.viewCount || 0)}</strong></td><td><strong>${Number(row.downloadCount || 0)}</strong></td><td>${Number(row.totalCount || 0)}</td></tr>`).join("")}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无账号汇总。</div>`}</div>
+    </div>
+    <div class="panel audit-log-panel">
+      <div class="panel-header"><h2>操作明细</h2><span class="audit-page-note">第 ${p.page} / ${p.totalPages} 页，共 ${p.total} 条</span></div>
+      <div class="audit-table-wrap">${rows ? `<table class="table audit-table"><thead><tr><th>时间</th><th>账号</th><th>动作</th><th>资源</th><th>文件名</th><th>IP / 设备</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无记录。</div>`}</div>
+      <div class="audit-pager"><button class="btn secondary small" type="button" id="auditPrevBtn" ${p.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${p.page} / ${p.totalPages} 页</span><button class="btn secondary small" type="button" id="auditNextBtn" ${p.page >= p.totalPages ? "disabled" : ""}>下一页</button></div>
+    </div>`;
+  document.querySelector("#auditPrevBtn")?.addEventListener("click", () => loadAuditLogs(Math.max(1, p.page - 1)));
+  document.querySelector("#auditNextBtn")?.addEventListener("click", () => loadAuditLogs(Math.min(p.totalPages, p.page + 1)));
 }
 
 // ---- 活动管理主页 ----
@@ -412,6 +603,7 @@ function renderActivities() {
                       ${statusTagHtml(act.status)}
                     </div>
                     <div style="font-size:11px;color:var(--hint);margin-top:2px">${esc(act.price || "价格待定")}</div>
+                    <div class="audit-counts"><span>查看 ${Number(act.viewCount || 0)}</span><span>下载 ${Number(act.downloadCount || 0)}</span></div>
                   </div>
                   <div class="activity-row-actions">
                     <a class="btn secondary small" href="${activityHref(act.id)}" target="_blank">预览</a>
@@ -1120,7 +1312,7 @@ function renderDeliveryProjects() {
       : p.sourceCaseId
       ? `<button class="btn secondary small" data-delivery-case="${esc(p.sourceCaseId)}">查看案例</button>`
       : `<button class="btn secondary small" type="button" disabled>暂无素材</button>`;
-    return `<article class="admin-card delivery-project-card" data-delivery-project="${esc(p.id)}"><div class="admin-card-cover">${cover ? `<img src="${esc(publicUrl(cover))}" alt="${esc(p.title)}" loading="lazy">` : `<div class="admin-card-cover-empty">📸</div>`}<span class="admin-card-status ${p.status === "published" ? "on" : ""}">${p.status === "published" ? "可分享" : "已归档"}</span></div><div class="admin-card-body"><p class="admin-card-title">${esc(p.title)}</p><p class="admin-card-meta"><span>主理人：${esc(p.ownerName || "未标注主理人")}</span><span>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写地点日期")}</span></p><div class="admin-card-structure"><span>${images} 图片</span><span>${videos} 视频</span>${p.sourceCaseId ? `<span class="delivery-card-settled">已沉淀</span>` : ""}</div><div class="admin-card-actions"><a class="btn small" href="${SILVER_FRONT_BASE}/?view=project-manage&project=${encodeURIComponent(p.id)}" target="_blank" rel="noreferrer">管理相册</a>${workflowAction}<button class="btn ghost small danger" data-delivery-delete="${esc(p.id)}">删除</button></div></div></article>`;
+    return `<article class="admin-card delivery-project-card" data-delivery-project="${esc(p.id)}"><div class="admin-card-cover">${cover ? `<img src="${esc(publicUrl(cover))}" alt="${esc(p.title)}" loading="lazy">` : `<div class="admin-card-cover-empty">📸</div>`}<span class="admin-card-status ${p.status === "published" ? "on" : ""}">${p.status === "published" ? "可分享" : "已归档"}</span></div><div class="admin-card-body"><p class="admin-card-title">${esc(p.title)}</p><p class="admin-card-meta"><span>主理人：${esc(p.ownerName || "未标注主理人")}</span><span>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写地点日期")}</span></p><div class="admin-card-structure"><span>${images} 图片</span><span>${videos} 视频</span>${p.sourceCaseId ? `<span class="delivery-card-settled">已沉淀</span>` : ""}</div><div class="audit-counts"><span>查看 ${Number(p.viewCount || 0)}</span><span>下载 ${Number(p.downloadCount || 0)}</span></div><div class="admin-card-actions"><a class="btn small" href="${SILVER_FRONT_BASE}/?view=project-manage&project=${encodeURIComponent(p.id)}" target="_blank" rel="noreferrer">管理相册</a>${workflowAction}<button class="btn ghost small danger" data-delivery-delete="${esc(p.id)}">删除</button></div></div></article>`;
   };
   content.innerHTML = `<div class="topbar"><div><h1>活动交付</h1><p>总部可查看所有主理人的活动相册，并按归属、城市和日期进行管理。</p></div><a class="btn secondary" href="${SILVER_FRONT_BASE}/?view=projects" target="_blank">打开主理人工作台</a></div><div class="content-area">${state.message}<div class="stat-cards delivery-stats"><div class="stat-card"><span>活动相册</span><strong>${filteredProjects.length}</strong><em>全部 ${projects.length} 个</em></div><div class="stat-card"><span>图片素材</span><strong>${totals.images}</strong><em>当前筛选结果</em></div><div class="stat-card"><span>视频素材</span><strong>${totals.videos}</strong><em>当前筛选结果</em></div><div class="stat-card"><span>已沉淀案例</span><strong>${totals.settled}</strong><em>可继续审核发布</em></div></div><div class="panel delivery-filter-panel"><div class="panel-header"><div><h2>筛选活动相册</h2><p>支持按主理人、城市、日期和关键词定位</p></div><button class="btn ghost small" type="button" data-delivery-clear>清除筛选</button></div><div class="delivery-filter-grid"><label><span>关键词</span><input class="input" data-delivery-filter="q" value="${esc(filters.q)}" placeholder="活动名称 / 主理人"></label>${selectFilter("主理人", "owner", owners)}${selectFilter("城市", "city", cities)}${selectFilter("日期", "dateLabel", dates)}</div></div><div class="delivery-results-head"><strong>活动相册列表</strong><span>当前显示 ${filteredProjects.length} 个</span></div>${filteredProjects.length ? `<div class="admin-card-grid">${filteredProjects.map(card).join("")}</div>` : `<div class="panel"><div class="panel-body" style="padding:42px;text-align:center;color:var(--muted)">${projects.length ? "没有符合当前筛选条件的活动相册。" : "还没有活动交付相册。"}</div></div>`}</div>`;
   document.querySelectorAll("[data-delivery-filter]").forEach(el => el.addEventListener("change", e => { state.deliveryFilters[e.target.dataset.deliveryFilter] = e.target.value.trim(); renderDeliveryProjects(); }));
@@ -1150,7 +1342,11 @@ async function renderCasesAdmin() {
     content.innerHTML = `<div class="center-state">加载中...</div>`;
     try {
       const data = await api("/api/admin/cases");
-      state.adminCases = (data.cases || []).map(normalizeCaseAdminState);
+      state.adminCases = (data.cases || []).map(normalizeCaseAdminState).map(c => ({
+        ...c,
+        viewCount: auditSummaryCount("case", c.id, "view"),
+        downloadCount: auditSummaryCount("case_media", c.id, "download")
+      }));
       state.adminCasesLoaded = true;
 	    } catch (e) { content.innerHTML = `<div class="center-state">${esc(e.message)}</div>`; return; }
 	  }
@@ -1189,6 +1385,7 @@ async function renderCasesAdmin() {
 		            <span>${groups.documents.length} 文档</span>
 		            <span>${groups.links.length} 链接</span>
 	          </div>
+	          <div class="audit-counts"><span>查看 ${Number(c.viewCount || 0)}</span><span>下载 ${Number(c.downloadCount || 0)}</span></div>
 	          <div class="admin-card-actions">
 	            <button class="btn small" data-case-open="${esc(c.id)}">管理内容</button>
 	            <button class="btn secondary small" data-case-edit="${esc(c.id)}">编辑上传</button>
@@ -1301,6 +1498,8 @@ function renderCaseAdminDetail() {
 	          <span>${esc(m.caption || m.title || fileNameFromUrlAdmin(m.url) || "案例文档素材")}</span>
 	        </div>`
 	      : "";
+    const viewCount = auditSummaryCount("case_media", c.id, "view", m.index);
+    const downloadCount = auditSummaryCount("case_media", c.id, "download", m.index);
     return `
       <article class="case-admin-media-card">
         <div class="case-admin-media-preview">${preview}</div>
@@ -1310,6 +1509,7 @@ function renderCaseAdminDetail() {
             <span>#${m.index + 1}</span>
           </div>
           ${m.caption || m.title ? `<p>${esc(m.caption || m.title)}</p>` : `<p class="muted">未填写说明</p>`}
+	          <div class="audit-counts"><span>查看 ${viewCount}</span><span>下载 ${downloadCount}</span></div>
 	          <div class="case-admin-media-actions">
 	            ${m.type === "image" ? `<button class="btn secondary small" data-case-cover="${m.index}">设为封面</button>` : ""}
 	            <button class="btn secondary small" data-case-note="${m.index}">改说明</button>

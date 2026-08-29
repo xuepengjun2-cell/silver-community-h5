@@ -51,6 +51,7 @@ const state = {
   filters: { q: "", city: "", category: "" }
 };
 const HERO_CASE_LIMIT = 10;
+let lastAuditedCaseId = "";
 
 // ---- 工具函数 ----
 function esc(v) {
@@ -71,6 +72,17 @@ async function api(url, opts = {}) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "请求失败");
   return normalizeUrls(data);
+}
+
+async function trackMediaView(resourceType, resourceId, mediaIndex) {
+  try {
+    await api("/api/audit-events", {
+      method: "POST",
+      body: { action: "view", resourceType, resourceId, mediaIndex }
+    });
+  } catch {
+    // 观看埋点失败不能影响素材打开和播放。
+  }
 }
 
 function apiUrl(url) {
@@ -1358,7 +1370,9 @@ async function loadDetail(id) {
   const data = await api(`/api/public/activities/${encodeURIComponent(id)}`);
   state.selectedActivityMedia = parseActivityMediaSelection();
   state.activeTab = state.selectedActivityMedia ? "media" : "intro";
+  const isNewActivityView = state.currentActivity?.id !== data.activity?.id;
   renderDetail(data.activity);
+  if (isNewActivityView && data.activity?.id) void trackMediaView("activity", data.activity.id, null);
 }
 
 function projectMediaLabel(type) {
@@ -1399,6 +1413,17 @@ function projectMediaFileType(file) {
   if (file?.type?.startsWith("image/") || [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"].includes(ext)) return "image";
   if (file?.type?.startsWith("video/") || [".mp4", ".m4v", ".mov", ".webm"].includes(ext)) return "video";
   return "";
+}
+
+function projectMediaAuditCount(project, mediaIndex, action) {
+  return Number((project?.auditSummary || [])
+    .find(x => Number(x.mediaIndex) === Number(mediaIndex) && x.action === action)?.count || 0);
+}
+
+function projectAuditTotal(project, action) {
+  return (project?.auditSummary || [])
+    .filter(x => x.action === action)
+    .reduce((sum, x) => sum + Number(x.count || 0), 0);
 }
 
 const PROJECT_VIDEO_MULTIPART_THRESHOLD = 16 * 1024 * 1024;
@@ -1574,6 +1599,9 @@ function projectDownloadButton(project, index) {
     return "";
   }
   const name = projectMediaDisplayName(project.media[index], index);
+  if (!state.user) {
+    return `<button class="btn secondary small" type="button" data-project-login title="登录后下载${esc(name)}">登录后下载</button>`;
+  }
   return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">下载${projectMediaLabel(type)}</button>`;
 }
 
@@ -1641,6 +1669,7 @@ function projectMediaCardHtml(project, m, manager = false) {
       <div class="project-media-head"><strong>${esc(projectMediaLabel(m.type))}</strong><span>#${m.index + 1}</span></div>
       <p class="project-media-filename" title="${esc(mediaName)}">${esc(mediaName)}</p>
       ${m.caption ? `<p class="project-media-caption">备注：${esc(m.caption)}</p>` : ""}
+      ${manager ? `<div class="project-media-audit-counts"><span>查看 ${projectMediaAuditCount(project, m.index, "view")}</span><span>下载 ${projectMediaAuditCount(project, m.index, "download")}</span></div>` : ""}
       <div class="project-media-actions">
         ${projectShareButton(project, m.index)}
         ${projectDownloadButton(project, m.index)}
@@ -1799,7 +1828,7 @@ function renderProjectManager(project) {
   app.className = `app-shell${mobileMode ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
     <div class="project-manager-nav"><button class="btn secondary" id="projectBackBtn">← 返回我的活动</button><div>${projectShareButton(project)}<a class="btn secondary small" href="${projectShareHref(project.id)}" target="_blank" rel="noreferrer">打开客户相册</a></div></div>
-    <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span></div></section>
+    <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span><strong>${projectAuditTotal(project, "view")}</strong><span>次查看</span><strong>${projectAuditTotal(project, "download")}</strong><span>次下载</span></div></section>
     <section class="project-manager-layout">
       ${metaPanelHtml}
       <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 <span class="project-upload-hint">图片 ≤50MB · 视频 ≤2GB</span></div><label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>鸿蒙微信/部分安卓微信相册单次最多 9 张；上传完成后再次点击此处即可继续，不限总数</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress"></div><div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
@@ -1895,6 +1924,13 @@ function renderProjectPreview(project, index, manager = false) {
   app.innerHTML = `${projectHeader(project.title)}
     <div class="project-preview-nav"><button class="btn secondary" id="projectPreviewBack" type="button">← 返回相册</button><a class="btn secondary" href="${esc(backHref)}">相册首页</a></div>${projectWeChatTip()}
     <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
+
+  const previewVideo = document.querySelector(".project-preview-video");
+  if (previewVideo) {
+    previewVideo.addEventListener("play", () => { void trackMediaView("activity_project_media", project.id, currentIndex); }, { once: true });
+  } else if (current.type === "image") {
+    void trackMediaView("activity_project_media", project.id, currentIndex);
+  }
 
   document.querySelector("#projectPreviewBack")?.addEventListener("click", () => {
     history.pushState(null, "", backHref);
@@ -2206,6 +2242,8 @@ function renderCasePage(caseId) {
     state.activeCaseId = "";
     return renderCases();
   }
+  const shouldAuditCase = lastAuditedCaseId !== caseId;
+  lastAuditedCaseId = caseId;
   const media = Array.isArray(c.media) ? c.media : [];
   const groups = groupedCaseMedia(c);
   const tabs = [
@@ -2329,6 +2367,7 @@ function renderCasePage(caseId) {
 
   document.querySelector("#caseBackList").addEventListener("click", () => {
     state.activeCaseId = "";
+    lastAuditedCaseId = "";
     state.caseMediaTab = "";
     state.selectedCaseMediaIndex = null;
     history.pushState(null, "", `${SILVER_FRONT_BASE}/?view=cases`);
@@ -2382,12 +2421,15 @@ function renderCasePage(caseId) {
 	    const wrap = btn.closest(".case-media-visual");
 	    if (!url || !wrap) return;
 	    wrap.innerHTML = `<video src="${esc(url)}" controls preload="metadata" playsinline></video>`;
+	    const video = wrap.querySelector("video");
+	    video?.addEventListener("play", () => { void trackMediaView("case_media", caseId, Number(btn.closest("[data-case-media-index]")?.dataset.caseMediaIndex)); }, { once: true });
 	  }));
 	  document.querySelectorAll("[data-case-login]").forEach(btn => btn.addEventListener("click", () => {
     state.loginOpen = true; state.authMessage = ""; state.authOk = false; state.authTab = "login";
     renderCasePage(caseId);
   }));
   bindAuthEvents();
+  if (shouldAuditCase) void trackMediaView("case", c.id, null);
 }
 
 async function boot() {
