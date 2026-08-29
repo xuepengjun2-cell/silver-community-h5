@@ -32,6 +32,8 @@ const VALID_CASE_STATUSES = ["published", "draft"];
 const VALID_CASE_MEDIA_TYPES = ["image", "video", "document", "link"];
 const VALID_PROJECT_STATUSES = ["published", "draft", "archived"];
 const VALID_PROJECT_MEDIA_TYPES = ["image", "video"];
+const AUDIT_ACTIONS = ["view", "download"];
+const AUDIT_RESOURCE_TYPES = ["activity", "case", "activity_project_media", "case_media", "activity_sop"];
 const IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"];
 const VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".webm"];
 const DOCUMENT_EXTS = [".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".csv", ".txt"];
@@ -568,6 +570,31 @@ async function initDb() {
     INDEX idx_project_upload_sessions_project (project_id),
     INDEX idx_project_upload_sessions_status (status, updated_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS audit_logs (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NULL,
+    username VARCHAR(190) NOT NULL DEFAULT '',
+    user_name VARCHAR(190) NOT NULL DEFAULT '',
+    role VARCHAR(32) NOT NULL DEFAULT '',
+    action VARCHAR(32) NOT NULL,
+    resource_type VARCHAR(64) NOT NULL,
+    resource_id VARCHAR(190) NOT NULL DEFAULT '',
+    resource_title VARCHAR(255) NOT NULL DEFAULT '',
+    media_index INT NULL,
+    media_type VARCHAR(32) NOT NULL DEFAULT '',
+    filename VARCHAR(255) NOT NULL DEFAULT '',
+    outcome VARCHAR(16) NOT NULL DEFAULT 'success',
+    status_code INT NULL,
+    ip_address VARCHAR(64) NOT NULL DEFAULT '',
+    user_agent VARCHAR(512) NOT NULL DEFAULT '',
+    referer VARCHAR(512) NOT NULL DEFAULT '',
+    detail JSON NULL,
+    created_at VARCHAR(40) NOT NULL,
+    INDEX idx_audit_created_at (created_at),
+    INDEX idx_audit_user_created (user_id, created_at),
+    INDEX idx_audit_action_created (action, created_at),
+    INDEX idx_audit_resource (resource_type, resource_id, created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
 
   await loadCache();
   if (stripProjectDocumentsFromCache()) {
@@ -818,6 +845,144 @@ function requireRole(req, res, roles) {
     return null;
   }
   return user;
+}
+
+function auditText(value, max = 255) {
+  return cleanString(value).slice(0, max);
+}
+
+function requestIp(req) {
+  const forwarded = req.headers["x-forwarded-for"] || req.headers["x-real-ip"] || "";
+  const value = String(forwarded || req.socket?.remoteAddress || "").split(",")[0].trim();
+  return value.replace(/^::ffff:/, "").slice(0, 64);
+}
+
+function auditMediaFilename(media, index) {
+  const explicit = auditText(media?.title || media?.name, 255);
+  if (explicit) return explicit;
+  const rawUrl = String(media?.url || "").split("?")[0].split("#")[0];
+  const basename = rawUrl ? path.basename(rawUrl) : "";
+  return auditText(basename || `${media?.type === "video" ? "视频" : "图片"} #${Number(index) + 1}`, 255);
+}
+
+async function recordAuditLog(req, input = {}, actor) {
+  const user = actor === undefined ? getAuthedUser(req) : actor;
+  const action = auditText(input.action, 32);
+  const resourceType = auditText(input.resourceType, 64);
+  if (!AUDIT_ACTIONS.includes(action) || !AUDIT_RESOURCE_TYPES.includes(resourceType)) return false;
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs
+       (user_id, username, user_name, role, action, resource_type, resource_id, resource_title,
+        media_index, media_type, filename, outcome, status_code, ip_address, user_agent, referer, detail, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        user?.id || null,
+        auditText(user?.username || "游客", 190),
+        auditText(user?.name || (user ? user.username : "游客"), 190),
+        auditText(user?.role || "guest", 32),
+        action,
+        resourceType,
+        auditText(input.resourceId, 190),
+        auditText(input.resourceTitle, 255),
+        Number.isInteger(Number(input.mediaIndex)) ? Number(input.mediaIndex) : null,
+        auditText(input.mediaType, 32),
+        auditText(input.filename, 255),
+        auditText(input.outcome || "success", 16),
+        Number.isInteger(Number(input.statusCode)) ? Number(input.statusCode) : null,
+        requestIp(req),
+        auditText(req.headers["user-agent"], 512),
+        auditText(req.headers.referer || req.headers.referrer, 512),
+        input.detail == null ? null : JSON.stringify(input.detail),
+        now()
+      ]
+    );
+    return true;
+  } catch (error) {
+    // 审计日志不能阻断正常观看/下载，但要保留服务端告警便于排查。
+    console.error("[audit-log]", error && (error.stack || error.message || error));
+    return false;
+  }
+}
+
+async function loadProjectAuditSummary(projectId) {
+  const [rows] = await pool.query(
+    `SELECT media_index, action, COUNT(*) AS count
+       FROM audit_logs
+      WHERE resource_type = 'activity_project_media' AND resource_id = ?
+      GROUP BY media_index, action`,
+    [projectId]
+  );
+  return rows.map(row => ({
+    mediaIndex: row.media_index,
+    action: row.action,
+    count: Number(row.count || 0)
+  }));
+}
+
+async function resolveAuditViewEvent(body, db) {
+  const resourceType = auditText(body.resourceType, 64);
+  const resourceId = auditText(body.resourceId, 190);
+  const hasMediaIndex = body.mediaIndex !== undefined && body.mediaIndex !== null && body.mediaIndex !== "";
+  const mediaIndex = hasMediaIndex ? Number(body.mediaIndex) : null;
+  if (!AUDIT_RESOURCE_TYPES.includes(resourceType) || !resourceId) return null;
+
+  if (resourceType === "activity") {
+    const activity = (db.activities || []).find(a => a.id === resourceId && a.status === "published");
+    if (!activity) return null;
+    return { resourceType, resourceId: activity.id, resourceTitle: activity.title, mediaIndex: null, mediaType: "activity", filename: "" };
+  }
+
+  if (resourceType === "case") {
+    const item = (db.cases || []).find(c => c.id === resourceId && c.status === "published");
+    if (!item) return null;
+    return { resourceType, resourceId: item.id, resourceTitle: item.title, mediaIndex: null, mediaType: "case", filename: "" };
+  }
+
+  if (!Number.isInteger(mediaIndex) || mediaIndex < 0) return null;
+
+  if (resourceType === "activity_project_media") {
+    const project = (db.activityProjects || []).find(p => p.id === resourceId && p.status === "published" && p.shareEnabled !== false);
+    const media = project && Array.isArray(project.media) ? project.media[mediaIndex] : null;
+    if (!project || !media || !["image", "video"].includes(media.type) || !media.url) return null;
+    return {
+      resourceType,
+      resourceId: project.id,
+      resourceTitle: project.title,
+      mediaIndex,
+      mediaType: media.type,
+      filename: auditMediaFilename(media, mediaIndex)
+    };
+  }
+
+  if (resourceType === "case_media") {
+    const item = (db.cases || []).find(c => c.id === resourceId && c.status === "published");
+    const media = item && Array.isArray(item.media) ? item.media[mediaIndex] : null;
+    if (!item || !media || !media.url) return null;
+    return {
+      resourceType,
+      resourceId: item.id,
+      resourceTitle: item.title,
+      mediaIndex,
+      mediaType: media.type,
+      filename: auditMediaFilename(media, mediaIndex)
+    };
+  }
+
+  if (resourceType === "activity_sop") {
+    const activity = (db.activities || []).find(a => a.id === resourceId && a.status === "published");
+    if (!activity) return null;
+    return {
+      resourceType,
+      resourceId: activity.id,
+      resourceTitle: activity.title,
+      mediaIndex: null,
+      mediaType: "sop",
+      filename: auditText(`sop-${safeFileName(activity.id || activity.title)}.html`, 255)
+    };
+  }
+
+  return null;
 }
 
 function normalizeActivity(input, existing = {}) {
@@ -1456,6 +1621,116 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  // 前台观看埋点：允许游客记录为“游客”，登录用户关联到具体账号。
+  if (req.method === "POST" && pathname === "/api/audit-events") {
+    const body = await parseBody(req, 64 * 1024);
+    if (body.action !== "view") return sendJson(res, 400, { error: "仅支持观看事件上报" });
+    const event = await resolveAuditViewEvent(body, readDb());
+    if (!event) return sendJson(res, 404, { error: "素材不存在或不可访问" });
+    const logged = await recordAuditLog(req, { action: "view", ...event });
+    return sendJson(res, 200, { ok: true, logged });
+  }
+
+  // 访问审计：只允许总部管理员查看，不把用户设备/IP等信息下发给普通账号。
+  if (req.method === "GET" && pathname === "/api/admin/audit-logs") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const url = new URL(req.url, "http://localhost");
+    const q = auditText(url.searchParams.get("q"), 120);
+    const action = auditText(url.searchParams.get("action"), 32);
+    const resourceType = auditText(url.searchParams.get("resourceType"), 64);
+    const userId = auditText(url.searchParams.get("userId"), 64);
+    const from = auditText(url.searchParams.get("from"), 40);
+    const to = auditText(url.searchParams.get("to"), 40);
+    const page = Math.max(1, Math.min(100000, Number(url.searchParams.get("page") || 1) || 1));
+    const pageSize = Math.max(10, Math.min(100, Number(url.searchParams.get("pageSize") || 30) || 30));
+    const where = [];
+    const params = [];
+    if (q) {
+      where.push("CONCAT_WS(' ', username, user_name, resource_title, filename, ip_address) LIKE ?");
+      params.push(`%${q}%`);
+    }
+    if (AUDIT_ACTIONS.includes(action)) { where.push("action = ?"); params.push(action); }
+    if (AUDIT_RESOURCE_TYPES.includes(resourceType)) { where.push("resource_type = ?"); params.push(resourceType); }
+    if (userId) { where.push("user_id = ?"); params.push(userId); }
+    if (/^\d{4}-\d{2}-\d{2}T/.test(from)) { where.push("created_at >= ?"); params.push(from); }
+    if (/^\d{4}-\d{2}-\d{2}T/.test(to)) { where.push("created_at <= ?"); params.push(to); }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const [summaryRows] = await pool.query(
+      `SELECT user_id, username, user_name, role,
+              SUM(action = 'view') AS view_count,
+              SUM(action = 'download') AS download_count,
+              COUNT(*) AS total_count
+         FROM audit_logs ${whereSql}
+        GROUP BY user_id, username, user_name, role
+        ORDER BY total_count DESC, user_name ASC`,
+      params
+    );
+    const [[countRow]] = await pool.query(`SELECT COUNT(*) AS total FROM audit_logs ${whereSql}`, params);
+    const total = Number(countRow?.total || 0);
+    const offset = (page - 1) * pageSize;
+    const [rows] = await pool.query(
+      `SELECT id, user_id, username, user_name, role, action, resource_type, resource_id,
+              resource_title, media_index, media_type, filename, outcome, status_code,
+              ip_address, user_agent, referer, created_at
+         FROM audit_logs ${whereSql}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?, ?`,
+      [...params, offset, pageSize]
+    );
+    return sendJson(res, 200, {
+      logs: rows.map(row => ({
+        id: row.id,
+        userId: row.user_id,
+        username: row.username,
+        userName: row.user_name,
+        role: row.role,
+        action: row.action,
+        resourceType: row.resource_type,
+        resourceId: row.resource_id,
+        resourceTitle: row.resource_title,
+        mediaIndex: row.media_index,
+        mediaType: row.media_type,
+        filename: row.filename,
+        outcome: row.outcome,
+        statusCode: row.status_code,
+        ipAddress: row.ip_address,
+        userAgent: row.user_agent,
+        referer: row.referer,
+        createdAt: row.created_at
+      })),
+      summaryByUser: summaryRows.map(row => ({
+        userId: row.user_id,
+        username: row.username,
+        userName: row.user_name,
+        role: row.role,
+        viewCount: Number(row.view_count || 0),
+        downloadCount: Number(row.download_count || 0),
+        totalCount: Number(row.total_count || 0)
+      })),
+      pagination: { page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) }
+    });
+  }
+
+  if (req.method === "GET" && pathname === "/api/admin/audit-summary") {
+    const user = requireRole(req, res, ["admin"]);
+    if (!user) return;
+    const [rows] = await pool.query(
+      `SELECT resource_type, resource_id, action, media_index, COUNT(*) AS count
+         FROM audit_logs
+        GROUP BY resource_type, resource_id, action, media_index`
+    );
+    return sendJson(res, 200, {
+      summaries: rows.map(row => ({
+        resourceType: row.resource_type,
+        resourceId: row.resource_id,
+        action: row.action,
+        mediaIndex: row.media_index,
+        count: Number(row.count || 0)
+      }))
+    });
+  }
+
   if (req.method === "POST" && pathname === "/api/register") {
     const body = await parseBody(req);
     const username = String(body.username || "").trim();
@@ -1724,6 +1999,15 @@ async function handleApi(req, res, pathname) {
       return;
     }
     const fileName = `sop-${safeFileName(activity.id || activity.title)}.html`;
+    await recordAuditLog(req, {
+      action: "download",
+      resourceType: "activity_sop",
+      resourceId: activity.id,
+      resourceTitle: activity.title,
+      mediaType: "sop",
+      filename: fileName,
+      statusCode: 200
+    }, user);
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Content-Disposition": `attachment; filename="${fileName}"`
@@ -1763,13 +2047,33 @@ async function handleApi(req, res, pathname) {
     const media = Array.isArray(item.media) ? item.media : [];
     const m = media[idx];
     if (!m || !m.url) return sendJson(res, 404, { error: "素材不存在" });
-    if (m.type === "link") return sendJson(res, 200, { url: m.url });
+    const filename = auditMediaFilename(m, idx);
+    if (m.type === "link") {
+      await recordAuditLog(req, {
+        action: "download", resourceType: "case_media", resourceId: item.id,
+        resourceTitle: item.title, mediaIndex: idx, mediaType: m.type,
+        filename, statusCode: 200
+      }, user);
+      return sendJson(res, 200, { url: m.url });
+    }
     const resolved = resolveLocalMediaPath(m.url);
-    if (resolved.remote) return sendJson(res, 200, { url: resolved.remote });
+    if (resolved.remote) {
+      await recordAuditLog(req, {
+        action: "download", resourceType: "case_media", resourceId: item.id,
+        resourceTitle: item.title, mediaIndex: idx, mediaType: m.type,
+        filename, statusCode: 200
+      }, user);
+      return sendJson(res, 200, { url: resolved.remote });
+    }
     if (resolved.error) return sendJson(res, 400, { error: resolved.error });
     const filePath = resolved.path;
     if (!fs.existsSync(filePath)) return sendJson(res, 404, { error: "素材文件不存在" });
     const ext = path.extname(filePath).toLowerCase();
+    await recordAuditLog(req, {
+      action: "download", resourceType: "case_media", resourceId: item.id,
+      resourceTitle: item.title, mediaIndex: idx, mediaType: m.type,
+      filename, statusCode: 200
+    }, user);
     res.writeHead(200, {
       "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
       "Content-Length": fs.statSync(filePath).size,
@@ -1826,6 +2130,8 @@ async function handleApi(req, res, pathname) {
 
   const publicProjectDownload = pathname.match(/^\/api\/public\/activity-projects\/([^/]+)\/download$/);
   if (req.method === "GET" && publicProjectDownload) {
+    const user = requireRole(req, res, VALID_ROLES);
+    if (!user) return;
     const db = readDb();
     const item = (db.activityProjects || []).find(p => p.id === decodeURIComponent(publicProjectDownload[1]));
     if (!item || item.status !== "published" || item.shareEnabled === false) return sendJson(res, 404, { error: "活动相册不存在或分享已关闭" });
@@ -1835,7 +2141,13 @@ async function handleApi(req, res, pathname) {
     if (!m || !m.url) return sendJson(res, 404, { error: "素材不存在" });
     try {
       const url = projectDownloadUrl(item, m, idx);
-      return sendJson(res, 200, { url, type: m.type, filename: projectDownloadFileName(item, m, idx), disposition: "attachment" });
+      const filename = projectDownloadFileName(item, m, idx);
+      await recordAuditLog(req, {
+        action: "download", resourceType: "activity_project_media", resourceId: item.id,
+        resourceTitle: item.title, mediaIndex: idx, mediaType: m.type,
+        filename, statusCode: 200
+      }, user);
+      return sendJson(res, 200, { url, type: m.type, filename, disposition: "attachment" });
     } catch (error) {
       console.error("[project-download-sign]", error && (error.stack || error.message || error));
       return sendJson(res, 502, { error: "下载地址生成失败,请稍后重试" });
@@ -1851,7 +2163,11 @@ async function handleApi(req, res, pathname) {
     if (idx < 0) return sendJson(res, 404, { error: "活动相册不存在" });
     const item = db.activityProjects[idx];
     if (!projectCanManage(user, item)) return sendJson(res, 403, { error: "当前账号不能管理这个活动相册" });
-    if (req.method === "GET") return sendJson(res, 200, { project: publicProject(item, db) });
+    if (req.method === "GET") {
+      const project = publicProject(item, db);
+      project.auditSummary = await loadProjectAuditSummary(item.id);
+      return sendJson(res, 200, { project });
+    }
     if (req.method === "DELETE") {
       db.activityProjects.splice(idx, 1);
       await writeDb(db);
