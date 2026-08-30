@@ -93,7 +93,7 @@ function imageUrl(url) {
 function homeHref() { return SILVER_PUBLIC_MODE ? SILVER_FRONT_BASE + "/" : "/"; }
 function activityHref(id) {
   return SILVER_PUBLIC_MODE
-    ? SILVER_FRONT_BASE + "/index.html?activity=" + encodeURIComponent(id)
+    ? SILVER_FRONT_BASE + "/?activity=" + encodeURIComponent(id)
     : "/activity/" + encodeURIComponent(id);
 }
 

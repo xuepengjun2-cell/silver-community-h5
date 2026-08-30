@@ -236,7 +236,7 @@ async function shareLink({ url, title, text, button }) {
   try {
     await copyShareLink(url);
     if (button) {
-      button.textContent = /MicroMessenger/i.test(navigator.userAgent) ? "✓ 已复制，点右上角发送" : "✓ 链接已复制";
+      button.textContent = isWeChatBrowser() ? "✓ 已复制，点右上角发送" : "✓ 链接已复制";
       setTimeout(() => button.textContent = original, 2200);
     }
     if (isWeChatBrowser()) showShareFallback({ url, title, copied: true });
@@ -252,7 +252,7 @@ async function shareLink({ url, title, text, button }) {
 }
 
 function isWeChatBrowser() {
-  return /MicroMessenger/i.test(navigator.userAgent || "");
+  return /MicroMessenger|wxwork/i.test(navigator.userAgent || "");
 }
 
 function projectWeChatTip() {
