@@ -2871,3 +2871,48 @@ img { display: block; }
   .project-wechat-tip { margin: 10px 14px 0; padding: 10px 12px; font-size: 12px; }
   .project-wechat-tip strong { white-space: normal; }
 }
+
+/* 跨平台分享降级面板：系统分享和复制均不可用时仍可手动复制/打开 */
+.share-fallback-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(26, 23, 20, .56);
+  backdrop-filter: blur(4px);
+}
+.share-fallback {
+  position: relative;
+  width: min(100%, 520px);
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--paper);
+  box-shadow: var(--shadow-lg);
+}
+.share-fallback h2 { margin: 0 0 8px; color: var(--ink); font-size: 20px; line-height: 1.35; }
+.share-fallback p { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+.share-fallback-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+}
+.share-fallback-close:hover { background: var(--bg); color: var(--ink); }
+.share-fallback-link-row { display: flex; gap: 8px; align-items: center; }
+.share-fallback-link-row .input { min-width: 0; flex: 1; height: 38px; font-size: 12px; }
+.share-fallback-link-row .btn { flex-shrink: 0; }
+.share-fallback-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+@media (max-width: 520px) {
+  .share-fallback { padding: 24px 18px 18px; }
+  .share-fallback-link-row { align-items: stretch; flex-direction: column; }
+  .share-fallback-link-row .btn { width: 100%; }
+  .share-fallback-actions > * { flex: 1; justify-content: center; text-align: center; }
+}

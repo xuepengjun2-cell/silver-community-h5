@@ -143,18 +143,28 @@ function normalizeUrls(value) {
 
 function homeHref() { return SILVER_FRONT_BASE + "/"; }
 function adminHref() { return SILVER_FRONT_BASE + "/admin"; }
-function activityHref(id) { return SILVER_FRONT_BASE + "/index.html?activity=" + encodeURIComponent(id); }
+function activityHref(id) { return activityShareHref(id); }
 
-function copyShareLink(url) {
-  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(url);
+async function copyShareLink(url) {
+  if (navigator.clipboard?.writeText && window.isSecureContext !== false) {
+    try {
+      await navigator.clipboard.writeText(url);
+      return;
+    } catch {
+      // 权限被浏览器拒绝时继续走兼容复制，不直接判定为失败。
+    }
+  }
   return new Promise((resolve, reject) => {
     try {
       const ta = document.createElement("textarea");
       ta.value = url;
       ta.style.position = "fixed";
       ta.style.opacity = "0";
+      ta.setAttribute("readonly", "");
       document.body.appendChild(ta);
+      ta.focus();
       ta.select();
+      ta.setSelectionRange(0, ta.value.length);
       const ok = document.execCommand("copy");
       ta.remove();
       ok ? resolve() : reject(new Error("复制失败"));
@@ -162,11 +172,59 @@ function copyShareLink(url) {
   });
 }
 
+function closeShareFallback() {
+  document.querySelector("[data-share-fallback]")?.remove();
+}
+
+function showShareFallback({ url, title, copied = false }) {
+  closeShareFallback();
+  const wechat = isWeChatBrowser();
+  const modal = document.createElement("div");
+  modal.className = "share-fallback-mask";
+  modal.dataset.shareFallback = "1";
+  modal.innerHTML = `
+    <section class="share-fallback" role="dialog" aria-modal="true" aria-labelledby="shareFallbackTitle">
+      <button class="share-fallback-close" type="button" data-share-close aria-label="关闭">×</button>
+      <div class="eyebrow"><span class="eyebrow-dot"></span>${wechat ? "微信分享" : "复制分享链接"}</div>
+      <h2 id="shareFallbackTitle">${esc(title || "分享内容")}</h2>
+      <p>${copied ? "链接已复制。" : "当前浏览器未能直接完成分享，请复制下面的链接。"}${wechat ? "返回微信聊天窗口后粘贴发送，或点击右上角“…”发送给朋友。" : "你也可以打开链接检查分享内容。"}</p>
+      <div class="share-fallback-link-row">
+        <input class="input" type="text" readonly value="${esc(url)}" aria-label="分享链接">
+        <button class="btn small" type="button" data-share-copy>复制链接</button>
+      </div>
+      <div class="share-fallback-actions">
+        <a class="btn secondary small" href="${esc(url)}" target="_blank" rel="noreferrer">打开链接</a>
+        <button class="btn ghost small" type="button" data-share-close>关闭</button>
+      </div>
+    </section>`;
+  document.body.appendChild(modal);
+  const input = modal.querySelector("input");
+  const copyButton = modal.querySelector("[data-share-copy]");
+  const close = () => closeShareFallback();
+  modal.querySelectorAll("[data-share-close]").forEach(button => button.addEventListener("click", close));
+  modal.addEventListener("click", event => { if (event.target === modal) close(); });
+  copyButton?.addEventListener("click", async () => {
+    try {
+      await copyShareLink(url);
+      copyButton.textContent = "✓ 已复制";
+      input?.select();
+    } catch {
+      copyButton.textContent = "请长按复制";
+      input?.focus();
+      input?.select();
+    }
+  });
+  input?.focus();
+  input?.select();
+}
+
 async function shareLink({ url, title, text, button }) {
   const original = button?.textContent || "分享到微信";
   // 微信内置浏览器不稳定支持 navigator.share，统一走复制链接，避免唤起失败后误判为分享失败。
-  if (!isWeChatBrowser() && navigator.share) {
+  if (!isWeChatBrowser() && typeof navigator.share === "function") {
     try {
+      const canShareUrl = typeof navigator.canShare !== "function" || navigator.canShare({ url });
+      if (!canShareUrl) throw new Error("当前设备不支持该分享链接");
       await navigator.share({ title: title || document.title, text: text || "", url });
       if (button) button.textContent = "✓ 已分享";
       if (button) setTimeout(() => button.textContent = original, 1800);
@@ -181,12 +239,14 @@ async function shareLink({ url, title, text, button }) {
       button.textContent = /MicroMessenger/i.test(navigator.userAgent) ? "✓ 已复制，点右上角发送" : "✓ 链接已复制";
       setTimeout(() => button.textContent = original, 2200);
     }
+    if (isWeChatBrowser()) showShareFallback({ url, title, copied: true });
     return true;
   } catch {
     if (button) {
-      button.textContent = "复制失败";
+      button.textContent = "请手动复制";
       setTimeout(() => button.textContent = original, 1800);
     }
+    showShareFallback({ url, title });
     return false;
   }
 }
