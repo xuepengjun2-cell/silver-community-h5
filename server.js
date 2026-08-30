@@ -1662,11 +1662,13 @@ async function handleApi(req, res, pathname) {
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const [summaryRows] = await pool.query(
       `SELECT user_id, username, user_name, role,
+              MAX(CASE WHEN user_id IS NULL THEN NULLIF(ip_address, '') ELSE NULL END) AS actor_ip,
               SUM(action = 'view') AS view_count,
               SUM(action = 'download') AS download_count,
               COUNT(*) AS total_count
          FROM audit_logs ${whereSql}
-        GROUP BY user_id, username, user_name, role
+        GROUP BY user_id, username, user_name, role,
+                 CASE WHEN user_id IS NULL THEN COALESCE(NULLIF(ip_address, ''), '__unknown__') ELSE '' END
         ORDER BY total_count DESC, user_name ASC`,
       params
     );
@@ -1708,6 +1710,7 @@ async function handleApi(req, res, pathname) {
         username: row.username,
         userName: row.user_name,
         role: row.role,
+        ipAddress: row.actor_ip || null,
         viewCount: Number(row.view_count || 0),
         downloadCount: Number(row.download_count || 0),
         totalCount: Number(row.total_count || 0)

@@ -325,8 +325,17 @@ function auditDateBoundary(value, end = false) {
 }
 
 function auditActor(row) {
+  const isGuest = !row.userId && (row.role === "guest" || row.username === "游客" || row.username === "guest");
+  if (isGuest) {
+    const ip = String(row.ipAddress || "").trim();
+    return `<strong>${esc(ip ? `游客（IP：${ip}）` : "游客（IP未知）")}</strong><small>未登录访问 · ${esc(ip || "IP未知")}</small>`;
+  }
   const label = row.userName || row.username || "游客";
   return `<strong>${esc(label)}</strong><small>@${esc(row.username || "guest")} · ${esc(roleLabel(row.role || "guest"))}</small>`;
+}
+
+function auditRoleLabel(row) {
+  return row.role === "guest" ? "游客访问" : roleLabel(row.role || "guest");
 }
 
 function auditSubject(row) {
@@ -374,7 +383,7 @@ function renderAuditLogs() {
     .join("");
   const f = state.auditFilters;
   content.innerHTML = `
-    <div class="topbar"><div><h1>访问日志</h1><p>记录每个账号观看、下载活动素材和 SOP 的操作，游客访问会标记为“游客”。</p></div></div>
+    <div class="topbar"><div><h1>访问日志</h1><p>记录每个账号观看、下载活动素材和 SOP 的操作；未登录访问按 IP 汇总，IP 不等于真实身份。</p></div></div>
     <div class="content-area">
       <div class="panel audit-filter-panel">
         <div class="panel-header"><div><h2>筛选日志</h2><p>可按账号、动作、资源和时间范围定位记录</p></div><button class="btn ghost small" type="button" id="auditClearBtn">清除筛选</button></div>
@@ -435,11 +444,11 @@ function renderAuditLogBody() {
       <div class="stat-card"><span>筛选结果</span><strong>${p.total}</strong><em>条记录</em></div>
       <div class="stat-card"><span>筛选范围观看</span><strong>${views}</strong><em>次</em></div>
       <div class="stat-card"><span>筛选范围下载</span><strong>${downloads}</strong><em>次</em></div>
-      <div class="stat-card"><span>涉及账号</span><strong>${actors}</strong><em>个主体</em></div>
+      <div class="stat-card"><span>涉及主体</span><strong>${actors}</strong><em>账号 / IP</em></div>
     </div>
     <div class="panel audit-summary-panel">
-      <div class="panel-header"><div><h2>账号汇总</h2><p>按当前关键词、动作、资源和日期筛选后的完整结果汇总</p></div></div>
-      <div class="audit-table-wrap">${summary.length ? `<table class="table audit-table audit-account-table"><thead><tr><th>账号</th><th>角色</th><th>观看次数</th><th>下载次数</th><th>合计</th></tr></thead><tbody>${summary.map(row => `<tr><td class="audit-actor">${auditActor(row)}</td><td>${esc(roleLabel(row.role || "guest"))}</td><td><strong>${Number(row.viewCount || 0)}</strong></td><td><strong>${Number(row.downloadCount || 0)}</strong></td><td>${Number(row.totalCount || 0)}</td></tr>`).join("")}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无账号汇总。</div>`}</div>
+      <div class="panel-header"><div><h2>账号 / 访客来源汇总</h2><p>登录账号按账号汇总，游客按 IP 汇总；同一网络可能对应多人，动态 IP 也可能发生变化。</p></div></div>
+      <div class="audit-table-wrap">${summary.length ? `<table class="table audit-table audit-account-table"><thead><tr><th>账号 / 访问来源</th><th>角色</th><th>观看次数</th><th>下载次数</th><th>合计</th></tr></thead><tbody>${summary.map(row => `<tr><td class="audit-actor">${auditActor(row)}</td><td>${esc(auditRoleLabel(row))}</td><td><strong>${Number(row.viewCount || 0)}</strong></td><td><strong>${Number(row.downloadCount || 0)}</strong></td><td>${Number(row.totalCount || 0)}</td></tr>`).join("")}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无账号汇总。</div>`}</div>
     </div>
     <div class="panel audit-log-panel">
       <div class="panel-header"><h2>操作明细</h2><span class="audit-page-note">第 ${p.page} / ${p.totalPages} 页，共 ${p.total} 条</span></div>
