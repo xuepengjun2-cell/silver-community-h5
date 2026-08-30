@@ -28,6 +28,7 @@ const state = {
   auditUserSummary: [],
   auditPagination: { page: 1, pageSize: 30, total: 0, totalPages: 1 },
   auditFilters: { q: "", action: "", resourceType: "", userId: "", from: "", to: "" },
+  auditView: "summary",
   sessionToken: localStorage.getItem(AUTH_TOKEN_KEY) || ""
 };
 
@@ -376,6 +377,7 @@ async function loadAuditLogs(page = state.auditPagination.page || 1) {
 
 function renderAuditLogs() {
   const content = document.querySelector("#content");
+  content.className = "audit-content";
   const userOptions = (state.users || [])
     .slice()
     .sort((a, b) => String(a.username || "").localeCompare(String(b.username || "")))
@@ -446,15 +448,24 @@ function renderAuditLogBody() {
       <div class="stat-card"><span>筛选范围下载</span><strong>${downloads}</strong><em>次</em></div>
       <div class="stat-card"><span>涉及主体</span><strong>${actors}</strong><em>账号 / IP</em></div>
     </div>
-    <div class="panel audit-summary-panel">
-      <div class="panel-header"><div><h2>账号 / 访客来源汇总</h2><p>登录账号按账号汇总，游客按 IP 汇总；同一网络可能对应多人，动态 IP 也可能发生变化。</p></div></div>
-      <div class="audit-table-wrap">${summary.length ? `<table class="table audit-table audit-account-table"><thead><tr><th>账号 / 访问来源</th><th>角色</th><th>观看次数</th><th>下载次数</th><th>合计</th></tr></thead><tbody>${summary.map(row => `<tr><td class="audit-actor">${auditActor(row)}</td><td>${esc(auditRoleLabel(row))}</td><td><strong>${Number(row.viewCount || 0)}</strong></td><td><strong>${Number(row.downloadCount || 0)}</strong></td><td>${Number(row.totalCount || 0)}</td></tr>`).join("")}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无账号汇总。</div>`}</div>
+    <div class="audit-tabs" role="tablist" aria-label="访问日志数据视图">
+      <button class="audit-tab ${state.auditView === "summary" ? "active" : ""}" type="button" role="tab" aria-selected="${state.auditView === "summary"}" data-audit-view="summary">账号 / IP 汇总 <span>${summary.length}</span></button>
+      <button class="audit-tab ${state.auditView === "details" ? "active" : ""}" type="button" role="tab" aria-selected="${state.auditView === "details"}" data-audit-view="details">操作明细 <span>${p.total}</span></button>
     </div>
-    <div class="panel audit-log-panel">
-      <div class="panel-header"><h2>操作明细</h2><span class="audit-page-note">第 ${p.page} / ${p.totalPages} 页，共 ${p.total} 条</span></div>
-      <div class="audit-table-wrap">${rows ? `<table class="table audit-table"><thead><tr><th>时间</th><th>账号</th><th>动作</th><th>资源</th><th>文件名</th><th>IP / 设备</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无记录。</div>`}</div>
-      <div class="audit-pager"><button class="btn secondary small" type="button" id="auditPrevBtn" ${p.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${p.page} / ${p.totalPages} 页</span><button class="btn secondary small" type="button" id="auditNextBtn" ${p.page >= p.totalPages ? "disabled" : ""}>下一页</button></div>
+    <div class="audit-tab-content" role="tabpanel">
+      ${state.auditView === "summary" ? `<div class="panel audit-summary-panel">
+        <div class="panel-header"><div><h2>账号 / 访客来源汇总</h2><p>登录账号按账号汇总，游客按 IP 汇总；同一网络可能对应多人，动态 IP 也可能发生变化。</p></div></div>
+        <div class="audit-table-wrap">${summary.length ? `<table class="table audit-table audit-account-table"><thead><tr><th>账号 / 访问来源</th><th>角色</th><th>观看次数</th><th>下载次数</th><th>合计</th></tr></thead><tbody>${summary.map(row => `<tr><td class="audit-actor">${auditActor(row)}</td><td>${esc(auditRoleLabel(row))}</td><td><strong>${Number(row.viewCount || 0)}</strong></td><td><strong>${Number(row.downloadCount || 0)}</strong></td><td>${Number(row.totalCount || 0)}</td></tr>`).join("")}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无账号汇总。</div>`}</div>
+      </div>` : `<div class="panel audit-log-panel">
+        <div class="panel-header"><h2>操作明细</h2><span class="audit-page-note">第 ${p.page} / ${p.totalPages} 页，共 ${p.total} 条</span></div>
+        <div class="audit-table-wrap">${rows ? `<table class="table audit-table"><thead><tr><th>时间</th><th>账号</th><th>动作</th><th>资源</th><th>文件名</th><th>IP / 设备</th></tr></thead><tbody>${rows}</tbody></table>` : `<div class="audit-empty">当前筛选条件下暂无记录。</div>`}</div>
+        <div class="audit-pager"><button class="btn secondary small" type="button" id="auditPrevBtn" ${p.page <= 1 ? "disabled" : ""}>上一页</button><span>第 ${p.page} / ${p.totalPages} 页</span><button class="btn secondary small" type="button" id="auditNextBtn" ${p.page >= p.totalPages ? "disabled" : ""}>下一页</button></div>
+      </div>`}
     </div>`;
+  document.querySelectorAll("[data-audit-view]").forEach(button => button.addEventListener("click", () => {
+    state.auditView = button.dataset.auditView === "details" ? "details" : "summary";
+    renderAuditLogBody();
+  }));
   document.querySelector("#auditPrevBtn")?.addEventListener("click", () => loadAuditLogs(Math.max(1, p.page - 1)));
   document.querySelector("#auditNextBtn")?.addEventListener("click", () => loadAuditLogs(Math.min(p.totalPages, p.page + 1)));
 }

@@ -1731,6 +1731,32 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* 访问日志与资源观看/下载统计 */
+#content.audit-content {
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#content.audit-content .topbar {
+  flex: 0 0 auto;
+  position: static;
+}
+#content.audit-content .content-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#content.audit-content #auditLogsBody {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .audit-filter-panel { margin-bottom: 16px; }
 .audit-filter-grid {
   display: grid;
@@ -1771,6 +1797,54 @@ a { color: inherit; text-decoration: none; }
 .audit-stats { margin-bottom: 16px; }
 .audit-counts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--muted); }
 .audit-counts span { padding: 3px 7px; background: var(--card); border: 1px solid var(--line-s); border-radius: 999px; }
+.audit-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.audit-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 14px;
+  margin-bottom: -1px;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.audit-tab:hover { color: var(--accent-hover); background: var(--accent-soft); }
+.audit-tab.active { color: var(--accent-hover); border-bottom-color: var(--accent); background: var(--paper); }
+.audit-tab span {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+.audit-tab.active span { background: var(--accent-soft); color: var(--accent-hover); }
+.audit-tab-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 2px 16px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0,0,0,.18) transparent;
+}
+.audit-tab-content::-webkit-scrollbar { width: 6px; }
+.audit-tab-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,.18); border-radius: 3px; }
+.audit-tab-content::-webkit-scrollbar-track { background: transparent; }
+.audit-tab-content .audit-summary-panel,
+.audit-tab-content .audit-log-panel { margin-bottom: 0; }
 
 @media (max-width: 1200px) {
   .audit-filter-grid { grid-template-columns: repeat(3, minmax(150px, 1fr)); }
