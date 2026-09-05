@@ -489,13 +489,36 @@ async function loadDetail(id) {
   renderDetail(data.activity);
 }
 
-async function boot() {
+async function consumeActivityHubSsoTicket() {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const token = params.get("activity_sso");
+  if (!token) return false;
   try {
-    const me = await requestJson("/api/me");
-    state.user = me.user;
+    const data = await requestJson("/api/auth/sso", {
+      method: "POST",
+      body: { token }
+    });
+    state.user = data.user;
+  } catch (error) {
+    state.authMessage = "免密进入未完成：" + error.message + "。你仍可使用活动平台原账号登录。";
+    state.loginOpen = true;
+  } finally {
+    history.replaceState(null, document.title, window.location.pathname + window.location.search);
+  }
+  return true;
+}
+
+async function boot() {
+  const ssoAttempted = await consumeActivityHubSsoTicket();
+  try {
+    if (!state.user) {
+      const me = await requestJson("/api/me");
+      state.user = me.user;
+    }
   } catch {
     state.user = null;
   }
+  if (ssoAttempted && !state.user) state.loginOpen = true;
   try {
     const detailMatch = location.pathname.match(/^\/activity\/([^/]+)$/);
     if (detailMatch) {

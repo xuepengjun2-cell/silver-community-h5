@@ -11,9 +11,24 @@ const DATA_DIR = process.env.DATA_DIR || (STORAGE_ROOT ? path.join(STORAGE_ROOT,
 const UPLOAD_DIR = process.env.UPLOAD_DIR || (STORAGE_ROOT ? path.join(STORAGE_ROOT, "uploads") : path.join(ROOT, "uploads"));
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const SESSION_FILE = path.join(DATA_DIR, "sessions.json");
+const ACTIVITY_HUB_SSO_TICKET_FILE = process.env.ACTIVITY_HUB_SSO_TICKET_FILE || path.join(DATA_DIR, "activity-hub-sso-tickets.json");
+const ACTIVITY_HUB_SSO_SECRET = String(process.env.ACTIVITY_HUB_SSO_SECRET || "").trim();
+const ACTIVITY_HUB_SSO_USER_MAP = (() => {
+  try {
+    const value = JSON.parse(process.env.ACTIVITY_HUB_SSO_USER_MAP || "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+})();
 const SEED_ACTIVITIES_FILE = process.env.SEED_ACTIVITIES_FILE || path.join(ROOT, "data", "seed-activities.json");
 const VALID_ROLES = ["admin", "operator", "viewer", "member"];
 const VALID_ACTIVITY_STATUSES = ["published", "pending", "draft", "rejected"];
+const {
+  verifyActivityHubSsoToken,
+  resolveActivityHubUser,
+  consumeActivityHubTicket
+} = require("./server/activity-hub-sso");
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -365,6 +380,51 @@ function requireRole(req, res, roles) {
   return user;
 }
 
+function loginByActivityHubSso(res, token) {
+  let claims;
+  try {
+    claims = verifyActivityHubSsoToken(token, { secret: ACTIVITY_HUB_SSO_SECRET });
+  } catch (error) {
+    sendJson(res, 401, { error: error.message || "免密登录失败" });
+    return;
+  }
+  const db = readDb();
+  const user = resolveActivityHubUser(db, claims, ACTIVITY_HUB_SSO_USER_MAP);
+  if (!user) {
+    sendJson(res, 403, { error: "免密入口未匹配到活动平台账号，请使用原账号登录或联系管理员绑定账号" });
+    return;
+  }
+  const used = consumeActivityHubTicket(
+    ACTIVITY_HUB_SSO_TICKET_FILE,
+    claims.jti,
+    claims.expiresAt,
+    { readJson, writeJson }
+  );
+  if (!used) {
+    sendJson(res, 409, { error: "免密链接已使用，请从视频号助手重新打开" });
+    return;
+  }
+  const tokenValue = crypto.randomBytes(24).toString("hex");
+  const nowMs = Date.now();
+  const requestedExpiry = Number(claims.accessExpiresAt) * 1000;
+  const sessionExpiry = new Date(Math.min(
+    nowMs + 7 * 24 * 60 * 60 * 1000,
+    Number.isFinite(requestedExpiry) && requestedExpiry > nowMs ? requestedExpiry : nowMs + 7 * 24 * 60 * 60 * 1000
+  ));
+  const sessions = readSessions();
+  sessions[tokenValue] = {
+    userId: user.id,
+    createdAt: now(),
+    expiresAt: sessionExpiry.toISOString(),
+    loginMethod: "activity-hub-sso",
+    ssoSubject: String(claims.sub)
+  };
+  writeSessions(sessions);
+  sendJson(res, 200, { ok: true, user: publicUser(user), loginMethod: "activity-hub-sso" }, {
+    "Set-Cookie": "silver_session=" + encodeURIComponent(tokenValue) + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + Math.max(1, Math.floor((sessionExpiry.getTime() - nowMs) / 1000))
+  });
+}
+
 function normalizeActivity(input, existing = {}) {
   const listFrom = value => Array.isArray(value)
     ? value.map(x => String(x).trim()).filter(Boolean)
@@ -535,6 +595,12 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 200, { user: publicUser(user) }, {
       "Set-Cookie": `silver_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`
     });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/auth/sso") {
+    const body = await parseBody(req, 64 * 1024);
+    loginByActivityHubSso(res, String(body.token || ""));
     return;
   }
 

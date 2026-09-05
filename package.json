@@ -5,7 +5,8 @@
   "description": "同城银发社群主理人活动展示 H5 与后台管理原型",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js && node --check public/admin.js",
+    "check": "node --check server.js && node --check server/activity-hub-sso.js && node --check public/app.js && node --check public/admin.js",
+    "test:sso": "node tests/activity-hub-sso.js && node tests/activity-hub-sso-http.js",
     "smoke": "node scripts/smoke-test.js"
   },
   "engines": {
