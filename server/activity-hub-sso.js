@@ -85,16 +85,42 @@ function resolveActivityHubUser(db, claims, userMap = {}) {
   const mappedUsername = typeof mapped === "string"
     ? mapped
     : (mapped && typeof mapped === "object" ? mapped.username : "");
-  const usernames = new Set([
-    claims.username,
-    String(mappedUsername || "").trim().toLowerCase()
-  ].filter(Boolean));
+  const mappedName = String(mappedUsername || "").trim().toLowerCase();
   return users.find(user => user
     && user.status === "active"
-    && (String(user.id) === claims.subject
-      || String(user.ssoSubject || "") === claims.subject
-      || usernames.has(String(user.username || "").trim().toLowerCase())
-      || usernames.has(String(user.ssoUsername || "").trim().toLowerCase()))) || null;
+    && (String(user.ssoSubject || "") === claims.subject
+      || String(user.ssoUsername || "").trim().toLowerCase() === claims.username
+      || (mappedName && String(user.username || "").trim().toLowerCase() === mappedName))) || null;
 }
 
-module.exports = { MAX_TICKET_SECONDS, resolveActivityHubUser, verifyActivityHubSsoToken };
+function resolveOrProvisionActivityHubUser(db, claims, userMap = {}) {
+  const existing = resolveActivityHubUser(db, claims, userMap);
+  if (existing) return { user: existing, created: false };
+  const users = Array.isArray(db?.users) ? db.users : [];
+  const mapped = userMap && typeof userMap === "object" ? userMap[claims.username] : "";
+  const mappedUsername = typeof mapped === "string" ? mapped : (mapped && typeof mapped === "object" ? mapped.username : "");
+  const conflictingUsernames = new Set([claims.username, String(mappedUsername || "").trim().toLowerCase()].filter(Boolean));
+  const identityCollision = users.find(user => user && (String(user.ssoSubject || "") === claims.subject
+    || conflictingUsernames.has(String(user.username || "").trim().toLowerCase())
+    || conflictingUsernames.has(String(user.ssoUsername || "").trim().toLowerCase())));
+  if (identityCollision) return { user: null, created: false, blocked: true };
+
+  const id = `sso_${crypto.createHash("sha256").update(`${claims.subject}:${claims.username}`).digest("hex").slice(0, 24)}`;
+  if (users.some(user => String(user?.id || "") === id)) return { user: null, created: false, blocked: true };
+  const user = {
+    id,
+    username: claims.username,
+    name: claims.displayName || claims.username,
+    role: "member",
+    status: "active",
+    canDownload: true,
+    ssoSubject: claims.subject,
+    ssoUsername: claims.username,
+    authSource: "kkhc-channel-assistant-v2",
+    createdAt: new Date().toISOString()
+  };
+  users.push(user);
+  return { user, created: true };
+}
+
+module.exports = { MAX_TICKET_SECONDS, resolveActivityHubUser, resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken };

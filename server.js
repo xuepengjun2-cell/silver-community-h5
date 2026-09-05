@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const mysql = require("mysql2/promise");
-const { resolveActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
+const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
 
 const PORT = Number(process.env.PORT || 5174);
 const ROOT = __dirname;
@@ -868,11 +868,14 @@ async function loginByActivityHubSso(res, token) {
     return;
   }
 
-  const user = resolveActivityHubUser(readDb(), claims, ACTIVITY_HUB_SSO_USER_MAP);
+  const db = readDb();
+  const resolution = resolveOrProvisionActivityHubUser(db, claims, ACTIVITY_HUB_SSO_USER_MAP);
+  const user = resolution.user;
   if (!user) {
-    sendJson(res, 403, { error: "免密入口未匹配到活动平台账号，请使用原账号登录或联系管理员绑定账号" });
+    sendJson(res, 403, { error: "活动平台存在同名、停用或冲突账号，请使用原账号登录或联系管理员处理绑定" });
     return;
   }
+  if (resolution.created) await writeDb(db);
 
   const nowSeconds = Math.floor(Date.now() / 1000);
   try {
