@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.*
+!.env.example
+logs/
+backups/
+uploads/*
+!uploads/.gitkeep
+.runtime/
+.sessions/
+.site-config.json
+.DS_Store

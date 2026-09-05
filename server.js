@@ -39,7 +39,6 @@ const ACTIVITY_HUB_SSO_USER_MAP = (() => {
   }
 })();
 const ACTIVITY_HUB_SSO_TICKET_TTL_SECONDS = 120;
-
 const VALID_ROLES = ["admin", "operator", "viewer", "member"];
 const VALID_ACTIVITY_STATUSES = ["published", "pending", "draft", "rejected"];
 const VALID_CASE_STATUSES = ["published", "draft"];
