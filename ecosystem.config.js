@@ -1,22 +1,37 @@
 // PM2 生产进程配置
-// 使用：pm2 start ecosystem.config.js
+// 生产代码必须从 GitHub 明确 commit 构建后发布；服务器目录不是编辑源。
+const fs = require("fs");
+const env = { NODE_ENV: "production" };
+
+try {
+  fs.readFileSync("/etc/silver-community.env", "utf8")
+    .split("\n")
+    .forEach((line) => {
+      const match = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
+      if (match) env[match[1]] = match[2];
+    });
+} catch (error) {
+  // 本地运行没有生产环境文件时使用默认环境。
+}
+
 module.exports = {
   apps: [
     {
-      name: "kaikai-sop",           // 进程名，pm2 list 里看到的名字
+      name: "silver",
+      cwd: "/var/www/silver-community-h5",
       script: "server.js",
-      cwd: "/opt/kaikai-sop",       // 服务器上的项目目录，按实际修改
-      instances: 1,                  // 单实例，JSON文件存储不支持多进程并发写
-      autorestart: true,             // 崩溃自动重启
-      watch: false,                  // 生产环境关闭文件监听
-      max_memory_restart: "400M",    // 内存超限自动重启
-      env: {
-        NODE_ENV: "production",
-        PORT: 3000
-      },
-      // 日志
-      out_file: "/opt/kaikai-sop/logs/out.log",
-      error_file: "/opt/kaikai-sop/logs/error.log",
+      interpreter: "/usr/local/bin/node",
+      instances: 1,
+      exec_mode: "fork",
+      autorestart: true,
+      watch: false,
+      max_memory_restart: "400M",
+      min_uptime: "10s",
+      max_restarts: 50,
+      restart_delay: 3000,
+      env,
+      out_file: "/var/www/silver-community-h5/logs/out.log",
+      error_file: "/var/www/silver-community-h5/logs/error.log",
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       merge_logs: true
     }

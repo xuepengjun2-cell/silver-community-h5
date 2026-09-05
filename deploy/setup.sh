@@ -3,16 +3,23 @@
 #  开开华彩 SOP 平台 · 服务器一键初始化部署脚本
 #  适用系统：Ubuntu 22.04
 #  使用方式：在 ECS 服务器上以 root 执行
-#    curl -o deploy.sh https://raw.githubusercontent.com/你的账号/你的仓库名/main/deploy/setup.sh
-#    chmod +x deploy.sh && sudo bash deploy.sh
+#    curl -o deploy.sh https://raw.githubusercontent.com/xuepengjun2-cell/silver-community-h5/main/deploy/setup.sh
+#    chmod +x deploy.sh && sudo bash deploy.sh <GitHub commit SHA>
+#  注意：该脚本仅用于新服务器初始化；现有生产更新必须走 DEPLOYMENT.md 的受控发布流程。
 # =====================================================
 
 set -euo pipefail
 
-REPO_URL="https://github.com/你的账号/你的仓库名.git"   # ← 替换成你的 GitHub 仓库地址
-APP_DIR="/opt/kaikai-sop"
-APP_USER="kaikai"
+REPO_URL="https://github.com/xuepengjun2-cell/silver-community-h5.git"
+APP_DIR="/var/www/silver-community-h5"
+APP_USER="silver"
 NODE_VERSION="20"
+TARGET_COMMIT="${1:-}"
+
+if [[ -z "$TARGET_COMMIT" || ! "$TARGET_COMMIT" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    echo "用法：$0 <GitHub commit SHA>" >&2
+    exit 2
+fi
 
 echo "================================================"
 echo " 开开华彩 SOP 平台 · 部署开始"
@@ -44,10 +51,11 @@ fi
 # ---- 5. 拉取代码 ----
 echo "[5/8] 从 GitHub 拉取代码..."
 if [ -d "$APP_DIR/.git" ]; then
-    echo "  已存在，执行 git pull..."
-    cd "$APP_DIR" && git pull origin main
+    echo "  已存在 Git 工作树，按明确 commit 更新..."
+    cd "$APP_DIR" && git fetch origin "$TARGET_COMMIT" && git checkout --detach "$TARGET_COMMIT"
 else
     git clone "$REPO_URL" "$APP_DIR"
+    cd "$APP_DIR" && git checkout --detach "$TARGET_COMMIT"
 fi
 
 # 创建必要目录（不在 Git 里的）
@@ -77,7 +85,7 @@ systemctl enable nginx
 # ---- 8. 启动应用 ----
 echo "[8/8] 用 PM2 启动应用..."
 cd "$APP_DIR"
-pm2 delete kaikai-sop 2>/dev/null || true
+pm2 delete silver 2>/dev/null || true
 pm2 start ecosystem.config.js
 pm2 save
 pm2 startup systemd -u "$APP_USER" --hp "/home/$APP_USER" | tail -1 | bash || true
@@ -94,7 +102,7 @@ echo " 部署完成！"
 echo "================================================"
 echo ""
 echo " 服务状态：pm2 list"
-echo " 查看日志：pm2 logs kaikai-sop"
+echo " 查看日志：pm2 logs silver"
 echo " 前台访问：http://$(curl -s ifconfig.me)"
 echo " 后台地址：http://$(curl -s ifconfig.me)/admin"
 echo ""

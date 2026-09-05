@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # 数据自动备份脚本
 # 每天凌晨2点运行（通过 cron 设置）
-# crontab -e 加入：0 2 * * * /opt/kaikai-sop/deploy/backup.sh >> /opt/kaikai-sop/logs/backup.log 2>&1
+# crontab -e 加入：0 2 * * * /var/www/silver-community-h5/deploy/backup.sh >> /var/www/silver-community-h5/logs/backup.log 2>&1
 
 set -euo pipefail
 
-PROJECT_DIR="/opt/kaikai-sop"
+PROJECT_DIR="/var/www/silver-community-h5"
 BACKUP_DIR="$PROJECT_DIR/backups"
 DATE=$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="$BACKUP_DIR/backup_$DATE.tar.gz"
