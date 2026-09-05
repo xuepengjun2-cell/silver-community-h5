@@ -2497,14 +2497,39 @@ function renderCasePage(caseId) {
   if (shouldAuditCase) void trackMediaView("case", c.id, null);
 }
 
+async function consumeActivityHubSsoTicket() {
+  const hashParams = new URLSearchParams(String(location.hash || "").replace(/^#/, ""));
+  const ticket = hashParams.get("activity_sso") || "";
+  if (!ticket) return false;
+  try {
+    const data = await api("/api/auth/sso", { method: "POST", body: { token: ticket } });
+    state.user = data.user || null;
+    if (data.token) {
+      state.sessionToken = data.token;
+      localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+    }
+    state.authMessage = "";
+    state.authOk = false;
+  } catch (error) {
+    state.user = null;
+    state.authMessage = `${error.message || "免密入口暂不可用"}，可使用原账号登录`;
+    state.authOk = false;
+    state.loginOpen = true;
+  } finally {
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+  }
+  return true;
+}
+
 async function boot() {
+  const ssoAttempted = await consumeActivityHubSsoTicket();
   try {
     const [meResult, configResult, bannersResult] = await Promise.allSettled([
       api("/api/me"),
       api('/api/site-config'),
       fetch(apiUrl('/api/banners')).then(r => r.json())
     ]);
-    state.user = meResult.status === "fulfilled" ? meResult.value.user : null;
+    state.user = meResult.status === "fulfilled" ? meResult.value.user : (ssoAttempted ? state.user : null);
     state.siteConfig = configResult.status === "fulfilled" ? (configResult.value.config || {}) : {};
     state.banners = bannersResult.status === "fulfilled" ? (bannersResult.value.banners || []) : [];
   } catch {

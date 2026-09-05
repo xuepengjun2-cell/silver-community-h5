@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const mysql = require("mysql2/promise");
+const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
 
 const PORT = Number(process.env.PORT || 5174);
 const ROOT = __dirname;
@@ -25,6 +26,17 @@ const DB_CONFIG = {
   connectionLimit: 5,
   waitForConnections: true
 };
+
+// 视频号助手只签发短时票据；活动平台独立核验、映射本平台账号并创建自己的会话。
+const ACTIVITY_HUB_SSO_SECRET = String(process.env.ACTIVITY_HUB_SSO_SECRET || "").trim();
+const ACTIVITY_HUB_SSO_USER_MAP = (() => {
+  try {
+    const value = JSON.parse(process.env.ACTIVITY_HUB_SSO_USER_MAP || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+})();
 
 const VALID_ROLES = ["admin", "operator", "viewer", "member"];
 const VALID_ACTIVITY_STATUSES = ["published", "pending", "draft", "rejected"];
@@ -549,6 +561,14 @@ async function initDb() {
     created_at VARCHAR(40),
     expires_at VARCHAR(40)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS activity_hub_sso_tickets (
+    jti VARCHAR(128) PRIMARY KEY,
+    subject VARCHAR(128) NOT NULL,
+    username VARCHAR(190) NOT NULL,
+    expires_at VARCHAR(40) NOT NULL,
+    created_at VARCHAR(40) NOT NULL,
+    INDEX idx_activity_hub_sso_ticket_expiry (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await pool.query(`CREATE TABLE IF NOT EXISTS project_upload_sessions (
     id VARCHAR(80) PRIMARY KEY,
     project_id VARCHAR(64) NOT NULL,
@@ -832,6 +852,53 @@ function getAuthedUser(req) {
   const db = readDb();
   const user = db.users.find(x => x.id === session.userId && x.status === "active");
   return user || null;
+}
+
+function mysqlDateFromSeconds(seconds) {
+  return new Date(Number(seconds) * 1000).toISOString().slice(0, 19).replace("T", " ");
+}
+
+async function loginByActivityHubSso(res, token) {
+  let claims;
+  try {
+    claims = verifyActivityHubSsoToken(token, { secret: ACTIVITY_HUB_SSO_SECRET });
+  } catch (error) {
+    sendJson(res, error.statusCode || 401, { error: error.message || "免密入口无效" });
+    return;
+  }
+
+  const db = readDb();
+  const resolution = resolveOrProvisionActivityHubUser(db, claims, ACTIVITY_HUB_SSO_USER_MAP);
+  const user = resolution.user;
+  if (!user) {
+    sendJson(res, 403, { error: "活动平台存在同名、停用或冲突账号，请使用原账号登录或联系管理员处理绑定" });
+    return;
+  }
+  if (resolution.created) await writeDb(db);
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  try {
+    await pool.query("DELETE FROM activity_hub_sso_tickets WHERE expires_at < ?", [mysqlDateFromSeconds(nowSeconds)]);
+    await pool.query(
+      `INSERT INTO activity_hub_sso_tickets (jti, subject, username, expires_at, created_at) VALUES (?,?,?,?,?)`,
+      [claims.jti, claims.subject, claims.username, mysqlDateFromSeconds(claims.expiresAt), now()]
+    );
+  } catch (error) {
+    if (error && error.code === "ER_DUP_ENTRY") {
+      sendJson(res, 409, { error: "免密入口已使用，请重新从视频号助手进入" });
+      return;
+    }
+    throw error;
+  }
+
+  const tokenValue = crypto.randomBytes(24).toString("hex");
+  const sessionExpiresAt = new Date(Math.min(Date.now() + 7 * 24 * 60 * 60 * 1000, claims.accessExpiresAt * 1000)).toISOString();
+  const sessions = readSessions();
+  sessions[tokenValue] = { userId: user.id, createdAt: now(), expiresAt: sessionExpiresAt };
+  await writeSessions(sessions);
+  sendJson(res, 200, { ok: true, user: publicUser(user), token: tokenValue, loginMethod: "activity-hub-sso" }, {
+    "Set-Cookie": sessionCookie(tokenValue, Math.max(1, Math.floor((new Date(sessionExpiresAt).getTime() - Date.now()) / 1000)))
+  });
 }
 
 function requireRole(req, res, roles) {
@@ -1795,6 +1862,12 @@ async function handleApi(req, res, pathname) {
     sendJson(res, 200, { user: publicUser(user), token }, {
       "Set-Cookie": sessionCookie(token, 7 * 24 * 60 * 60)
     });
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/auth/sso") {
+    const body = await parseBody(req, 64 * 1024);
+    await loginByActivityHubSso(res, String(body.token || ""));
     return;
   }
 
