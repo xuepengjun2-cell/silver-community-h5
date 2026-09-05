@@ -3,6 +3,11 @@
 // =============================================
 
 const app = document.querySelector("#app");
+// 分享链接跟随当前访问域名，避免从新域名进入后又跳回已受限的旧域名。
+// 站点部署在 /silver/ 路径下，因此只固定路径，不固定域名。
+const SILVER_FRONT_BASE = `${window.location.origin}/silver`;
+const SILVER_API_BASE = "https://apip2.kkhuacai08.cn/silver-api";
+const AUTH_TOKEN_KEY = "silver_auth_token";
 
 const state = {
   siteConfig: {},
@@ -23,9 +28,32 @@ const state = {
   contributeRows: [{ time: "", item: "" }],
   currentActivity: null,
   activeTab: "intro",
+  selectedActivityMedia: null,
+  projects: [],
+  currentProject: null,
+  projectView: "",
+  projectCreateOpen: false,
+  projectMetaEditOpen: false,
+  projectMediaTab: "",
+  projectPreviewIndex: null,
+  projectPreviewMode: false,
+  selectedProjectMediaIndex: null,
+  projectLightboxIndex: null,
+  sessionToken: localStorage.getItem(AUTH_TOKEN_KEY) || "",
+  cases: [],
+  homeCases: [],
+  homeCasesLoaded: false,
+  caseCategories: [],
+  caseFilter: "",
+  caseView: false,
+  activeCaseId: "",
+  caseMediaTab: "",
+  selectedCaseMediaIndex: null,
   favorites: new Set(JSON.parse(localStorage.getItem("kk_favs") || "[]")),
   filters: { q: "", city: "", category: "" }
 };
+const HERO_CASE_LIMIT = 10;
+let lastAuditedCaseId = "";
 
 // ---- 工具函数 ----
 function esc(v) {
@@ -35,15 +63,253 @@ function esc(v) {
 }
 
 async function api(url, opts = {}) {
-  const res = await fetch(url, {
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  if (state.sessionToken && !headers.Authorization) headers.Authorization = `Bearer ${state.sessionToken}`;
+  const res = await fetch(apiUrl(url), {
     ...opts,
+    credentials: "include",
+    headers,
     body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "请求失败");
-  return data;
+  return normalizeUrls(data);
+}
+
+async function trackMediaView(resourceType, resourceId, mediaIndex) {
+  try {
+    await api("/api/audit-events", {
+      method: "POST",
+      body: { action: "view", resourceType, resourceId, mediaIndex }
+    });
+  } catch {
+    // 观看埋点失败不能影响素材打开和播放。
+  }
+}
+
+function apiUrl(url) {
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith("/api/")) return SILVER_API_BASE + url.slice(4);
+  if (url.startsWith("/uploads/")) return SILVER_API_BASE + url;
+  return url;
+}
+
+async function uploadPublicImageFile(file) {
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  const headers = {};
+  if (state.sessionToken) headers.Authorization = `Bearer ${state.sessionToken}`;
+  const res = await fetch(apiUrl(`/api/my-upload-image?ext=${encodeURIComponent(ext)}`), {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body: file
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "图片上传失败");
+  return normalizeUrls(data);
+}
+
+function publicUrl(url) {
+  const raw = String(url || "");
+  if (!raw) return raw;
+  if (/^https?:\/\//i.test(raw) || raw.startsWith("data:")) return raw;
+  if (raw.startsWith("/uploads/")) return SILVER_API_BASE + raw;
+  if (raw.startsWith("/assets/")) return SILVER_FRONT_BASE + raw;
+  return raw;
+}
+
+function fallbackCover() {
+  return SILVER_FRONT_BASE + "/assets/people/cn-social-cafe.jpg";
+}
+
+function imageUrl(url) {
+  return publicUrl(url) || fallbackCover();
+}
+
+function normalizeUrls(value) {
+  if (Array.isArray(value)) return value.map(normalizeUrls);
+  if (!value || typeof value !== "object") return value;
+  Object.keys(value).forEach((key) => {
+    const item = value[key];
+    const urlish = /(^url$|url$|cover$|image$|images$|banner|banners)/i.test(key);
+    if (typeof item === "string" && urlish) {
+      value[key] = publicUrl(item);
+    } else if (Array.isArray(item) && urlish) {
+      value[key] = item.map(x => typeof x === "string" ? publicUrl(x) : normalizeUrls(x));
+    } else {
+      value[key] = normalizeUrls(item);
+    }
+  });
+  return value;
+}
+
+function homeHref() { return SILVER_FRONT_BASE + "/"; }
+function adminHref() { return SILVER_FRONT_BASE + "/admin"; }
+function activityHref(id) { return activityShareHref(id); }
+
+async function copyShareLink(url) {
+  if (navigator.clipboard?.writeText && window.isSecureContext !== false) {
+    try {
+      await navigator.clipboard.writeText(url);
+      return;
+    } catch {
+      // 权限被浏览器拒绝时继续走兼容复制，不直接判定为失败。
+    }
+  }
+  return new Promise((resolve, reject) => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      ta.setAttribute("readonly", "");
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      const ok = document.execCommand("copy");
+      ta.remove();
+      ok ? resolve() : reject(new Error("复制失败"));
+    } catch (err) { reject(err); }
+  });
+}
+
+function closeShareFallback() {
+  document.querySelector("[data-share-fallback]")?.remove();
+}
+
+function showShareFallback({ url, title, copied = false }) {
+  closeShareFallback();
+  const wechat = isWeChatBrowser();
+  const modal = document.createElement("div");
+  modal.className = "share-fallback-mask";
+  modal.dataset.shareFallback = "1";
+  modal.innerHTML = `
+    <section class="share-fallback" role="dialog" aria-modal="true" aria-labelledby="shareFallbackTitle">
+      <button class="share-fallback-close" type="button" data-share-close aria-label="关闭">×</button>
+      <div class="eyebrow"><span class="eyebrow-dot"></span>${wechat ? "微信分享" : "复制分享链接"}</div>
+      <h2 id="shareFallbackTitle">${esc(title || "分享内容")}</h2>
+      <p>${copied ? "链接已复制。" : "当前浏览器未能直接完成分享，请复制下面的链接。"}${wechat ? "返回微信聊天窗口后粘贴发送，或点击右上角“…”发送给朋友。" : "你也可以打开链接检查分享内容。"}</p>
+      <div class="share-fallback-link-row">
+        <input class="input" type="text" readonly value="${esc(url)}" aria-label="分享链接">
+        <button class="btn small" type="button" data-share-copy>复制链接</button>
+      </div>
+      <div class="share-fallback-actions">
+        <a class="btn secondary small" href="${esc(url)}" target="_blank" rel="noreferrer">打开链接</a>
+        <button class="btn ghost small" type="button" data-share-close>关闭</button>
+      </div>
+    </section>`;
+  document.body.appendChild(modal);
+  const input = modal.querySelector("input");
+  const copyButton = modal.querySelector("[data-share-copy]");
+  const close = () => closeShareFallback();
+  modal.querySelectorAll("[data-share-close]").forEach(button => button.addEventListener("click", close));
+  modal.addEventListener("click", event => { if (event.target === modal) close(); });
+  copyButton?.addEventListener("click", async () => {
+    try {
+      await copyShareLink(url);
+      copyButton.textContent = "✓ 已复制";
+      input?.select();
+    } catch {
+      copyButton.textContent = "请长按复制";
+      input?.focus();
+      input?.select();
+    }
+  });
+  input?.focus();
+  input?.select();
+}
+
+async function shareLink({ url, title, text, button }) {
+  const original = button?.textContent || "分享到微信";
+  // 微信内置浏览器不稳定支持 navigator.share，统一走复制链接，避免唤起失败后误判为分享失败。
+  if (!isWeChatBrowser() && typeof navigator.share === "function") {
+    try {
+      const canShareUrl = typeof navigator.canShare !== "function" || navigator.canShare({ url });
+      if (!canShareUrl) throw new Error("当前设备不支持该分享链接");
+      await navigator.share({ title: title || document.title, text: text || "", url });
+      if (button) button.textContent = "✓ 已分享";
+      if (button) setTimeout(() => button.textContent = original, 1800);
+      return true;
+    } catch (err) {
+      if (err?.name === "AbortError") return false;
+    }
+  }
+  try {
+    await copyShareLink(url);
+    if (button) {
+      button.textContent = isWeChatBrowser() ? "✓ 已复制，点右上角发送" : "✓ 链接已复制";
+      setTimeout(() => button.textContent = original, 2200);
+    }
+    if (isWeChatBrowser()) showShareFallback({ url, title, copied: true });
+    return true;
+  } catch {
+    if (button) {
+      button.textContent = "请手动复制";
+      setTimeout(() => button.textContent = original, 1800);
+    }
+    showShareFallback({ url, title });
+    return false;
+  }
+}
+
+function isWeChatBrowser() {
+  return /MicroMessenger|wxwork/i.test(navigator.userAgent || "");
+}
+
+function projectWeChatTip() {
+  if (!isWeChatBrowser()) return "";
+  return `<aside class="project-wechat-tip" role="note"><strong>微信内打开提示</strong><span>如页面打不开，请点击右上角“…” → “在浏览器中打开”。单个素材分享会直接打开对应图片或视频预览，不要直接发送 TOS 文件地址。</span></aside>`;
+}
+
+function activityShareHref(id, mediaType, index) {
+  const url = new URL(`${SILVER_FRONT_BASE}/`);
+  url.searchParams.set("activity", id);
+  if (mediaType && Number.isInteger(Number(index))) url.searchParams.set("media", `${mediaType}:${Number(index)}`);
+  return url.href;
+}
+
+function parseActivityMediaSelection() {
+  const raw = new URLSearchParams(location.search).get("media") || "";
+  const match = raw.match(/^([a-z]+):(\d+)$/i);
+  return match ? { type: match[1].toLowerCase(), index: Number(match[2]) } : null;
+}
+
+function caseShareHref(id, mediaIndex) {
+  const url = new URL(`${SILVER_FRONT_BASE}/`);
+  url.searchParams.set("view", "cases");
+  url.searchParams.set("case", id);
+  if (Number.isInteger(Number(mediaIndex))) url.searchParams.set("media", String(Number(mediaIndex)));
+  return url.href;
+}
+
+function hasProjectMediaIndex(value) {
+  return value !== null && value !== undefined && value !== "" && Number.isInteger(Number(value));
+}
+
+function projectPreviewHref(id, mediaIndex, manager = false) {
+  const url = new URL(`${SILVER_FRONT_BASE}/`);
+  url.searchParams.set("view", "project-preview");
+  url.searchParams.set("project", id);
+  if (manager) url.searchParams.set("mode", "manage");
+  if (hasProjectMediaIndex(mediaIndex)) url.searchParams.set("media", String(Number(mediaIndex)));
+  return url.href;
+}
+
+function projectShareHref(id, mediaIndex) {
+  const url = new URL(`${SILVER_FRONT_BASE}/`);
+  const selected = hasProjectMediaIndex(mediaIndex) ? `.${Number(mediaIndex)}` : "";
+  // 使用短分享参数进入相册页；视频不再作为分享链接的第一落点，降低微信内置浏览器拦截和大文件预加载风险。
+  url.searchParams.set("share", `${id}${selected}`);
+  return url.href;
+}
+
+function parseProjectShareValue(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const match = raw.match(/^(.+?)(?:\.(\d+))?$/);
+  if (!match || !match[1]) return null;
+  return { projectId: match[1], mediaIndex: match[2] === undefined ? null : Number(match[2]) };
 }
 
 function opts(items, sel, label) {
@@ -56,7 +322,7 @@ function roleLabel(r) {
 }
 
 function canDownload() {
-  return Boolean(state.user && (state.user.canDownload || ["admin","operator"].includes(state.user.role)));
+  return Boolean(state.user);
 }
 
 function saveFavs() {
@@ -64,9 +330,18 @@ function saveFavs() {
 }
 
 function rerenderCurrent() {
-  if (state.currentActivity) renderDetail(state.currentActivity);
+  if (state.projectView === "album" && state.currentProject) renderProjectAlbum(state.currentProject);
+  else if (state.projectView === "manager" && state.currentProject) renderProjectManager(state.currentProject);
+  else if (state.projectView === "preview" && state.currentProject) renderProjectPreview(state.currentProject, state.projectPreviewIndex, state.projectPreviewMode);
+  else if (state.projectView === "hub") renderProjectsView();
+  else if (state.caseView && state.activeCaseId) renderCasePage(state.activeCaseId);
+  else if (state.caseView) renderCases();
+  else if (state.currentActivity) renderDetail(state.currentActivity);
   else renderList();
 }
+
+// 静态托管版会把该函数改写为 apiUrl(u),本地版原样返回
+function apiHref(u) { return apiUrl(u); }
 
 // ---- 顶部用户栏 ----
 function authBar() {
@@ -77,6 +352,18 @@ function authBar() {
       <em>${esc(roleLabel(state.user.role))}</em>
     </div>
     <button class="text-btn" type="button" id="logoutBtn">退出</button>`;
+}
+
+function mobilePrimaryNav(active = "") {
+  const activeClass = key => active === key ? " active" : "";
+  const albumEntry = state.user
+    ? `<a class="${activeClass("projects").trim()}" href="?view=projects">活动相册</a>`
+    : `<button class="${activeClass("projects").trim()}" type="button" data-open-login>活动相册</button>`;
+  return `<nav class="mobile-primary-nav" aria-label="主要活动入口">
+    <a class="${activeClass("activities").trim()}" href="${homeHref()}#activity-list">活动库</a>
+    <a class="${activeClass("cases").trim()}" href="?view=cases">精彩案例</a>
+    ${albumEntry}
+  </nav>`;
 }
 
 // ---- 登录弹窗 ----
@@ -144,9 +431,9 @@ function contributeModal() {
             <textarea class="input" name="highlights" rows="4" placeholder="大字歌单&#10;副歌高光录制&#10;活动后群内作品发布">${esc(d.highlights)}</textarea>
           </div>
           <div class="field">
-            <label>活动流程时间线</label>
+            <label>当日活动时间轴</label>
             <div id="contributeRowsBox">${contributeRowsHtml()}</div>
-            <button type="button" class="btn secondary small" id="contributeAddRow" style="margin-top:8px">+ 添加流程节点</button>
+            <button type="button" class="btn secondary small" id="contributeAddRow" style="margin-top:8px">+ 添加时间节点</button>
           </div>
           <div class="field">
             <label>活动标签（用逗号分隔）</label>
@@ -156,14 +443,14 @@ function contributeModal() {
 
         <div class="form-pane ${step==="sop"?"active":""}">
           <div class="row two">
-            <div class="field"><label>🎯 运营目标</label><textarea class="input" name="target" rows="2" placeholder="这场活动的核心目的是什么？筛选什么样的用户？">${esc(d.target)}</textarea></div>
-            <div class="field"><label>📦 核心物料清单</label><textarea class="input" name="materials" rows="2" placeholder="例如：大字歌单、麦克风、补光灯、手机稳定器">${esc(d.materials)}</textarea></div>
+            <div class="field"><label>🎯 活动定位与转化目标</label><textarea class="input" name="target" rows="2" placeholder="活动定位、适合人群、价格/规模、核心转化目标">${esc(d.target)}</textarea></div>
+            <div class="field"><label>📦 所需物料</label><textarea class="input" name="materials" rows="2" placeholder="通用物料、专属物料、内容物料、转化物料">${esc(d.materials)}</textarea></div>
           </div>
           <div class="row two">
-            <div class="field"><label>👥 人力配置</label><textarea class="input" name="staffing" rows="2" placeholder="例如：1名主理人、1名控场主持、1名摄影人员">${esc(d.staffing)}</textarea></div>
-            <div class="field"><label>🔄 转化承接</label><textarea class="input" name="conversion" rows="2" placeholder="活动后如何把参与者转化为下次活动/课程用户？">${esc(d.conversion)}</textarea></div>
+            <div class="field"><label>👥 人员分工</label><textarea class="input" name="staffing" rows="2" placeholder="主理人、主持/老师、签到、摄影、后勤、转化跟进分别负责什么">${esc(d.staffing)}</textarea></div>
+            <div class="field"><label>🔄 话术与转化承接</label><textarea class="input" name="conversion" rows="2" placeholder="活动前沟通、活动中主持/转化话术、活动后私聊和群内承接">${esc(d.conversion)}</textarea></div>
           </div>
-          <div class="field"><label>⚠️ 风险控制</label><textarea class="input" name="risk" rows="2" placeholder="安全提示、场地注意事项、应急预案等">${esc(d.risk)}</textarea></div>
+          <div class="field"><label>⚠️ 注意事项与风险预案</label><textarea class="input" name="risk" rows="2" placeholder="客户体验注意事项、安全预案、转化边界、内容沉淀要求、复盘要求">${esc(d.risk)}</textarea></div>
         </div>
 
         <div class="form-pane ${step==="media"?"active":""}">
@@ -181,7 +468,7 @@ function contributeModal() {
           <div class="field"><label>方案参考链接（每行一个）</label><textarea class="input" name="references" rows="2" placeholder="飞书文档、内部素材、方案链接">${esc(d.references)}</textarea></div>
           <label class="checkline" style="display:flex;align-items:center;gap:8px">
             <input type="checkbox" name="downloadEnabled" ${dl}>
-            <span>允许有权限的用户下载 SOP 文件</span>
+            <span>允许登录用户导出可视化 SOP</span>
           </label>
         </div>
 
@@ -212,7 +499,7 @@ function loginModal() {
       <form class="login-modal" id="loginForm">
         <button class="modal-close" type="button" data-close-login>×</button>
         <h2>登录学习平台</h2>
-        <p>登录后可查看完整活动 SOP，权限开通后可下载文件。</p>
+        <p>平台内容免费开放浏览，登录后即可导出可视化 SOP。</p>
         ${tabs}
         ${msg}
         <div class="field">
@@ -223,7 +510,10 @@ function loginModal() {
           <label>密码</label>
           <input class="input" name="password" type="password" autocomplete="current-password" placeholder="请输入密码">
         </div>
-        <button class="btn" type="submit">进入学习</button>
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn" type="submit" style="flex:1">进入学习</button>
+          <button class="btn secondary" type="button" data-close-login>取消</button>
+        </div>
       </form>
     </div>`;
   }
@@ -247,7 +537,10 @@ function loginModal() {
           <label>密码</label>
           <input class="input" name="password" type="password" autocomplete="new-password" placeholder="至少6位">
         </div>
-        <button class="btn" type="submit">提交申请</button>
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn" type="submit" style="flex:1">提交申请</button>
+          <button class="btn secondary" type="button" data-close-login>取消</button>
+        </div>
       </form>
     </div>`;
 }
@@ -255,6 +548,9 @@ function loginModal() {
 function bindAuthEvents() {
   document.querySelectorAll("[data-open-login]").forEach(btn =>
     btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authOk = false; state.authTab = "login"; rerenderCurrent(); }));
+
+  document.querySelectorAll("[data-open-register]").forEach(btn =>
+    btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authOk = false; state.authTab = "register"; rerenderCurrent(); }));
   document.querySelectorAll("[data-auth-tab]").forEach(btn =>
     btn.addEventListener("click", () => { state.authTab = btn.dataset.authTab; state.authMessage = ""; state.authOk = false; rerenderCurrent(); }));
   document.querySelectorAll("[data-close-login]").forEach(btn =>
@@ -262,7 +558,7 @@ function bindAuthEvents() {
   const logoutBtn = document.querySelector("#logoutBtn");
   if (logoutBtn) logoutBtn.addEventListener("click", async () => {
     await api("/api/logout", { method:"POST", body:{} });
-    state.user = null; window.location.reload();
+    state.user = null; state.sessionToken = ""; localStorage.removeItem(AUTH_TOKEN_KEY); window.location.reload();
   });
   const loginForm = document.querySelector("#loginForm");
   if (loginForm) loginForm.addEventListener("submit", async e => {
@@ -270,7 +566,17 @@ function bindAuthEvents() {
     const f = new FormData(e.currentTarget);
     try {
       const data = await api("/api/login", { method:"POST", body:{ username:f.get("username"), password:f.get("password") } });
-      state.user = data.user; state.loginOpen = false; state.authMessage = ""; rerenderCurrent();
+      state.user = data.user;
+      if (data.token) { state.sessionToken = data.token; localStorage.setItem(AUTH_TOKEN_KEY, data.token); }
+      state.loginOpen = false; state.authMessage = "";
+      // 登录前接口不返回 SOP 内容(planLocked)，登录后重新拉取当前页数据
+      if (state.projectView === "album" && state.currentProject) { renderProjectAlbum(state.currentProject); }
+      else if (state.projectView === "manager") { loadProjectManager(state.currentProject?.id); }
+      else if (state.projectView === "preview" && state.currentProject) { renderProjectPreview(state.currentProject, state.projectPreviewIndex, state.projectPreviewMode); }
+      else if (state.projectView === "hub") { loadProjectsView(); }
+      else if (state.caseView) { loadCases(); }
+      else if (state.currentActivity) { loadDetail(state.currentActivity.id); }
+      else { loadList(); }
     } catch (err) { state.authMessage = err.message; state.authOk = false; rerenderCurrent(); }
   });
   // ---- 共创提交事件 ----
@@ -305,13 +611,7 @@ function bindAuthEvents() {
     const files = Array.from(e.target.files || []);
     for (const file of files) {
       try {
-        const dataUrl = await new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result);
-          r.onerror = reject;
-          r.readAsDataURL(file);
-        });
-        const data = await api("/api/my-upload-image", { method: "POST", body: { dataUrl, fileName: file.name } });
+        const data = await uploadPublicImageFile(file);
         state.contributeImages.push(data.url);
       } catch (err) {
         state.contributeMsg = err.message; state.contributeOk = false;
@@ -379,7 +679,7 @@ function activityCard(a) {
   return `
     <article class="activity-card" data-id="${esc(a.id)}">
       <div class="card-img">
-        <img src="${esc(a.cover || "/assets/people/cn-social-cafe.jpg")}" alt="${esc(a.title)}" loading="lazy">
+        <img src="${esc(imageUrl(a.cover))}" alt="${esc(a.title)}" loading="lazy">
         <div class="card-img-badges">
           <span class="badge badge-city">${esc(a.city || "同城")}</span>
           <span class="badge badge-cat">${esc(a.category || "活动")}</span>
@@ -397,7 +697,10 @@ function activityCard(a) {
             <div class="card-price">${esc(a.price || "咨询主理人")}</div>
             <div class="card-meta">${esc(a.capacity || "")}${a.duration ? " · "+esc(a.duration) : ""}</div>
           </div>
-          <a class="card-cta" href="/activity/${encodeURIComponent(a.id)}">查看方案 →</a>
+          <div class="card-footer-actions">
+            <a class="card-cta" href="${activityHref(a.id)}">查看方案 →</a>
+            <button class="card-cta card-share" type="button" data-share-activity="${esc(a.id)}">📤 分享</button>
+          </div>
         </div>
       </div>
     </article>`;
@@ -436,26 +739,109 @@ function catSection(g, i) {
     </section>`;
 }
 
+async function loadHomeCases() {
+  if (state.homeCasesLoaded) return;
+  state.homeCasesLoaded = true;
+  try {
+    const data = await api("/api/public/cases");
+    state.homeCases = Array.isArray(data?.cases) ? data.cases : [];
+  } catch {
+    state.homeCases = [];
+  }
+}
+
+function getHeroCaseSlides() {
+  const list = Array.isArray(state.homeCases) ? state.homeCases : [];
+  const toTimeMs = (c) => {
+    const candidates = [c.updatedAt, c.createdAt, c.dateLabel, c.date];
+    for (const t of candidates) {
+      if (typeof t === "number" && Number.isFinite(t)) return t;
+      if (typeof t === "string") {
+        const n = Date.parse(t);
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return 0;
+  };
+  return list
+    .filter(c => c && (c.cover || (Array.isArray(c.media) && c.media.length)))
+    .map(c => {
+      const s = caseMediaSummary(c);
+      const cover = c.cover || (s.imgs.length ? s.imgs[0].url : null);
+      if (!cover) return null;
+      return {
+        createdAtMs: toTimeMs(c),
+        id: c.id,
+        title: c.title || "精彩案例",
+        meta: [c.city, c.category, c.dateLabel].filter(Boolean).join(" · "),
+        cover,
+        mediaCount: Array.isArray(c.media) ? c.media.length : 0
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, HERO_CASE_LIMIT);
+}
+
+function heroCaseSlidesHtml() {
+  const list = getHeroCaseSlides();
+  if (!list.length) {
+    return `
+      <a class="hero-case-empty" href="${SILVER_FRONT_BASE}/?view=cases">
+        <div class="hero-case-empty-title">精彩案例</div>
+        <p>暂无可用展示素材，点击查看全部案例</p>
+      </a>`;
+  }
+  const dots = list.length >= 2
+    ? `<div class="hero-case-dots">${list.map((_, i) => `<span class="hero-case-dot ${i === 0 ? "active" : ""}" data-case-dot="${i}"></span>`).join("")}</div>`
+    : "";
+  return `
+    <div class="hero-case-panel">
+      <div class="hero-case-head">
+        <div>
+          <div class="hero-case-kicker">精彩案例</div>
+          <div class="hero-case-title">真实执行案例</div>
+        </div>
+        <a class="hero-case-entry" href="${SILVER_FRONT_BASE}/?view=cases">查看全部 →</a>
+      </div>
+      <div class="hero-case-slider">
+        ${list.map((c, idx) => `
+          <a href="${caseHref(c.id)}" class="hero-case-item ${idx === 0 ? "active" : ""}" data-case-item="${idx}">
+            <img class="hero-case-cover" src="${esc(c.cover)}" alt="${esc(c.title)}">
+            <div class="hero-case-info">
+              <strong>${esc(c.title)}</strong>
+              <span>${esc(c.meta || "精彩活动实录")}</span>
+              <em>${esc(String(c.mediaCount || 0))} 个素材</em>
+            </div>
+          </a>`).join("")}
+        ${dots}
+      </div>
+    </div>`;
+}
+
 function renderList() {
   state.currentActivity = null;
   const groups = groupActivities(state.activities);
-  const quickGroups = groups.slice(0, 5);
+  const quickGroups = groups;
   const first = state.activities[0];
 
   app.className = "app-shell";
   app.innerHTML = `
     <header class="site-header">
-      <a class="brand-mark" href="/">
+      <a class="brand-mark" href="${homeHref()}">
         <div class="brand-icon"></div>
         <span>开开华彩</span>
       </a>
       <nav>
         <a href="#quick-entry">分类入口</a>
         <a href="#activity-list">活动库</a>
-        ${state.user?.role === "admin" ? `<a href="/admin">管理后台</a>` : ""}
+        <a href="?view=cases">精彩案例</a>
+        ${state.user ? `<a href="?view=projects">我的活动</a>` : ""}
+        ${state.user?.role === "admin" ? `<a href="${adminHref()}">管理后台</a>` : ""}
         ${state.user ? `<a class="contribute-entry" data-open-contribute>+ 我要共创</a>` : ""}
         <div class="auth-actions">${authBar()}</div>
       </nav>
+      ${mobilePrimaryNav("activities")}
     </header>
 
     <!-- Hero -->
@@ -465,14 +851,13 @@ function renderList() {
           <span class="eyebrow-dot"></span>
           全国同城主理人 · 活动 SOP 学习平台
         </div>
-        <h1>让每座城市的<br><em>银发社群</em>都能<br>办出好活动</h1>
-        <p>${state.siteConfig.heroDesc || '精选 '+state.activities.length+' 套活动方案，包含完整执行流程、物料清单、价格参考、风险控制，主理人学习即可落地执行。'}</p>
-        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-          <a class="btn" href="#activity-list">浏览活动库</a>
-          ${state.user
-            ? (state.user.role === "admin" ? `<a class="btn secondary" href="/admin">进入后台</a>` : "")
-            : `<button class="btn secondary" type="button" data-open-login>登录学习</button>`}
-        </div>
+        <h1>${(state.siteConfig.heroTitle && state.siteConfig.heroTitle.trim())
+          ? esc(state.siteConfig.heroTitle).replace(/\n/g, "<br>")
+          : '让每座城市的<br><em>银发社群</em>都能<br>办出好活动'}</h1>
+        <p>${state.siteConfig.heroDesc || '精选 '+state.activities.length+' 套活动方案，包含完整执行流程、物料清单、价格参考、风险预案，主理人学习即可落地执行。'}</p>
+        ${state.user
+          ? (state.user.role === "admin" ? `<div style="display:flex;gap:10px;flex-wrap:wrap;"><a class="btn" href="${adminHref()}">进入后台</a></div>` : "")
+          : `<div style="display:flex;gap:10px;flex-wrap:wrap;"><button class="btn" type="button" data-open-login>登录学习</button></div>`}
         <div class="hero-stats">
           <div class="hero-stat"><strong>${state.activities.length}+</strong><span>活动方案</span></div>
           <div class="hero-stat"><strong>${groups.length}</strong><span>活动大类</span></div>
@@ -480,19 +865,7 @@ function renderList() {
         </div>
       </div>
         <div class="hero-visual">
-          ${(state.banners||[]).length >= 1 ? `
-            <div style="position:relative;width:100%;height:100%;border-radius:16px;overflow:hidden">
-              ${(state.banners||[]).map((url,i) => `<img class="banner-slide" src="${esc(url)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.6s">`).join("")}
-              ${(state.banners||[]).length >= 2 ? `<div style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:8px;z-index:2">${(state.banners||[]).map((_,i)=>`<span class="banner-dot" style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.5);cursor:pointer;transition:background 0.3s;display:block"></span>`).join("")}</div>` : ""}
-            </div>
-          ` : `
-            <img class="hero-img-main" src="${esc(first?.cover || "/assets/people/cn-social-cafe.jpg")}" alt="活动展示">
-            ${state.activities[3] ? `<img class="hero-img-float" src="${esc(state.activities[3].cover || "/assets/people/cn-social-cafe.jpg")}" alt="活动展示">` : ""}
-            <div class="hero-badge">
-              <strong>${esc(first?.title || "精选活动方案")}</strong>
-              <span>${esc(first?.city || "同城")} · ${esc(first?.category || "银发社群")}</span>
-            </div>
-          `}
+          ${heroCaseSlidesHtml()}
         </div>
     </section>
 
@@ -552,7 +925,21 @@ function renderList() {
     });
   });
 
+  document.querySelectorAll("[data-share-activity]").forEach(btn => {
+    btn.addEventListener("click", async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      await shareLink({
+        url: activityShareHref(btn.dataset.shareActivity),
+        title: "分享活动方案",
+        text: "开开华彩活动 SOP · 活动方案",
+        button: btn
+      });
+    });
+  });
+
   bindAuthEvents();
+  setTimeout(() => startHeroCaseCarousel(), 100);
 }
 
 // ---- 详情页 ----
@@ -581,7 +968,7 @@ function tabIntro(a) {
         <ul class="highlight-list">${highlights}</ul>
       </div>
       <div class="panel">
-        ${panelTitle("活动流程")}
+        ${panelTitle("当日活动时间轴")}
         <div class="timeline">${timeline}</div>
       </div>
     </div>`;
@@ -593,23 +980,49 @@ function tabSop(a) {
   const planCard = (title, icon, content) => content ? `
     <div class="sop-card">
       <div class="sop-card-title">${icon} ${esc(title)}</div>
-      <p>${esc(content)}</p>
+      <div class="sop-card-body">${esc(content)}</div>
     </div>` : "";
 
   const downloadHtml = !state.user
-    ? `<div class="download-info"><h4>下载完整 SOP 文件</h4><p>登录后可查看 SOP 学习内容，管理员开通权限后可下载。</p></div>
-       <button class="btn" type="button" data-open-login>登录学习</button>`
+    ? `<div class="download-info"><h4>导出可视化 SOP</h4><p>登录账号后即可导出可视化执行包，内容浏览无需登录。</p></div>
+       <button class="btn" type="button" data-open-login>登录导出</button>`
     : a.downloadEnabled === false
-    ? `<div class="download-info"><h4>SOP 文件</h4><p>该活动暂未开放 SOP 下载，请联系总部开通。</p></div>
-       <button class="btn secondary" disabled>暂未开放下载</button>`
-    : canDownload()
-    ? `<div class="download-info"><h4>下载完整 SOP 文件</h4><p>包含执行核查清单、物料模板、话术参考，可转发给新手主理人使用。</p></div>
+    ? `<div class="download-info"><h4>导出可视化 SOP</h4><p>该活动暂未开放 SOP 导出，请联系总部开通。</p></div>
+       <button class="btn secondary" disabled>暂未开放导出</button>`
+    : `<div class="download-info"><h4>导出可视化 SOP</h4><p>包含活动定位、当日时间轴、沟通话术、所需物料、人员分工和复盘清单，可直接打印或另存 PDF。</p></div>
        <div style="display:flex;gap:10px;flex-wrap:wrap;">
-         <button class="btn" type="button" id="downloadSopBtn">⬇ 下载 SOP</button>
+         <button class="btn" type="button" id="downloadSopBtn">⬇ 导出 SOP</button>
          <span id="downloadTip" style="font-size:13px;color:var(--muted);align-self:center;"></span>
-       </div>`
-    : `<div class="download-info"><h4>SOP 文件</h4><p>当前账号暂未开通下载权限，请联系管理员申请。</p></div>
-       <button class="btn secondary" disabled>待开通权限</button>`;
+       </div>`;
+
+  const planHtml = (!state.user && a.planLocked)
+    ? `<div class="sop-locked">
+        <div class="sop-grid sop-blur" aria-hidden="true">
+          ${[["活动定位","🎯"],["所需物料","📦"],["人员分工","👥"],["话术与转化承接","🔄"],["注意事项与风险预案","⚠️"]].map(([t,icon]) => `
+          <div class="sop-card">
+            <div class="sop-card-title">${icon} ${t}</div>
+            <div class="sop-card-body">本模块包含完整的执行细节、话术模板与落地检查项，注册登录后即可查看全部内容。</div>
+          </div>`).join("")}
+        </div>
+        <div class="sop-locked-overlay">
+          <div class="sop-locked-box">
+            <div class="sop-locked-icon">🔒</div>
+            <h4>完整执行方案需登录查看</h4>
+            <p>登录或申请注册账号后，即可查看活动定位、所需物料、人员分工、话术承接、注意事项与风险预案等完整 SOP。</p>
+            <div class="sop-locked-btns">
+              <button class="btn" type="button" data-open-login>登录查看</button>
+              <button class="btn secondary" type="button" data-open-register>申请注册</button>
+            </div>
+          </div>
+        </div>
+      </div>`
+    : `<div class="sop-grid">
+      ${planCard("活动定位", "🎯", plan.target)}
+      ${planCard("所需物料", "📦", plan.materials)}
+      ${planCard("人员分工", "👥", plan.staffing)}
+      ${planCard("话术与转化承接", "🔄", plan.conversion)}
+      ${planCard("注意事项与风险预案", "⚠️", plan.risk)}
+    </div>`;
 
   return `
     <div class="sop-stages">
@@ -626,13 +1039,7 @@ function tabSop(a) {
         <div class="sop-stage-body">24小时内发布作品，复盘用户标签，私聊反馈，并承接下次活动或课程。</div>
       </div>
     </div>
-    <div class="sop-grid">
-      ${planCard("运营目标", "🎯", plan.target)}
-      ${planCard("核心物料", "📦", plan.materials)}
-      ${planCard("人力配置", "👥", plan.staffing)}
-      ${planCard("转化承接", "🔄", plan.conversion)}
-      ${planCard("风险控制", "⚠️", plan.risk)}
-    </div>
+    ${planHtml}
     <div class="download-section">${downloadHtml}</div>`;
 }
 
@@ -640,15 +1047,21 @@ function tabSop(a) {
 function tabMedia(a) {
   const images = a.images?.length ? a.images : [a.cover].filter(Boolean);
   const galleryImgs = images.map((src, i) =>
-    `<img src="${esc(src)}" alt="${esc(a.title)}" class="${i === 0 ? "img-main" : ""}" loading="lazy">`).join("");
+    `<div class="activity-media-tile ${i === 0 ? "img-main" : ""}" data-activity-media-key="image:${i}">
+      <img src="${esc(src)}" alt="${esc(a.title)}" loading="lazy">
+      <button class="media-share-btn" type="button" data-share-activity-media="image:${i}">📤 分享</button>
+    </div>`).join("");
 
   const videoLinks = (Array.isArray(a.videos) ? a.videos.filter(Boolean) : []);
   const refLinks = (Array.isArray(a.references) ? a.references.filter(Boolean) : []);
 
-  const linkItem = (url, index, label) =>
-    `<a class="resource-link" href="${esc(url)}" target="_blank" rel="noreferrer">
-      <span class="link-icon">🔗</span>${esc(label)} ${index+1}
-    </a>`;
+  const linkItem = (url, index, label, mediaType) =>
+    `<div class="resource-link-row" data-activity-media-key="${esc(mediaType)}:${index}">
+      <a class="resource-link" href="${esc(url)}" target="_blank" rel="noreferrer">
+        <span class="link-icon">🔗</span>${esc(label)} ${index+1}
+      </a>
+      <button class="btn secondary small media-share-btn" type="button" data-share-activity-media="${esc(mediaType)}:${index}">📤 分享</button>
+    </div>`;
 
   return `
     <div class="gallery-grid">${galleryImgs || `<div style="grid-column:1/-1;padding:40px;text-align:center;color:var(--muted)">暂无活动图片</div>`}</div>
@@ -656,13 +1069,13 @@ function tabMedia(a) {
       <div class="resource-box">
         <h4>📹 视频参考</h4>
         ${videoLinks.length
-          ? videoLinks.map((u,i) => linkItem(u, i, "视频参考")).join("")
+          ? videoLinks.map((u,i) => linkItem(u, i, "视频参考", "video")).join("")
           : `<p style="font-size:13px;color:var(--hint);">暂无视频参考，主理人可在后台添加。</p>`}
       </div>
       <div class="resource-box">
         <h4>📄 方案参考</h4>
         ${refLinks.length
-          ? refLinks.map((u,i) => linkItem(u, i, "方案参考")).join("")
+          ? refLinks.map((u,i) => linkItem(u, i, "方案参考", "reference")).join("")
           : `<p style="font-size:13px;color:var(--hint);">暂无方案参考，主理人可在后台添加。</p>`}
       </div>
     </div>`;
@@ -744,14 +1157,14 @@ function renderDetail(a) {
   app.className = "app-shell detail-shell";
   app.innerHTML = `
     <nav class="top-nav">
-      <a class="btn secondary small" href="/">← 返回活动库</a>
+      <a class="btn secondary" href="${homeHref()}">← 返回活动库</a>
       <div class="auth-actions">${authBar()}</div>
     </nav>
 
     <!-- 大图 Hero -->
     <div class="detail-hero" style="margin-top:20px">
       <img class="detail-cover-full"
-           src="${esc(a.cover || (a.images && a.images[0]) || "/assets/people/cn-social-cafe.jpg")}"
+           src="${esc(imageUrl(a.cover || (a.images && a.images[0])))}"
            alt="${esc(a.title)}">
       <div class="detail-hero-overlay">
         <div class="detail-hero-content">
@@ -816,10 +1229,12 @@ function renderDetail(a) {
       </div>
       <div class="sticky-cta-btns">
         <button class="btn light" id="favDetailBtn">${isFav ? "♥ 已收藏" : "♡ 收藏"}</button>
-        <button class="btn light" id="copyBtn">复制链接</button>
+        <button class="btn light" id="shareActivityBtn">📤 分享活动</button>
         ${canDownload() && a.downloadEnabled !== false
-          ? `<button class="btn" id="downloadSopBtn">⬇ 下载 SOP</button>`
-          : `<button class="btn" type="button" data-open-login>登录学习</button>`}
+          ? `<button class="btn" id="downloadSopBtn">⬇ 导出 SOP</button>`
+          : a.downloadEnabled === false
+          ? `<button class="btn light" disabled>暂未开放下载</button>`
+          : `<button class="btn" type="button" data-open-login>登录下载</button>`}
       </div>
     </div>
 
@@ -843,68 +1258,65 @@ function renderDetail(a) {
     favBtn.textContent = state.favorites.has(a.id) ? "♥ 已收藏" : "♡ 收藏";
   });
 
-  // 复制链接
-  document.querySelectorAll("#copyBtn").forEach(copyBtn => {
-  copyBtn.addEventListener("click", () => {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = location.href;
-      ta.style.position = "fixed"; ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      copyBtn.textContent = "✓ 已复制";
-    } catch (e) { copyBtn.textContent = "复制失败"; }
-    setTimeout(() => copyBtn.textContent = "复制链接", 1500);
-  });
+  const shareActivityBtn = document.querySelector("#shareActivityBtn");
+  if (shareActivityBtn) {
+    shareActivityBtn.addEventListener("click", () => {
+      const selected = state.selectedActivityMedia;
+      return shareLink({
+        url: activityShareHref(a.id, selected?.type, selected?.index),
+        title: a.title || "分享活动方案",
+        text: `${a.title || "活动方案"} · 开开华彩活动 SOP`,
+        button: shareActivityBtn
+      });
+    });
+  }
+
+  document.querySelectorAll("[data-share-activity-media]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const [mediaType, rawIndex] = String(btn.dataset.shareActivityMedia || "").split(":");
+      return shareLink({
+        url: activityShareHref(a.id, mediaType, Number(rawIndex)),
+        title: `${a.title || "活动方案"} · 分享素材`,
+        text: `${a.title || "活动方案"} · 开开华彩活动 SOP 素材`,
+        button: btn
+      });
+    });
   });
 
-  // 下载 SOP
+  const selectedMedia = state.selectedActivityMedia;
+  if (selectedMedia) {
+    const selectedNode = [...document.querySelectorAll("[data-activity-media-key]")]
+      .find(node => node.dataset.activityMediaKey === `${selectedMedia.type}:${selectedMedia.index}`);
+    selectedNode?.classList.add("share-target");
+    selectedNode?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  // 导出 SOP
   document.querySelectorAll("#downloadSopBtn").forEach(dlBtn => {
   dlBtn.addEventListener("click", async () => {
     try {
-      const res = await fetch(`/api/public/activities/${encodeURIComponent(a.id)}/download`, { credentials:"same-origin" });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "下载失败"); }
-      const e2 = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-      const rv = v => {
-        if (v == null || v === "") return "";
-        if (Array.isArray(v)) return "<ul>" + v.map(x => "<li>" + (typeof x === "object" ? rv(x) : e2(x)) + "</li>").join("") + "</ul>";
-        if (typeof v === "object") { const KM = {target:"目标人群",materials:"核心物料",staffing:"人力配置",conversion:"转化承接",risk:"风险控制",time:"时间",item:"事项"}; return Object.entries(v).map(([k,val]) => '<div class="row"><span class="k">' + e2(KM[k]||k) + '</span><div class="v">' + rv(val) + "</div></div>").join(""); }
-        return e2(v).replace(/\n/g, "<br>");
-      };
-      const sec = (t, v) => { const b = rv(v); return b ? "<section><h2>" + t + "</h2>" + b + "</section>" : ""; };
-      const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + e2(a.title) + ' - SOP</title><style>'
-        + "body{font-family:'PingFang SC','Microsoft YaHei',sans-serif;color:#2d2a26;max-width:780px;margin:0 auto;padding:32px 24px;line-height:1.8}"
-        + ".head{border-bottom:3px solid #c8742c;padding-bottom:16px;margin-bottom:24px}"
-        + "h1{font-size:26px;margin:0 0 8px}"
-        + ".meta{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:14px;color:#6b6258;margin-top:10px}.meta b{color:#c8742c}"
-        + "section{margin-bottom:22px;page-break-inside:avoid}"
-        + "h2{font-size:17px;color:#c8742c;border-left:4px solid #c8742c;padding-left:10px;margin:0 0 10px}"
-        + "ul{margin:6px 0;padding-left:22px}li{margin:4px 0}"
-        + '.row{display:flex;gap:12px;margin:6px 0}.k{flex:0 0 110px;font-weight:600;color:#8a5a23}.v{flex:1}'
-        + ".foot{margin-top:32px;padding-top:12px;border-top:1px solid #e5ded4;font-size:12px;color:#a39a8d;text-align:center}"
-        + "@media print{body{padding:0}}"
-        + "</style></head><body>"
-        + '<div class="head"><h1>' + e2(a.title) + '</h1><div class="meta">'
-        + "<span>参考价格 <b>" + e2(a.price||"-") + "</b></span>"
-        + "<span>适合人数 <b>" + e2(a.capacity||"-") + "</b></span>"
-        + "<span>活动时长 <b>" + e2(a.duration||"-") + "</b></span>"
-        + "<span>推荐地点 <b>" + e2(a.location||"-") + "</b></span>"
-        + "</div></div>"
-        + sec("活动介绍", a.intro)
-        + "<section><h2>执行三阶段</h2><div class=\'row\'><span class=\'k\'>📋 活动前</span><div class=\'v\'>确认报名人数、场地动线、物料备齐、老师/摄影落实、用户提醒和应急预案。</div></div><div class=\'row\'><span class=\'k\'>🎯 活动中</span><div class=\'v\'>先签到分组，再破冰控场，确保每个用户都有被照顾和被记录的体验点。</div></div><div class=\'row\'><span class=\'k\'>✅ 活动后</span><div class=\'v\'>24小时内发布作品，复盘用户标签，私聊反馈，并承接下次活动或课程。</div></div></section>"
-        + sec("活动亮点", a.highlights)
-        + sec("执行方案", a.plan)
-        + (Array.isArray(a.schedule) && a.schedule.length ? "<section><h2>活动流程</h2><table style=\'width:100%;border-collapse:collapse\'>" + a.schedule.map(s => "<tr><td style=\'width:90px;padding:7px 10px;border-bottom:1px solid #eee8de;font-weight:600;color:#c8742c;white-space:nowrap;vertical-align:top\'>" + e2(s.time||"") + "</td><td style=\'padding:7px 10px;border-bottom:1px solid #eee8de\'>" + e2(s.item||"") + "</td></tr>").join("") + "</table></section>" : "")
-        + '<div class="foot">开开华彩 · 活动SOP学习平台 · 打印时选择「另存为PDF」即可保存</div>'
-        + "<scr" + "ipt>window.onload=()=>setTimeout(()=>window.print(),300);</scr" + "ipt></body></html>";
-      const w = window.open("", "_blank");
-      w.document.write(html);
-      w.document.close();
+      dlBtn.textContent = "生成中…";
+      const res = await fetch(apiUrl(`/api/public/activities/${encodeURIComponent(a.id)}/download`), { credentials:"include" });
+      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "导出失败"); }
+      const html = await res.text();
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank");
+      if (!win) {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `sop-${a.id || "activity"}.html`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
       dlBtn.textContent = "✓ 已生成";
-      setTimeout(() => dlBtn.textContent = "⬇ 下载 SOP", 2000);
-    } catch (err) { alert(err.message); }
+      setTimeout(() => dlBtn.textContent = "⬇ 导出 SOP", 2000);
+    } catch (err) {
+      alert(err.message);
+      dlBtn.textContent = "⬇ 导出 SOP";
+    }
   });
   });
 
@@ -931,16 +1343,18 @@ function renderDetail(a) {
     fileInput.style.display = "none";
     document.body.appendChild(fileInput);
     upBtn.addEventListener("click", () => fileInput.click());
-    fileInput.addEventListener("change", () => {
+    fileInput.addEventListener("change", async () => {
       const files = [...fileInput.files].slice(0, 3 - pendingImgs.length);
-      files.forEach(f => {
-        const r = new FileReader();
-        r.onload = ev => {
-          pendingImgs.push(ev.target.result);
+      upBtn.textContent = "上传中...";
+      for (const f of files) {
+        try {
+          const data = await uploadPublicImageFile(f);
+          pendingImgs.push(data.url);
           upBtn.textContent = "📎 已选 " + pendingImgs.length + " 张";
-        };
-        r.readAsDataURL(f);
-      });
+        } catch (err) {
+          alert(err.message || "图片上传失败");
+        }
+      }
       fileInput.value = "";
     });
   }
@@ -965,7 +1379,7 @@ function renderDetail(a) {
   // ---- 加载留言列表 ----
   async function loadPosts() {
     try {
-      const r = await fetch("/api/posts?activityId=" + encodeURIComponent(a.id)).then(x => x.json());
+      const r = await fetch(apiUrl("/api/posts?activityId=" + encodeURIComponent(a.id)), { credentials:"include" }).then(x => x.json());
       const posts = r.posts || [];
       const wrap = document.querySelector("#postsList");
       if (!wrap) return;
@@ -1004,7 +1418,10 @@ function renderDetail(a) {
 async function loadList() {
   const p = new URLSearchParams();
   Object.entries(state.filters).forEach(([k,v]) => v && p.set(k,v));
-  const data = await api(`/api/public/activities?${p}`);
+  const [data] = await Promise.all([
+    api(`/api/public/activities?${p}`),
+    loadHomeCases()
+  ]);
   state.activities = data.activities || [];
   state.cities = data.cities || [];
   state.categories = data.categories || [];
@@ -1013,57 +1430,1191 @@ async function loadList() {
 
 async function loadDetail(id) {
   const data = await api(`/api/public/activities/${encodeURIComponent(id)}`);
-  state.activeTab = "intro";
+  state.selectedActivityMedia = parseActivityMediaSelection();
+  state.activeTab = state.selectedActivityMedia ? "media" : "intro";
+  const isNewActivityView = state.currentActivity?.id !== data.activity?.id;
   renderDetail(data.activity);
+  if (isNewActivityView && data.activity?.id) void trackMediaView("activity", data.activity.id, null);
 }
 
-function startHeroCarousel(activities) {
-  const banners = state.banners || [];
-  if (banners.length >= 2) {
-    let idx = 0;
-    const go = (n) => {
-      idx = n;
-      document.querySelectorAll(".banner-slide").forEach((el,i) => el.style.opacity = i===n?"1":"0");
-      document.querySelectorAll(".banner-dot").forEach((el,i) => { el.style.background = i===n?"var(--accent)":"rgba(255,255,255,0.5)"; });
+function projectMediaLabel(type) {
+  return type === "image" ? "图片" : type === "video" ? "视频" : "素材";
+}
+
+// 上传时 title 保存的是浏览器选择器返回的原文件名；展示层统一从这里取名，
+// 不使用 TOS 内部对象名，避免把随机存储键暴露给客户。
+function projectMediaDisplayName(media, index = media?.index) {
+  const title = String(media?.title || media?.name || "").trim();
+  if (title) return title;
+  const number = Number.isInteger(Number(index)) ? ` #${Number(index) + 1}` : "";
+  return `未命名${projectMediaLabel(media?.type)}${number}`;
+}
+
+function projectMediaTypeForTab(tab) {
+  return tab === "images" ? "image" : tab === "videos" ? "video" : "";
+}
+
+function projectMediaGroups(project) {
+  const groups = { images: [], videos: [] };
+  (project?.media || []).forEach((m, index) => {
+    const item = { ...m, index };
+    if (m.type === "image") groups.images.push(item);
+    else if (m.type === "video") groups.videos.push(item);
+  });
+  return groups;
+}
+
+function projectDefaultMediaTab(project) {
+  const groups = projectMediaGroups(project);
+  return groups.images.length ? "images" : "videos";
+}
+
+function projectMediaFileType(file) {
+  const name = String(file?.name || "").toLowerCase();
+  const ext = name.includes(".") ? "." + name.split(".").pop() : "";
+  if (file?.type?.startsWith("image/") || [".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"].includes(ext)) return "image";
+  if (file?.type?.startsWith("video/") || [".mp4", ".m4v", ".mov", ".webm"].includes(ext)) return "video";
+  return "";
+}
+
+function projectMediaAuditCount(project, mediaIndex, action) {
+  return Number((project?.auditSummary || [])
+    .find(x => Number(x.mediaIndex) === Number(mediaIndex) && x.action === action)?.count || 0);
+}
+
+function projectAuditTotal(project, action) {
+  return (project?.auditSummary || [])
+    .filter(x => x.action === action)
+    .reduce((sum, x) => sum + Number(x.count || 0), 0);
+}
+
+const PROJECT_VIDEO_MULTIPART_THRESHOLD = 16 * 1024 * 1024;
+const PROJECT_VIDEO_PART_RETRIES = 4;
+const PROJECT_VIDEO_UPLOAD_WORKERS = 3;
+const PROJECT_VIDEO_PART_TIMEOUT_MS = 180000;
+const PROJECT_VIDEO_UPLOAD_STATE_PREFIX = "silver_project_video_upload:";
+
+function projectUploadSleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function projectUploadStateKey(projectId, file) {
+  return `${PROJECT_VIDEO_UPLOAD_STATE_PREFIX}${projectId}:${file.name || "video"}:${file.size || 0}:${file.lastModified || 0}`;
+}
+
+function readProjectUploadState(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "null");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeProjectUploadState(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+}
+
+function clearProjectUploadState(key) {
+  try { localStorage.removeItem(key); } catch {}
+}
+
+async function projectFetchWithTimeout(url, options, timeoutMs = PROJECT_VIDEO_PART_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function uploadProjectVideoMultipart(projectId, file, onProgress) {
+  const name = String(file.name || "video.mp4");
+  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "mp4";
+  const storageKey = projectUploadStateKey(projectId, file);
+  const saved = readProjectUploadState(storageKey);
+  let init = null;
+  let sessionId = saved?.sessionId || "";
+  if (sessionId) {
+    try {
+      const status = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/status`);
+      if (status.status === "completed") {
+        const completed = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete`, { method: "POST", body: {} });
+        clearProjectUploadState(storageKey);
+        return completed;
+      }
+      if (status.status === "uploading" && Number(status.fileSize) === Number(file.size) && String(status.filename || "").toLowerCase().endsWith(`.${ext}`)) {
+        init = status;
+      } else {
+        clearProjectUploadState(storageKey);
+        sessionId = "";
+      }
+    } catch {
+      clearProjectUploadState(storageKey);
+      sessionId = "";
+    }
+  }
+  if (!init) {
+    init = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/init`, {
+      method: "POST",
+      body: { type: "video", ext, title: name, size: file.size }
+    });
+    sessionId = init.sessionId;
+  }
+  if (!sessionId || !init.partSize || !init.partCount) throw new Error("视频分片上传初始化失败");
+  const completedParts = new Set((init.completedParts || []).map(Number).filter(part => Number.isInteger(part) && part >= 1 && part <= Number(init.partCount)));
+  const persistState = () => writeProjectUploadState(storageKey, {
+    sessionId,
+    projectId,
+    fileName: name,
+    fileSize: file.size,
+    lastModified: file.lastModified || 0,
+    completedParts: Array.from(completedParts).sort((a, b) => a - b),
+    updatedAt: Date.now()
+  });
+  persistState();
+  const uploadedBytes = () => Array.from(completedParts).reduce((total, partNumber) => {
+    const start = (partNumber - 1) * init.partSize;
+    return total + Math.max(0, Math.min(file.size, start + init.partSize) - start);
+  }, 0);
+  if (onProgress) onProgress({ uploadedBytes: uploadedBytes(), totalBytes: file.size, percent: Math.round(uploadedBytes() / file.size * 100) });
+
+  const uploadPart = async partNumber => {
+    if (completedParts.has(partNumber)) return;
+    const start = (partNumber - 1) * init.partSize;
+    const end = Math.min(file.size, start + init.partSize);
+    let lastError = null;
+    for (let attempt = 1; attempt <= PROJECT_VIDEO_PART_RETRIES; attempt++) {
+      try {
+        const signed = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/part-url?partNumber=${partNumber}`);
+        const response = await projectFetchWithTimeout(signed.url, {
+          method: "PUT",
+          mode: "cors",
+          headers: { "Content-Type": file.type || "video/mp4" },
+          body: file.slice(start, end)
+        });
+        if (!response.ok) throw new Error(`第${partNumber}片上传失败（HTTP ${response.status}）`);
+        completedParts.add(partNumber);
+        persistState();
+        if (onProgress) onProgress({ uploadedBytes: uploadedBytes(), totalBytes: file.size, percent: Math.round(uploadedBytes() / file.size * 100) });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < PROJECT_VIDEO_PART_RETRIES) await projectUploadSleep(Math.min(3000, attempt * 700));
+      }
+    }
+    throw lastError || new Error(`第${partNumber}片上传失败`);
+  };
+
+  const pending = [];
+  for (let partNumber = 1; partNumber <= init.partCount; partNumber++) {
+    if (!completedParts.has(partNumber)) pending.push(partNumber);
+  }
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < pending.length) {
+      const partNumber = pending[cursor++];
+      await uploadPart(partNumber);
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(PROJECT_VIDEO_UPLOAD_WORKERS, Math.max(1, pending.length)) }, () => worker()));
+    const result = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete`, { method: "POST", body: {} });
+    clearProjectUploadState(storageKey);
+    return result;
+  } catch (error) {
+    persistState();
+    throw error;
+  }
+}
+
+async function uploadProjectMediaFile(projectId, file, onProgress) {
+  const type = projectMediaFileType(file);
+  if (!type) throw new Error("活动相册仅支持图片和视频");
+  const name = String(file.name || "file");
+  const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "bin";
+  if (type === "video" && Number(file.size || 0) >= PROJECT_VIDEO_MULTIPART_THRESHOLD) {
+    return uploadProjectVideoMultipart(projectId, file, onProgress);
+  }
+  const query = new URLSearchParams({ type, ext, title: name });
+  const headers = { "Content-Type": file.type || "application/octet-stream" };
+  if (state.sessionToken) headers.Authorization = `Bearer ${state.sessionToken}`;
+  const res = await fetch(apiUrl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media?${query}`), {
+    method: "POST",
+    credentials: "include",
+    headers,
+    body: file
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "素材上传失败");
+  return data;
+}
+
+function projectShareButton(project, mediaIndex, className = "btn secondary small") {
+  return `<button class="${className}" type="button" data-project-share="${esc(project.id)}" ${mediaIndex === undefined ? "" : `data-project-media-share="${mediaIndex}"`}>📤 分享</button>`;
+}
+
+function projectDownloadButton(project, index) {
+  const type = project.media[index]?.type;
+  if (type === "image" && isMobileProjectDownload()) {
+    return "";
+  }
+  const name = projectMediaDisplayName(project.media[index], index);
+  if (!state.user) {
+    return `<button class="btn secondary small" type="button" data-project-login title="登录后下载${esc(name)}">登录后下载</button>`;
+  }
+  return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">下载${projectMediaLabel(type)}</button>`;
+}
+
+function projectMobileMediaTip(project, index) {
+  const type = project.media[index]?.type;
+  if (!isMobileProjectDownload() || !["image", "video"].includes(type)) return "";
+  const target = type === "video" ? "点视频右下角⋮，选择下载" : "长按图片，点击下载到相册";
+  return `<p class="project-mobile-media-tip">特别提醒：${target}</p>`;
+}
+
+function isMobileProjectDownload() {
+  return /Android|HarmonyOS|Adr|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "")
+    || Boolean(window.matchMedia?.("(max-width: 760px)").matches);
+}
+
+function bindProjectVideoThumbs() {
+  document.querySelectorAll("video[data-project-video-thumb]").forEach(video => {
+    const seekToThumb = () => {
+      if (video.dataset.thumbReady === "1" || !Number.isFinite(video.duration) || video.duration <= 0) return;
+      try {
+        video.currentTime = Math.min(0.5, Math.max(0, video.duration - 0.05));
+        video.dataset.thumbReady = "1";
+      } catch {}
     };
-    document.querySelectorAll(".banner-dot").forEach((dot,i) => dot.addEventListener("click", () => { go(i); clearInterval(timer); timer = setInterval(() => go((idx+1)%banners.length), 5000); }));
-    let timer = setInterval(() => go((idx+1)%banners.length), 5000);
-    go(0);
+    video.addEventListener("loadedmetadata", seekToThumb, { once: true });
+    if (video.readyState >= 1) seekToThumb();
+  });
+}
+
+function triggerProjectDownload(url, filename = "活动素材", type = "") {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noreferrer";
+  // 移动端新窗口容易被微信/系统浏览器当作媒体预览，直接在当前上下文访问
+  // 带 attachment 的 TOS 地址，交给浏览器自己的下载流程处理。
+  link.target = isMobileProjectDownload() && type !== "video" ? "_self" : "_blank";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function projectMediaCardHtml(project, m, manager = false) {
+  if (!["image", "video"].includes(m.type)) return "";
+  const mediaName = projectMediaDisplayName(m, m.index);
+  if (!manager) {
+    const visual = m.type === "image"
+      ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
+      : m.type === "video"
+      ? `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video><span class="project-gallery-play">▶</span>`
+      : "";
+    return `<button class="project-gallery-tile" type="button" data-project-open-media="${m.index}" aria-label="打开${projectMediaLabel(m.type)}：${esc(mediaName)}">
+      ${visual}<span class="project-gallery-name" title="${esc(mediaName)}">${esc(mediaName)}</span><span class="project-gallery-badge">${projectMediaLabel(m.type)}</span>
+    </button>`;
+  }
+  const selected = state.selectedProjectMediaIndex === m.index ? "share-target" : "";
+  const visual = m.type === "image"
+    ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
+    : m.type === "video"
+    ? `<button class="project-media-video-preview" type="button" data-project-open-media="${m.index}" aria-label="打开视频 ${m.index + 1}"><video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video><span class="project-gallery-play">▶</span></button>`
+    : "";
+  return `<article class="project-media-card ${selected}" data-project-media-index="${m.index}">
+    <div class="project-media-visual">${visual}</div>
+    <div class="project-media-info">
+      <div class="project-media-head"><strong>${esc(projectMediaLabel(m.type))}</strong><span>#${m.index + 1}</span></div>
+      <p class="project-media-filename" title="${esc(mediaName)}">${esc(mediaName)}</p>
+      ${m.caption ? `<p class="project-media-caption">备注：${esc(m.caption)}</p>` : ""}
+      ${manager ? `<div class="project-media-audit-counts"><span>查看 ${projectMediaAuditCount(project, m.index, "view")}</span><span>下载 ${projectMediaAuditCount(project, m.index, "download")}</span></div>` : ""}
+      <div class="project-media-actions">
+        ${projectShareButton(project, m.index)}
+        ${projectDownloadButton(project, m.index)}
+        ${manager ? `<button class="btn ghost small danger" type="button" data-project-delete-media="${m.index}">删除</button>` : ""}
+      </div>
+    </div>
+  </article>`;
+}
+
+function projectLightboxHtml(project) {
+  const index = state.projectLightboxIndex === null || state.projectLightboxIndex === undefined || state.projectLightboxIndex === ""
+    ? -1
+    : Number(state.projectLightboxIndex);
+  const media = Array.isArray(project.media) ? project.media : [];
+  if (!Number.isInteger(index) || index < 0 || index >= media.length) return "";
+  const m = media[index];
+  const mediaName = projectMediaDisplayName(m, index);
+  const body = m.type === "image"
+    ? `<img class="project-lightbox-image" src="${esc(m.url)}" alt="${esc(m.title || project.title)}">`
+    : m.type === "video"
+    ? `<video class="project-lightbox-video" src="${esc(m.url)}" controls playsinline preload="metadata"></video>`
+    : `<div class="project-lightbox-document"><strong>文档素材</strong><span>${esc(m.title || "活动交付文档")}</span><a class="btn small" href="${esc(m.url)}" target="_blank" rel="noreferrer">打开文档</a></div>`;
+  return `<div class="project-lightbox" role="dialog" aria-modal="true" aria-label="查看活动素材">
+    <button class="project-lightbox-close" type="button" data-project-lightbox-close aria-label="关闭">×</button>
+    ${index > 0 ? `<button class="project-lightbox-nav prev" type="button" data-project-lightbox-nav="${index - 1}" aria-label="上一个">‹</button>` : ""}
+    <div class="project-lightbox-stage">${body}</div>
+    ${index < media.length - 1 ? `<button class="project-lightbox-nav next" type="button" data-project-lightbox-nav="${index + 1}" aria-label="下一个">›</button>` : ""}
+    <div class="project-lightbox-toolbar">
+      <span>${index + 1} / ${media.length}</span>
+      ${projectShareButton(project, index, "btn secondary small")}
+      ${projectDownloadButton(project, index)}
+    </div>
+    ${projectMobileMediaTip(project, index)}
+    <p class="project-lightbox-caption"><strong>${esc(mediaName)}</strong>${m.caption ? `<span>备注：${esc(m.caption)}</span>` : ""}</p>
+  </div>`;
+}
+
+function projectHeader(title, subtitle = "") {
+  return `<header class="site-header">
+    <a class="brand-mark" href="${homeHref()}"><div class="brand-icon"></div><span>开开华彩</span></a>
+    <nav><a href="${homeHref()}">活动库</a><a href="?view=cases">精彩案例</a>${state.user ? `<a href="?view=projects">我的活动</a>` : ""}<div class="auth-actions">${authBar()}</div></nav>
+    ${mobilePrimaryNav("projects")}
+  </header>`;
+}
+
+function renderProjectLogin() {
+  state.projectView = "hub";
+  state.projectCreateOpen = false;
+  state.currentActivity = null;
+  app.className = "app-shell";
+  app.innerHTML = `${projectHeader("活动交付相册")}
+    <section class="project-login-empty"><div class="project-empty-icon">▣</div><h1>活动交付相册</h1><p>登录后创建活动相册，把照片和视频直接交付给客户。</p><button class="btn" type="button" data-open-login>登录后开始</button></section>${loginModal()}`;
+  bindAuthEvents();
+}
+
+async function loadProjectsView() {
+  state.projectView = "hub";
+  state.caseView = false;
+  state.currentActivity = null;
+  if (!state.user) return renderProjectLogin();
+  if (!state.activities.length) {
+    try {
+      const activities = await api("/api/public/activities");
+      state.activities = activities.activities || [];
+    } catch {}
+  }
+  try {
+    const data = await api("/api/my/activity-projects");
+    state.projects = data.projects || [];
+    renderProjectsView();
+  } catch (err) {
+    app.innerHTML = `<div class="error">${esc(err.message)}</div>`;
+  }
+}
+
+function renderProjectsView() {
+  state.projectView = "hub";
+  state.currentActivity = null;
+  state.projectMetaEditOpen = false;
+  const projects = state.projects || [];
+  app.className = `app-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
+  app.innerHTML = `${projectHeader("我的活动")}
+    <section class="project-hub-head">
+      <div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付工作台</div><h1>我的活动相册</h1><p>每场活动单独建一个相册，上传现场照片和视频后直接发给客户。</p></div>
+      <button class="btn" id="openProjectCreateBtn" type="button">＋ 新建活动项目</button>
+    </section>
+    <section class="project-list-section"><div class="section-label"><div class="label-bar"></div><div><h2>活动项目</h2><p>${projects.length ? `已创建 ${projects.length} 场活动` : "还没有活动项目"}</p></div></div>
+      ${projects.length ? `<div class="project-list-grid">${projects.map(p => {
+        const g = projectMediaGroups(p);
+        return `<article class="project-list-card"><div class="project-list-cover">${p.cover ? `<img src="${esc(p.cover)}" alt="${esc(p.title)}">` : `<div class="project-cover-empty">▣</div>`}<span>${p.status === "published" ? "可分享" : "已归档"}</span></div><div class="project-list-body"><h3>${esc(p.title)}</h3><p>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写时间地点")}</p><div class="project-list-stats">${g.images.length} 图片 · ${g.videos.length} 视频</div><div class="project-list-actions"><button class="btn small" type="button" data-project-open="${esc(p.id)}">管理素材</button>${p.status === "published" ? `<a class="btn secondary small" href="${esc(projectShareHref(p.id))}" target="_blank" rel="noreferrer">打开客户相册</a>${projectShareButton(p)}` : ""}</div></div></article>`;
+      }).join("")}</div>` : `<div class="project-empty-state">创建第一场活动，把微信群里的素材迁移到平台。</div>`}
+    </section>${state.projectCreateOpen ? `<div class="project-create-modal-mask" data-project-create-overlay><section class="project-create-modal" role="dialog" aria-modal="true" aria-labelledby="projectCreateTitle"><button class="project-create-close" type="button" data-close-project-create aria-label="关闭">×</button><div class="eyebrow"><span class="eyebrow-dot"></span>新建活动项目</div><h2 id="projectCreateTitle">创建活动相册</h2><p>先填写活动信息，创建后进入相册页面上传照片和视频。</p><form id="projectCreateForm" class="project-create-form"><label><span>活动名称</span><input class="input" name="title" required placeholder="例如：8月9日山西社群旗袍美拍"></label><label><span>关联 SOP</span><select class="select" name="activityId"><option value="">暂不关联</option>${(state.activities || []).map(a => `<option value="${esc(a.id)}">${esc(a.title)}</option>`).join("")}</select></label><label><span>活动日期</span><input class="input" name="dateLabel" type="date"></label><label><span>城市/地区</span><input class="input" name="city" placeholder="例如：太原"></label><label class="project-create-wide"><span>给客户看的活动说明</span><textarea class="input" name="description" rows="3" placeholder="活动回顾、感谢语或交付提示"></textarea></label><div class="project-create-modal-actions"><button class="btn secondary" type="button" data-close-project-create>取消</button><button class="btn" type="submit">创建并进入上传</button></div></form></section></div>` : ""}${loginModal()}`;
+
+  document.querySelector("#openProjectCreateBtn")?.addEventListener("click", () => { state.projectCreateOpen = true; renderProjectsView(); });
+  document.querySelectorAll("[data-close-project-create]").forEach(btn => btn.addEventListener("click", () => { state.projectCreateOpen = false; renderProjectsView(); }));
+  document.querySelector("[data-project-create-overlay]")?.addEventListener("click", e => { if (e.target.dataset.projectCreateOverlay !== undefined) { state.projectCreateOpen = false; renderProjectsView(); } });
+  document.querySelector("#projectCreateForm")?.addEventListener("submit", async e => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const btn = e.currentTarget.querySelector("button[type=submit]");
+    btn.disabled = true; btn.textContent = "创建中…";
+    try {
+      const data = await api("/api/my/activity-projects", { method: "POST", body: { title: f.get("title"), activityId: f.get("activityId"), dateLabel: f.get("dateLabel"), city: f.get("city"), description: f.get("description") } });
+      state.projectCreateOpen = false;
+      history.pushState(null, "", `?view=project-manage&project=${encodeURIComponent(data.project.id)}`);
+      await loadProjectManager(data.project.id);
+    } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "创建并上传素材"; }
+  });
+  document.querySelectorAll("[data-project-open]").forEach(btn => btn.addEventListener("click", () => {
+    state.projectCreateOpen = false;
+    history.pushState(null, "", `?view=project-manage&project=${encodeURIComponent(btn.dataset.projectOpen)}`);
+    loadProjectManager(btn.dataset.projectOpen);
+  }));
+  bindProjectShareEvents();
+  bindAuthEvents();
+}
+
+function bindProjectShareEvents() {
+  document.querySelectorAll("[data-project-share]").forEach(btn => btn.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    const index = btn.dataset.projectMediaShare;
+    return shareLink({ url: projectShareHref(btn.dataset.projectShare, index === undefined ? undefined : Number(index)), title: "分享活动相册", text: "开开华彩活动交付相册", button: btn });
+  }));
+}
+
+async function loadProjectManager(id) {
+  if (!state.user) return renderProjectLogin();
+  if (!id) return loadProjectsView();
+  try {
+    const data = await api(`/api/my/activity-projects/${encodeURIComponent(id)}`);
+    state.currentProject = data.project;
+    state.projectView = "manager";
+    renderProjectManager(state.currentProject);
+  } catch (err) { app.innerHTML = `<div class="error">${esc(err.message)}</div>`; }
+}
+
+function renderProjectManager(project) {
+  state.projectView = "manager";
+  state.currentProject = project;
+  state.currentActivity = null;
+  const g = projectMediaGroups(project);
+  if (!["images", "videos"].includes(state.projectMediaTab)) state.projectMediaTab = g.images.length ? "images" : "videos";
+  const managerTab = state.projectMediaTab;
+  const managerType = projectMediaTypeForTab(managerTab);
+  const managerMedia = (project.media || []).map((m, i) => ({ ...m, index: i })).filter(m => !managerType || m.type === managerType);
+  const activity = (state.activities || []).find(a => a.id === project.activityId);
+  const mobileMode = isMobileProjectDownload();
+  const metaFormHtml = `<form id="projectMetaForm"><label><span>活动名称</span><input class="input" name="title" value="${esc(project.title)}"></label><label><span>日期</span><input class="input" name="dateLabel" value="${esc(project.dateLabel)}"></label><label><span>城市/地区</span><input class="input" name="city" value="${esc(project.city)}"></label><label><span>客户说明</span><textarea class="input" name="description" rows="5">${esc(project.description)}</textarea></label><button class="btn small" type="submit">保存活动信息</button></form>`;
+  const projectMetaSummary = `<div class="project-mobile-meta-summary"><div><span class="project-mobile-meta-label">活动信息</span><strong>${esc(project.title)}</strong><small>${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "未填写时间地点")}</small></div><button class="btn secondary small" type="button" data-open-project-meta>编辑信息</button></div>`;
+  const metaPanelHtml = mobileMode
+    ? `<div class="project-meta-panel project-meta-panel-mobile">${projectMetaSummary}</div>`
+    : `<div class="project-meta-panel"><div class="panel-title"><span class="title-bar"></span>活动信息</div>${metaFormHtml}<div class="project-share-box"><strong>合作伙伴客户分享链接</strong><input class="input" readonly value="${esc(projectShareHref(project.id))}"><small>客户打开链接即可查看和下载本相册；精彩案例素材下载仍需登录或申请账号。</small></div>${state.user && ["admin", "operator"].includes(state.user.role) && !project.sourceCaseId ? `<button class="btn secondary project-promote-btn" id="projectPromoteBtn" type="button">沉淀为精彩案例草稿</button>` : project.sourceCaseId ? `<p class="project-promoted-note">已沉淀为案例：${esc(project.sourceCaseId)}</p>` : ""}</div>`;
+  const metaModalHtml = mobileMode && state.projectMetaEditOpen
+    ? `<div class="project-create-modal-mask project-meta-edit-mask" data-project-meta-overlay><section class="project-create-modal project-meta-edit-modal" role="dialog" aria-modal="true" aria-labelledby="projectMetaEditTitle"><button class="project-create-close" type="button" data-close-project-meta aria-label="关闭">×</button><div class="eyebrow"><span class="eyebrow-dot"></span>活动信息</div><h2 id="projectMetaEditTitle">编辑活动信息</h2><p>保存后返回素材上传界面。</p>${metaFormHtml}</section></div>`
+    : "";
+  app.className = `app-shell${mobileMode ? " project-mobile-mode" : ""}`;
+  app.innerHTML = `${projectHeader(project.title)}
+    <div class="project-manager-nav"><button class="btn secondary" id="projectBackBtn">← 返回我的活动</button><div>${projectShareButton(project)}<a class="btn secondary small" href="${projectShareHref(project.id)}" target="_blank" rel="noreferrer">打开客户相册</a></div></div>
+    <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span><strong>${projectAuditTotal(project, "view")}</strong><span>次查看</span><strong>${projectAuditTotal(project, "download")}</strong><span>次下载</span></div></section>
+    <section class="project-manager-layout">
+      ${metaPanelHtml}
+      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 <span class="project-upload-hint">图片 ≤50MB · 视频 ≤2GB</span></div><label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>鸿蒙微信/部分安卓微信相册单次最多 9 张；上传完成后再次点击此处即可继续，不限总数</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress"></div><div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
+    </section>${metaModalHtml}${projectLightboxHtml(project)}${loginModal()}`;
+
+  document.querySelector("#projectBackBtn")?.addEventListener("click", () => { history.pushState(null, "", "?view=projects"); loadProjectsView(); });
+  document.querySelector("[data-open-project-meta]")?.addEventListener("click", () => { state.projectMetaEditOpen = true; renderProjectManager(project); });
+  document.querySelectorAll("[data-close-project-meta]").forEach(btn => btn.addEventListener("click", () => { state.projectMetaEditOpen = false; renderProjectManager(project); }));
+  document.querySelector("[data-project-meta-overlay]")?.addEventListener("click", e => { if (e.target.dataset.projectMetaOverlay !== undefined) { state.projectMetaEditOpen = false; renderProjectManager(project); } });
+  document.querySelector("#projectMetaForm")?.addEventListener("submit", async e => {
+    e.preventDefault(); const f = new FormData(e.currentTarget); const btn = e.currentTarget.querySelector("button"); btn.disabled = true; btn.textContent = "保存中…";
+    try { const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}`, { method: "PATCH", body: { title: f.get("title"), dateLabel: f.get("dateLabel"), city: f.get("city"), description: f.get("description") } }); state.currentProject = data.project; state.projectMetaEditOpen = false; renderProjectManager(data.project); } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "保存活动信息"; }
+  });
+  document.querySelector("#projectFileInput")?.addEventListener("change", async e => {
+    const files = [...e.target.files]; const progress = document.querySelector("#projectUploadProgress"); let done = 0;
+    e.target.value = "";
+    for (const file of files) {
+      if (progress) progress.textContent = `正在上传本批 ${done + 1}/${files.length}：${file.name} · 已累计 ${state.currentProject?.media?.length || project.media?.length || 0} 个`;
+      try {
+        const data = await uploadProjectMediaFile(project.id, file, progressState => {
+          if (progress) progress.textContent = `正在上传本批 ${done + 1}/${files.length}：${file.name} · ${progressState.percent}%`;
+        });
+        state.currentProject = data.project || state.currentProject;
+        done++;
+      }
+      catch (err) { alert(`${file.name}：${err.message}`); }
+    }
+    if (progress) progress.textContent = done ? `本批完成 ${done}/${files.length} 个，可继续分批选择；当前共 ${state.currentProject?.media?.length || project.media?.length || 0} 个素材` : "";
+    if (done) renderProjectManager(state.currentProject);
+  });
+  document.querySelectorAll("[data-project-manager-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectManagerTab; state.projectLightboxIndex = null; renderProjectManager(project); }));
+  bindProjectVideoThumbs();
+  document.querySelectorAll("[data-project-open-media]").forEach(btn => btn.addEventListener("click", () => navigateProjectPreview(project, Number(btn.dataset.projectOpenMedia), true)));
+  document.querySelectorAll("[data-project-lightbox-close]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = null; renderProjectManager(project); }));
+  document.querySelectorAll("[data-project-lightbox-nav]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = Number(btn.dataset.projectLightboxNav); renderProjectManager(project); }));
+  document.querySelector(".project-lightbox")?.addEventListener("click", e => { if (e.target.classList.contains("project-lightbox")) { state.projectLightboxIndex = null; renderProjectManager(project); } });
+  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => { try { const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${btn.dataset.projectDownload}`); if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${btn.dataset.projectDownload}`, project.media[Number(btn.dataset.projectDownload)]?.type); } catch (err) { alert(err.message); } }));
+  document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectManager(project); }));
+  document.querySelectorAll("[data-project-delete-media]").forEach(btn => btn.addEventListener("click", async () => {
+    if (!confirm("确定删除这个素材吗？TOS 文件会保留，但相册中不再展示。")) return;
+    try { const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/media/${btn.dataset.projectDeleteMedia}`, { method: "DELETE" }); state.currentProject = data.project; renderProjectManager(data.project); } catch (err) { alert(err.message); }
+  }));
+  document.querySelector("#projectPromoteBtn")?.addEventListener("click", async e => {
+    const btn = e.currentTarget; btn.disabled = true; btn.textContent = "生成中…";
+    try { const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/promote-case`, { method: "POST" }); state.currentProject = data.project; alert(data.message || "已生成案例草稿"); renderProjectManager(data.project); } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "沉淀为精彩案例草稿"; }
+  });
+  bindProjectShareEvents();
+  bindAuthEvents();
+}
+
+function navigateProjectPreview(project, index, manager = false) {
+  state.projectLightboxIndex = null;
+  state.projectPreviewMode = manager;
+  history.pushState(null, "", projectPreviewHref(project.id, index, manager));
+  loadProjectPreview(project.id, index, manager);
+}
+
+async function loadProjectPreview(id, index, manager = false) {
+  const endpoint = manager
+    ? `/api/my/activity-projects/${encodeURIComponent(id)}`
+    : `/api/public/activity-projects/${encodeURIComponent(id)}`;
+  try {
+    const data = await api(endpoint);
+    state.currentProject = data.project;
+    renderProjectPreview(data.project, index, manager);
+  } catch (err) {
+    app.innerHTML = `<div class="error">${esc(err.message)}</div>`;
+  }
+}
+
+function renderProjectPreview(project, index, manager = false) {
+  const media = Array.isArray(project.media) ? project.media : [];
+  const currentIndex = Number.isInteger(Number(index)) ? Number(index) : 0;
+  const current = media[currentIndex];
+  if (!current) {
+    return manager ? loadProjectManager(project.id) : loadPublicProject(project.id);
+  }
+  state.projectView = "preview";
+  state.currentProject = project;
+  state.projectPreviewIndex = currentIndex;
+  state.projectPreviewMode = manager;
+  state.currentActivity = null;
+  const currentName = projectMediaDisplayName(current, currentIndex);
+  const body = current.type === "image"
+    ? `<img class="project-preview-image" src="${esc(current.url)}" alt="${esc(current.title || project.title)}">`
+    : current.type === "video"
+    ? `<video class="project-preview-video" src="${esc(current.url)}" controls playsinline preload="metadata"></video>`
+    : "";
+  const backHref = manager
+    ? `${SILVER_FRONT_BASE}/?view=project-manage&project=${encodeURIComponent(project.id)}`
+    : `${SILVER_FRONT_BASE}/?view=project&project=${encodeURIComponent(project.id)}`;
+  app.className = `app-shell project-preview-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
+  app.innerHTML = `${projectHeader(project.title)}
+    <div class="project-preview-nav"><button class="btn secondary" id="projectPreviewBack" type="button">← 返回相册</button><a class="btn secondary" href="${esc(backHref)}">相册首页</a></div>${projectWeChatTip()}
+    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
+
+  const previewVideo = document.querySelector(".project-preview-video");
+  if (previewVideo) {
+    previewVideo.addEventListener("play", () => { void trackMediaView("activity_project_media", project.id, currentIndex); }, { once: true });
+  } else if (current.type === "image") {
+    void trackMediaView("activity_project_media", project.id, currentIndex);
+  }
+
+  document.querySelector("#projectPreviewBack")?.addEventListener("click", () => {
+    history.pushState(null, "", backHref);
+    manager ? loadProjectManager(project.id) : loadPublicProject(project.id);
+  });
+  document.querySelectorAll("[data-project-preview-nav]").forEach(btn => btn.addEventListener("click", () => {
+    const nextIndex = Number(btn.dataset.projectPreviewNav);
+    history.replaceState(null, "", projectPreviewHref(project.id, nextIndex, manager));
+    loadProjectPreview(project.id, nextIndex, manager);
+  }));
+  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => { try { const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${btn.dataset.projectDownload}`); if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${btn.dataset.projectDownload}`, project.media[Number(btn.dataset.projectDownload)]?.type); } catch (err) { alert(err.message); } }));
+  document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectPreview(project, currentIndex, manager); }));
+  document.querySelector("#projectPreviewDelete")?.addEventListener("click", async () => {
+    if (!confirm("确定删除这个素材吗？TOS 文件会保留，但相册中不再展示。")) return;
+    try {
+      const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/media/${currentIndex}`, { method: "DELETE" });
+      const nextMedia = data.project?.media || [];
+      if (!nextMedia.length) return loadProjectManager(project.id);
+      const nextIndex = Math.min(currentIndex, nextMedia.length - 1);
+      history.replaceState(null, "", projectPreviewHref(project.id, nextIndex, true));
+      loadProjectPreview(project.id, nextIndex, true);
+    } catch (err) { alert(err.message); }
+  });
+  bindProjectShareEvents();
+  bindAuthEvents();
+}
+
+async function loadPublicProject(id, mediaIndex = null) {
+  const data = await api(`/api/public/activity-projects/${encodeURIComponent(id)}`);
+  state.currentProject = data.project;
+  state.projectView = "album";
+  const defaultTab = projectDefaultMediaTab(data.project);
+  state.projectMediaTab = defaultTab;
+  const rawIndex = mediaIndex === null || mediaIndex === undefined
+    ? new URLSearchParams(location.search).get("media")
+    : String(mediaIndex);
+  state.selectedProjectMediaIndex = /^\d+$/.test(rawIndex || "") ? Number(rawIndex) : null;
+  // 分享单个素材时只定位到缩略图，不自动打开或播放视频。
+  state.projectLightboxIndex = null;
+  renderProjectAlbum(state.currentProject);
+}
+
+function renderProjectAlbum(project) {
+  state.projectView = "album";
+  state.currentProject = project;
+  state.caseView = false;
+  state.currentActivity = null;
+  const groups = projectMediaGroups(project);
+  const tab = ["images", "videos"].includes(state.projectMediaTab) ? state.projectMediaTab : projectDefaultMediaTab(project);
+  const type = projectMediaTypeForTab(tab);
+  const media = (project.media || []).map((m, index) => ({ ...m, index })).filter(m => !type || m.type === type);
+  app.className = `app-shell project-album-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
+  app.innerHTML = `${projectHeader(project.title)}
+    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}${state.user ? "" : `<button class="btn secondary small" type="button" data-open-login>登录下载</button>`}</div></div></section>${projectWeChatTip()}
+    <section class="project-album-content"><div class="project-album-tabs"><button class="${tab === "images" ? "active" : ""}" data-project-tab="images">图片 <strong>${groups.images.length}</strong></button><button class="${tab === "videos" ? "active" : ""}" data-project-tab="videos">视频 <strong>${groups.videos.length}</strong></button></div>${media.length ? `<div class="project-media-grid public">${media.map(m => projectMediaCardHtml(project, m, false)).join("")}</div>` : `<div class="project-empty-state">该分类还没有素材。</div>`}</section>${projectLightboxHtml(project)}${loginModal()}`;
+  document.querySelectorAll("[data-project-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectTab; state.projectLightboxIndex = null; renderProjectAlbum(project); }));
+  bindProjectVideoThumbs();
+  document.querySelectorAll("[data-project-open-media]").forEach(btn => btn.addEventListener("click", () => navigateProjectPreview(project, Number(btn.dataset.projectOpenMedia), false)));
+  document.querySelectorAll("[data-project-lightbox-close]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = null; renderProjectAlbum(project); }));
+  document.querySelectorAll("[data-project-lightbox-nav]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = Number(btn.dataset.projectLightboxNav); renderProjectAlbum(project); }));
+  document.querySelector(".project-lightbox")?.addEventListener("click", e => { if (e.target.classList.contains("project-lightbox")) { state.projectLightboxIndex = null; renderProjectAlbum(project); } });
+  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => { try { const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${btn.dataset.projectDownload}`); if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${btn.dataset.projectDownload}`, project.media[Number(btn.dataset.projectDownload)]?.type); } catch (err) { alert(err.message); } }));
+  document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectAlbum(project); }));
+  bindProjectShareEvents();
+  bindAuthEvents();
+  const selected = document.querySelector(`[data-project-media-index="${state.selectedProjectMediaIndex}"]`);
+  selected?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function startHeroCaseCarousel() {
+  const dots = document.querySelectorAll(".hero-case-dot");
+  const items = document.querySelectorAll(".hero-case-item");
+  if (!document.querySelector(".hero-case-slider") || items.length === 0) return;
+  if (window.__heroCaseTimer) {
+    clearInterval(window.__heroCaseTimer);
+    window.__heroCaseTimer = null;
+  }
+  let idx = 0;
+  const go = n => {
+    idx = n;
+    items.forEach((el, i) => el.classList.toggle("active", i === idx));
+    dots.forEach((dot, i) => dot.classList.toggle("active", i === idx));
+  };
+  if (items.length >= 2) {
+    window.__heroCaseTimer = setInterval(() => go((idx + 1) % items.length), 5000);
+    dots.forEach((dot, i) => {
+      if (!dot.dataset.bound) {
+        dot.dataset.bound = "1";
+        dot.addEventListener("click", () => {
+          go(i);
+          clearInterval(window.__heroCaseTimer);
+          window.__heroCaseTimer = setInterval(() => go((idx + 1) % items.length), 5000);
+        });
+      }
+    });
+  }
+  go(0);
+}
+
+function startHeroCarousel() {
+  startHeroCaseCarousel();
+}
+
+// ---- 精彩案例页 ----
+function casePlatform(url) {
+  const u = String(url || "");
+  if (/weixin|channels\.weixin|wx\./i.test(u)) return "视频号";
+  if (/douyin|iesdouyin/i.test(u)) return "抖音";
+  if (/xiaohongshu|xhslink/i.test(u)) return "小红书";
+  return "外部视频";
+}
+
+function caseMediaSummary(c) {
+  const media = Array.isArray(c.media) ? c.media : [];
+  return {
+    imgs: media.filter(m => m.type === "image"),
+    videos: media.filter(m => m.type === "video"),
+    documents: media.filter(m => m.type === "document"),
+    links: media.filter(m => m.type === "link")
+  };
+}
+
+function caseCoverUrl(c) {
+  if (c.cover) return c.cover;
+  const s = caseMediaSummary(c);
+  if (s.imgs.length) return s.imgs[0].url;
+  return fallbackCover();
+}
+
+function caseHref(id) {
+  return `${SILVER_FRONT_BASE}/?view=cases&case=${encodeURIComponent(id)}`;
+}
+
+function caseTabForMediaType(type) {
+  if (type === "video") return "videos";
+  if (type === "image") return "images";
+  if (type === "document") return "documents";
+  return "links";
+}
+
+function caseMediaLabel(m) {
+  if (m.type === "image") return "图片";
+  if (m.type === "video") return "视频";
+  if (m.type === "document") return "文档";
+  return casePlatform(m.url);
+}
+
+function fileNameFromUrl(url) {
+  try {
+    const raw = String(url || "").split("?")[0].split("#")[0];
+    return decodeURIComponent(raw.split("/").pop() || "");
+  } catch {
+    return String(url || "").split("?")[0].split("#")[0].split("/").pop() || "";
+  }
+}
+
+function groupedCaseMedia(c) {
+  const groups = { videos: [], images: [], documents: [], links: [] };
+  (Array.isArray(c.media) ? c.media : []).forEach((m, index) => {
+    const item = { ...m, index };
+    if (m.type === "video") groups.videos.push(item);
+    else if (m.type === "image") groups.images.push(item);
+    else if (m.type === "document") groups.documents.push(item);
+    else groups.links.push(item);
+  });
+  return groups;
+}
+
+function hydrateCaseVideoThumbs() {
+  const thumbs = Array.from(document.querySelectorAll(".case-video-thumb[data-thumb-src]"));
+  const loadThumb = video => {
+    if (!video || video.src || !video.dataset.thumbSrc) return;
+    video.src = video.dataset.thumbSrc;
+  };
+  if (!("IntersectionObserver" in window)) {
+    thumbs.slice(0, 12).forEach(loadThumb);
     return;
   }
-  const featuredIds = (state.siteConfig && state.siteConfig.featuredIds) || [];
-  let items = featuredIds.length > 0
-    ? featuredIds.map(id => activities.find(a => a.id === id)).filter(Boolean)
-    : activities.filter(a => a.cover && a.status === "published").slice(0, 5);
-  if (!items.length) items = activities.filter(a => a.cover).slice(0, 5);
-  if (items.length < 2) return;
-  let idx = 0;
-  setInterval(() => {
-    idx = (idx + 1) % items.length;
-    const mainImg = document.querySelector("#heroMainImg");
-    if (!mainImg) return;
-    mainImg.style.opacity = "0";
-    setTimeout(() => { mainImg.src = items[idx].cover; mainImg.style.opacity = "1"; }, 500);
-  }, 5000);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      loadThumb(entry.target);
+      observer.unobserve(entry.target);
+    });
+  }, { rootMargin: "700px 0px" });
+  thumbs.forEach(video => observer.observe(video));
+}
+
+async function loadCases() {
+  const data = await api("/api/public/cases");
+  state.cases = data.cases || [];
+  state.caseCategories = data.categories || [];
+  state.caseView = true;
+  const qs = new URLSearchParams(location.search);
+  state.activeCaseId = qs.get("case") || state.activeCaseId || "";
+  const rawMediaIndex = qs.get("media");
+  state.selectedCaseMediaIndex = /^\d+$/.test(rawMediaIndex || "") ? Number(rawMediaIndex) : null;
+  const selectedCase = state.cases.find(c => c.id === state.activeCaseId);
+  const selectedMedia = selectedCase?.media?.[state.selectedCaseMediaIndex];
+  state.caseMediaTab = selectedMedia ? caseTabForMediaType(selectedMedia.type) : state.caseMediaTab;
+  if (state.activeCaseId) renderCasePage(state.activeCaseId);
+  else renderCases();
+}
+
+function caseCard(c) {
+  const s = caseMediaSummary(c);
+  const isVideo = s.videos.length > 0 || (s.imgs.length === 0 && s.links.length > 0);
+  const badge = s.videos.length > 0
+    ? `<span class="case-badge">▶ 视频</span>`
+    : s.links.length > 0 && s.imgs.length === 0
+    ? `<span class="case-badge">${esc(casePlatform(s.links[0].url))}</span>`
+    : "";
+  const countBadge = c.media?.length ? `<span class="case-count">${c.media.length}个素材</span>` : "";
+  return `
+    <article class="case-card" data-case="${esc(c.id)}">
+      <div class="case-card-img">
+        <img src="${esc(caseCoverUrl(c))}" alt="${esc(c.title)}" loading="lazy">
+        ${isVideo ? `<div class="case-play"><span>▶</span></div>` : ""}
+        ${badge}${countBadge}
+      </div>
+      <div class="case-card-body">
+        <p class="case-title">${esc(c.title)}</p>
+        <div class="case-meta">
+          ${c.category ? `<span class="badge badge-cat">${esc(c.category)}</span>` : ""}
+          <span class="case-sub">${esc([c.city, c.dateLabel].filter(Boolean).join(" · "))}</span>
+        </div>
+        <div class="case-card-actions">
+          <div class="case-card-structure">${s.videos.length} 视频 / ${s.imgs.length} 图片 / ${s.documents.length} 文档 / ${s.links.length} 链接</div>
+          <button class="btn secondary small case-share-btn" type="button" data-share-case="${esc(c.id)}">📤 分享案例</button>
+        </div>
+      </div>
+    </article>`;
+}
+
+function renderCases() {
+  state.caseView = true;
+  state.currentActivity = null;
+  const cats = state.caseCategories;
+  const list = state.caseFilter ? state.cases.filter(c => c.category === state.caseFilter) : state.cases;
+
+  app.className = "app-shell";
+  app.innerHTML = `
+    <header class="site-header">
+      <a class="brand-mark" href="${homeHref()}">
+        <div class="brand-icon"></div>
+        <span>开开华彩</span>
+      </a>
+      <nav>
+        <a href="${homeHref()}">活动库</a>
+        <a href="?view=cases" style="color:var(--accent);font-weight:600">精彩案例</a>
+        ${state.user?.role === "admin" ? `<a href="${adminHref()}">管理后台</a>` : ""}
+        <div class="auth-actions">${authBar()}</div>
+      </nav>
+      ${mobilePrimaryNav("cases")}
+    </header>
+
+    <section class="cases-head">
+      <h1>精彩案例</h1>
+      <p>全国俱乐部与社群的优秀活动实录 · 视频与图片直接看，学习即可落地</p>
+      <div class="case-chips">
+        <button class="case-chip ${!state.caseFilter ? "active" : ""}" data-case-cat="">全部</button>
+        ${cats.map(cat => `<button class="case-chip ${state.caseFilter === cat ? "active" : ""}" data-case-cat="${esc(cat)}">${esc(cat)}</button>`).join("")}
+      </div>
+    </section>
+
+	    ${list.length
+	      ? `<div class="case-grid">${list.map(caseCard).join("")}</div>`
+	      : `<div class="case-empty">该分类暂无案例，敬请期待</div>`}
+	    ${loginModal()}`;
+
+  document.querySelectorAll("[data-case-cat]").forEach(btn =>
+    btn.addEventListener("click", () => { state.caseFilter = btn.dataset.caseCat; renderCases(); }));
+		  document.querySelectorAll("[data-case]").forEach(card =>
+			    card.addEventListener("click", () => {
+			      state.activeCaseId = card.dataset.case;
+			      state.caseMediaTab = "";
+            state.selectedCaseMediaIndex = null;
+			      history.pushState(null, "", caseHref(state.activeCaseId));
+			      renderCasePage(state.activeCaseId);
+			    }));
+    document.querySelectorAll("[data-share-case]").forEach(btn => btn.addEventListener("click", e => {
+      e.preventDefault();
+      e.stopPropagation();
+      return shareLink({
+        url: caseShareHref(btn.dataset.shareCase),
+        title: "分享精彩案例",
+        text: "开开华彩精彩案例",
+        button: btn
+      });
+    }));
+	  bindAuthEvents();
+	}
+
+function caseDownloadAction(caseId, m) {
+  if (m.type === "link") return "";
+  const label = m.type === "video" ? "视频" : (m.type === "document" ? "文档" : "原图");
+  return state.user
+    ? `<button class="btn small" data-case-download="${m.index}">下载${label}</button>`
+    : `<button class="btn secondary small" data-case-login>登录或申请账号后下载</button>`;
+}
+
+function caseShareAction(caseId, m) {
+  return `<button class="btn secondary small" type="button" data-share-case-media="${m.index}">📤 分享</button>`;
+}
+
+function renderCasePage(caseId) {
+  const c = state.cases.find(x => x.id === caseId);
+  if (!c) {
+    state.activeCaseId = "";
+    return renderCases();
+  }
+  const shouldAuditCase = lastAuditedCaseId !== caseId;
+  lastAuditedCaseId = caseId;
+  const media = Array.isArray(c.media) ? c.media : [];
+  const groups = groupedCaseMedia(c);
+  const tabs = [
+    { key: "videos", title: "视频文件", short: "视频", items: groups.videos, empty: "暂无本地视频文件" },
+    { key: "images", title: "图片素材", short: "图片", items: groups.images, empty: "暂无图片素材" },
+    { key: "documents", title: "文档素材", short: "文档", items: groups.documents, empty: "暂无文档素材" },
+    { key: "links", title: "视频号 / 抖音链接", short: "链接", items: groups.links, empty: "暂无外部平台链接" }
+  ];
+  const fallbackTab = (tabs.find(t => t.items.length) || tabs[0]).key;
+  const activeTab = tabs.some(t => t.key === state.caseMediaTab) ? state.caseMediaTab : fallbackTab;
+  const activeGroup = tabs.find(t => t.key === activeTab) || tabs[0];
+		  const mediaCard = m => {
+        if (m.type === "link") {
+          const platform = casePlatform(m.url);
+          const label = m.caption || m.title || "外部平台内容，点击跳转观看";
+          return `
+            <article class="case-link-row">
+              <div class="case-link-row-main">
+                <div class="case-link-row-head">
+                  <strong>${esc(platform)}</strong>
+                  <span>#${m.index + 1}</span>
+                </div>
+                <p>${esc(label)}</p>
+                <a class="case-link-url" href="${esc(m.url)}" target="_blank" rel="noreferrer">${esc(m.url)}</a>
+              </div>
+              <div class="case-link-row-actions">
+                <a class="btn small" href="${esc(m.url)}" target="_blank" rel="noreferrer">打开链接</a>
+                ${caseShareAction(c.id, m)}
+              </div>
+            </article>`;
+        }
+		    const body = m.type === "image"
+		      ? `<img src="${esc(m.url)}" alt="${esc(c.title)}" loading="lazy" data-case-image-view="${m.index}">`
+		      : m.type === "video"
+		      ? `<button class="case-video-poster" type="button" data-case-video-play="${esc(m.url)}">
+		          <video class="case-video-thumb" data-thumb-src="${esc(m.url)}#t=0.5" muted playsinline preload="metadata"></video>
+		          <span class="case-play-icon">▶</span>
+		          <strong>点击播放</strong>
+		        </button>`
+          : m.type === "document"
+          ? `<div class="case-doc-panel">
+          <strong>文档</strong>
+          <p>${esc(m.caption || m.title || fileNameFromUrl(m.url) || "案例文档素材")}</p>
+        </div>`
+	      : "";
+    return `
+      <article class="case-media-card ${state.selectedCaseMediaIndex === m.index ? "share-target" : ""}" data-case-media-index="${m.index}">
+        <div class="case-media-visual">${body}</div>
+        <div class="case-media-info">
+          <div>
+            <strong>${esc(caseMediaLabel(m))}</strong>
+            <span>#${m.index + 1}</span>
+          </div>
+          ${(m.caption || m.title) && m.type !== "link" ? `<p>${esc(m.caption || m.title)}</p>` : ""}
+          <div class="case-media-actions">
+            ${caseShareAction(c.id, m)}
+            ${caseDownloadAction(c.id, m)}
+          </div>
+        </div>
+      </article>`;
+  };
+	  const section = (title, items, emptyText) => `
+	    <section class="case-section">
+	      <div class="case-section-head">
+	        <h2>${esc(title)}</h2>
+	        <span>${items.length} 个</span>
+	      </div>
+      ${items.length ? `<div class="${items[0]?.type === "link" ? "case-link-list" : `case-media-grid ${items[0]?.type === "image" ? "images" : items[0]?.type === "video" ? "videos" : ""}`}">${items.map(mediaCard).join("")}</div>`
+        : `<div class="case-section-empty">${esc(emptyText)}</div>`}
+    </section>`;
+
+  state.caseView = true;
+  state.activeCaseId = caseId;
+  state.currentActivity = null;
+  app.className = "app-shell";
+  app.innerHTML = `
+    <header class="site-header">
+      <a class="brand-mark" href="${homeHref()}">
+        <div class="brand-icon"></div>
+        <span>开开华彩</span>
+      </a>
+      <nav>
+        <a href="${homeHref()}">活动库</a>
+        <a href="?view=cases" style="color:var(--accent);font-weight:600">精彩案例</a>
+        ${state.user?.role === "admin" ? `<a href="${adminHref()}">管理后台</a>` : ""}
+        <div class="auth-actions">${authBar()}</div>
+      </nav>
+      ${mobilePrimaryNav("cases")}
+    </header>
+    <section class="case-page-head">
+      <button class="btn secondary" id="caseBackList">返回案例列表</button>
+      <div class="case-page-cover">
+        <img src="${esc(caseCoverUrl(c))}" alt="${esc(c.title)}">
+      </div>
+      <div class="case-page-copy">
+        <div class="case-page-kicker">${esc([c.category, c.city, c.dateLabel].filter(Boolean).join(" · ") || "精彩案例")}</div>
+        <h1>${esc(c.title)}</h1>
+        ${c.description ? `<p>${esc(c.description)}</p>` : ""}
+        <div class="case-page-stats">
+          <span>${groups.videos.length} 个视频</span>
+          <span>${groups.images.length} 张图片</span>
+          <span>${groups.documents.length} 个文档</span>
+          <span>${groups.links.length} 个链接</span>
+        </div>
+        <div class="case-page-actions">
+          <button class="btn secondary small" type="button" id="shareCaseBtn">📤 分享案例</button>
+          <span class="case-download-note">精彩案例素材下载需登录或申请账号</span>
+        </div>
+      </div>
+    </section>
+    <div class="case-page-material-tabs" role="tablist" aria-label="案例素材分类">
+      ${tabs.map(t => `
+        <button class="case-page-material-tab ${t.key === activeTab ? "active" : ""}" type="button" data-case-media-tab="${esc(t.key)}" role="tab" aria-selected="${t.key === activeTab ? "true" : "false"}">
+          <span>${esc(t.title)}</span>
+          <strong>${t.items.length} 个</strong>
+        </button>`).join("")}
+    </div>
+    ${section(activeGroup.title, activeGroup.items, activeGroup.empty)}
+    ${loginModal()}`;
+  hydrateCaseVideoThumbs();
+
+  document.querySelector("#caseBackList").addEventListener("click", () => {
+    state.activeCaseId = "";
+    lastAuditedCaseId = "";
+    state.caseMediaTab = "";
+    state.selectedCaseMediaIndex = null;
+    history.pushState(null, "", `${SILVER_FRONT_BASE}/?view=cases`);
+    renderCases();
+  });
+
+  const shareCaseBtn = document.querySelector("#shareCaseBtn");
+  if (shareCaseBtn) shareCaseBtn.addEventListener("click", () => shareLink({
+    url: caseShareHref(c.id),
+    title: c.title || "分享精彩案例",
+    text: `${c.title || "精彩案例"} · 开开华彩案例素材`,
+    button: shareCaseBtn
+  }));
+
+  document.querySelectorAll("[data-share-case-media]").forEach(btn => btn.addEventListener("click", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    return shareLink({
+      url: caseShareHref(c.id, Number(btn.dataset.shareCaseMedia)),
+      title: `${c.title || "精彩案例"} · 分享素材`,
+      text: `${c.title || "精彩案例"} · 开开华彩案例素材`,
+      button: btn
+    });
+  }));
+
+  const selectedCaseNode = document.querySelector(`[data-case-media-index="${state.selectedCaseMediaIndex}"]`);
+  selectedCaseNode?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+		  document.querySelectorAll("[data-case-media-tab]").forEach(btn => btn.addEventListener("click", () => {
+		    state.caseMediaTab = btn.dataset.caseMediaTab || "";
+		    renderCasePage(caseId);
+		  }));
+		  document.querySelectorAll("[data-case-download]").forEach(btn => btn.addEventListener("click", async () => {
+		    const href = apiHref(`/api/public/cases/${encodeURIComponent(caseId)}/download?i=${btn.dataset.caseDownload}`);
+		    try {
+		      const res = await fetch(href, { credentials: "include" });
+		      const type = res.headers.get("content-type") || "";
+		      if (type.includes("application/json")) {
+		        const data = await res.json();
+		        if (data.url) window.open(data.url, "_blank");
+		        else throw new Error(data.error || "下载失败");
+		      } else {
+		        window.open(href, "_blank");
+		      }
+		    } catch {
+		      window.open(href, "_blank");
+		    }
+		  }));
+	  document.querySelectorAll("[data-case-video-play]").forEach(btn => btn.addEventListener("click", () => {
+	    const url = btn.dataset.caseVideoPlay;
+	    const wrap = btn.closest(".case-media-visual");
+	    if (!url || !wrap) return;
+	    wrap.innerHTML = `<video src="${esc(url)}" controls preload="metadata" playsinline></video>`;
+	    const video = wrap.querySelector("video");
+	    video?.addEventListener("play", () => { void trackMediaView("case_media", caseId, Number(btn.closest("[data-case-media-index]")?.dataset.caseMediaIndex)); }, { once: true });
+	  }));
+	  document.querySelectorAll("[data-case-image-view]").forEach(image => {
+	    const send = () => { void trackMediaView("case_media", caseId, Number(image.dataset.caseImageView)); };
+	    image.addEventListener("load", send, { once: true });
+	    if (image.complete) send();
+	  });
+	  document.querySelectorAll("[data-case-login]").forEach(btn => btn.addEventListener("click", () => {
+    state.loginOpen = true; state.authMessage = ""; state.authOk = false; state.authTab = "login";
+    renderCasePage(caseId);
+  }));
+  bindAuthEvents();
+  if (shouldAuditCase) void trackMediaView("case", c.id, null);
+}
+
+async function consumeActivityHubSsoTicket() {
+  const hashParams = new URLSearchParams(String(location.hash || "").replace(/^#/, ""));
+  const ticket = hashParams.get("activity_sso") || "";
+  if (!ticket) return false;
+  try {
+    const data = await api("/api/auth/sso", { method: "POST", body: { token: ticket } });
+    state.user = data.user || null;
+    if (data.token) {
+      state.sessionToken = data.token;
+      localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+    }
+    state.authMessage = "";
+    state.authOk = false;
+  } catch (error) {
+    state.user = null;
+    state.authMessage = `${error.message || "免密入口暂不可用"}，可使用原账号登录`;
+    state.authOk = false;
+    state.loginOpen = true;
+  } finally {
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+  }
+  return true;
 }
 
 async function boot() {
+  const ssoAttempted = await consumeActivityHubSsoTicket();
   try {
-    const me = await api("/api/me");
-    state.user = me.user;
-  } catch { state.user = null; }
-  try { const sc = await api('/api/site-config'); state.siteConfig = sc.config || {}; } catch {}
-  try { const br = await fetch('/api/banners').then(r=>r.json()); state.banners = br.banners || []; } catch(e) { state.banners = []; }
-  if (!state.user) { state.loginOpen = true; }
-  setTimeout(() => startHeroCarousel(state.activities || []), 1000);
+    const [meResult, configResult, bannersResult] = await Promise.allSettled([
+      api("/api/me"),
+      api('/api/site-config'),
+      fetch(apiUrl('/api/banners')).then(r => r.json())
+    ]);
+    state.user = meResult.status === "fulfilled" ? meResult.value.user : (ssoAttempted ? state.user : null);
+    state.siteConfig = configResult.status === "fulfilled" ? (configResult.value.config || {}) : {};
+    state.banners = bannersResult.status === "fulfilled" ? (bannersResult.value.banners || []) : [];
+  } catch {
+    state.user = null;
+    state.siteConfig = {};
+    state.banners = [];
+  }
+  // 免登录浏览：不再强制弹登录，只有导出 SOP / 共创时才需要登录
   try {
-    const match = location.pathname.match(/^\/activity\/([^/]+)$/);
-    if (match) await loadDetail(decodeURIComponent(match[1]));
+    const qs = new URLSearchParams(location.search);
+    const view = qs.get("view");
+    const sharedProject = parseProjectShareValue(qs.get("share"));
+    if (sharedProject) {
+      if (sharedProject.mediaIndex === null) await loadPublicProject(sharedProject.projectId);
+      else await loadProjectPreview(sharedProject.projectId, sharedProject.mediaIndex);
+      return;
+    }
+    if (view === "projects") {
+      await loadProjectsView();
+      return;
+    }
+    if (view === "project-manage") {
+      await loadProjectManager(qs.get("project"));
+      return;
+    }
+    if (view === "project-preview" && qs.get("project")) {
+      await loadProjectPreview(qs.get("project"), qs.get("media"), qs.get("mode") === "manage");
+      return;
+    }
+    if (view === "project" && qs.get("project")) {
+      await loadPublicProject(qs.get("project"));
+      return;
+    }
+    if (view === "cases") {
+      await loadCases();
+      return;
+    }
+    const activityId = new URLSearchParams(location.search).get("activity");
+    if (activityId) await loadDetail(activityId);
     else await loadList();
   } catch (err) {
     app.innerHTML = `<div class="error">${esc(err.message)}</div>`;
   }
 }
+
+window.addEventListener("popstate", () => {
+  const qs = new URLSearchParams(location.search);
+  const sharedProject = parseProjectShareValue(qs.get("share"));
+  if (sharedProject) {
+    if (sharedProject.mediaIndex === null) loadPublicProject(sharedProject.projectId);
+    else loadProjectPreview(sharedProject.projectId, sharedProject.mediaIndex);
+    return;
+  }
+  if (qs.get("view") === "projects") { loadProjectsView(); return; }
+  if (qs.get("view") === "project-manage") { loadProjectManager(qs.get("project")); return; }
+  if (qs.get("view") === "project-preview" && qs.get("project")) { loadProjectPreview(qs.get("project"), qs.get("media"), qs.get("mode") === "manage"); return; }
+  if (qs.get("view") === "project" && qs.get("project")) { loadPublicProject(qs.get("project")); return; }
+  if (qs.get("view") === "cases") {
+    state.activeCaseId = qs.get("case") || "";
+    const rawMediaIndex = qs.get("media");
+    state.selectedCaseMediaIndex = /^\d+$/.test(rawMediaIndex || "") ? Number(rawMediaIndex) : null;
+    if (state.cases.length) {
+      const selectedCase = state.cases.find(c => c.id === state.activeCaseId);
+      const selectedMedia = selectedCase?.media?.[state.selectedCaseMediaIndex];
+      state.caseMediaTab = selectedMedia ? caseTabForMediaType(selectedMedia.type) : "";
+      if (state.activeCaseId) renderCasePage(state.activeCaseId);
+      else renderCases();
+    } else {
+      loadCases();
+    }
+    return;
+  }
+  state.caseView = false;
+  state.activeCaseId = "";
+  state.projectView = "";
+  state.currentProject = null;
+  const activityId = qs.get("activity");
+  if (activityId) loadDetail(activityId);
+  else {
+    state.selectedActivityMedia = null;
+    loadList();
+  }
+});
 
 boot();
 
