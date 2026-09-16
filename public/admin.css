@@ -989,7 +989,8 @@ a { color: inherit; text-decoration: none; }
   gap: 12px; align-items: start;
 }
 .admin-card-grid.case-list-grid {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(272px, 1fr));
+  align-items: stretch;
 }
 .admin-card-grid.users { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 .admin-card {
@@ -997,7 +998,7 @@ a { color: inherit; text-decoration: none; }
   overflow: hidden; box-shadow: var(--shadow-sm);
 }
 .case-list-card {
-  height: 312px;
+  min-height: 382px;
   display: flex;
   flex-direction: column;
 }
@@ -1009,6 +1010,7 @@ a { color: inherit; text-decoration: none; }
   min-height: 0;
   display: flex;
   flex-direction: column;
+  gap: 8px;
 }
 .admin-card-cover { position: relative; height: 118px; background: var(--bg); }
 .admin-card-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -1050,7 +1052,76 @@ a { color: inherit; text-decoration: none; }
   line-height: 1;
   padding: 5px 8px;
 }
-.case-list-card .admin-card-actions { margin-top: auto; }
+.case-list-card .admin-card-title {
+  flex: 0 0 41px;
+  min-height: 41px;
+  margin: 0;
+}
+.case-list-card .admin-card-meta {
+  flex: 0 0 18px;
+  min-width: 0;
+  min-height: 18px;
+  margin: 0;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.case-list-card .admin-card-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.case-list-card .admin-card-meta span:last-child {
+  flex: 0 0 auto;
+}
+.case-list-card .admin-card-structure {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0;
+}
+.case-list-card .admin-card-structure .case-card-stat {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.case-card-stat strong {
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.case-card-stat em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.case-list-card .audit-counts {
+  min-height: 20px;
+  margin: 0;
+}
+.case-list-card .admin-card-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 2px;
+}
+.case-list-card .admin-card-actions .btn {
+  width: 100%;
+  min-width: 0;
+  justify-content: center;
+  padding-inline: 8px;
+  white-space: nowrap;
+}
 .admin-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .delivery-project-card {
   height: auto;
@@ -1125,20 +1196,12 @@ a { color: inherit; text-decoration: none; }
 .delivery-results-head span { font-size: 12px; color: var(--muted); }
 .user-block .user-card { margin-bottom: 0; }
 
-@media (max-width: 1700px) {
-  .admin-card-grid.case-list-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-}
-
 @media (max-width: 1000px) {
   .delivery-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 600px) {
   .delivery-filter-grid { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 1400px) {
-  .admin-card-grid.case-list-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 
 /* 案例卡片:素材明细缩略条 + 单素材删除 */
@@ -1689,7 +1752,6 @@ a { color: inherit; text-decoration: none; }
 }
 
 @media (max-width: 980px) {
-  .admin-card-grid.case-list-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .case-admin-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .case-admin-category-board { grid-template-columns: 1fr; }
   .case-admin-detail-page {

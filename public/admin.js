@@ -1389,6 +1389,8 @@ async function renderCasesAdmin() {
     const thumb = c.cover || (media.find(m => m.type === "image") || {}).url || "";
     const groups = groupedCaseMediaAdmin(c);
     const hasVideo = groups.videos.length > 0 || groups.links.length > 0;
+    const meta = [c.city, c.dateLabel].filter(Boolean).join(" · ") || "未填写地点日期";
+    const stat = (label, count) => `<span class="case-card-stat"><strong>${Number(count || 0)}</strong><em>${label}</em></span>`;
     return `
       <div class="admin-card case-list-card">
         <div class="admin-card-cover">
@@ -1399,13 +1401,13 @@ async function renderCasesAdmin() {
           <span class="admin-card-status ${c.status === "published" ? "on" : ""}">${c.status === "published" ? "已发布" : "草稿"}</span>
         </div>
         <div class="admin-card-body">
-          <p class="admin-card-title">${esc(c.title)}</p>
-          <p class="admin-card-meta">${esc([c.city, c.dateLabel].filter(Boolean).join(" · ") || "—")} · ${n} 个素材 · 排序 ${Number(c.sortOrder || 9999)}</p>
-	          <div class="admin-card-structure">
-		            <span>${groups.videos.length} 视频</span>
-		            <span>${groups.images.length} 图片</span>
-		            <span>${groups.documents.length} 文档</span>
-		            <span>${groups.links.length} 链接</span>
+          <p class="admin-card-title" title="${esc(c.title)}">${esc(c.title)}</p>
+          <p class="admin-card-meta" title="${esc(meta)}"><span>${esc(meta)}</span><span>共 ${n} 项素材</span></p>
+	          <div class="admin-card-structure case-card-stats" aria-label="素材数量">
+		            ${stat("视频", groups.videos.length)}
+		            ${stat("图片", groups.images.length)}
+		            ${stat("文档", groups.documents.length)}
+		            ${stat("链接", groups.links.length)}
 	          </div>
 	          <div class="audit-counts"><span>查看 ${Number(c.viewCount || 0)}</span><span>下载 ${Number(c.downloadCount || 0)}</span></div>
 	          <div class="admin-card-actions">
