@@ -95,6 +95,16 @@ const DEFAULT_TOS_SDK_PATH = "/opt/course-tob/node_modules/@volcengine/tos-sdk";
 const PROJECT_VIDEO_PART_SIZE = 16 * 1024 * 1024;
 const PROJECT_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const PROJECT_UPLOAD_COMPLETED_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// 视频号采集终端的原片直传：令牌仅保留在服务端环境和用户本机钥匙串，
+// 从不下发 TOS 长期密钥。未配置令牌时接口保持关闭。
+const CASE_DIRECT_SYNC_TOKEN = String(process.env.CASE_DIRECT_SYNC_TOKEN || "").trim();
+const CASE_DIRECT_SYNC_ALLOWED_CASE_IDS = new Set(
+  String(process.env.CASE_DIRECT_SYNC_ALLOWED_CASE_IDS || "case_ead7a3aa8b0aa2d9")
+    .split(",").map(value => value.trim()).filter(Boolean)
+);
+const CASE_DIRECT_SYNC_PART_SIZE = 16 * 1024 * 1024;
+const CASE_DIRECT_SYNC_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const CASE_DIRECT_SYNC_COMPLETED_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let _caseVideoTosClient = null;
 
 const UPLOAD_IMAGE_EXT_BY_MIME = {
@@ -262,6 +272,57 @@ async function cleanupStaleProjectUploadSessions() {
     [completedCutoff]
   );
   if (deleted.affectedRows) console.log(`[project-upload-cleanup] 删除 ${deleted.affectedRows} 条历史上传会话记录`);
+}
+
+function caseVideoTosObject(filename) {
+  return {
+    key: `${CASE_VIDEO_TOS_PREFIX}/${filename}`,
+    url: `${CASE_VIDEO_PUBLIC_BASE}/${encodeURIComponent(filename)}`
+  };
+}
+
+async function readCaseDirectUploadSession(sessionId) {
+  const [[row]] = await pool.query("SELECT * FROM case_direct_upload_sessions WHERE id = ?", [sessionId]);
+  return row || null;
+}
+
+async function updateCaseDirectUploadSession(sessionId, fields) {
+  const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
+  if (!entries.length) return;
+  const assignments = entries.map(([key]) => `${key} = ?`).join(", ");
+  const values = entries.map(([, value]) => value);
+  values.push(sessionId);
+  await pool.query(`UPDATE case_direct_upload_sessions SET ${assignments}, updated_at = ? WHERE id = ?`, [
+    ...values.slice(0, -1),
+    now(),
+    sessionId
+  ]);
+}
+
+async function cleanupStaleCaseDirectUploadSessions() {
+  const cutoff = new Date(Date.now() - CASE_DIRECT_SYNC_SESSION_TTL_MS).toISOString();
+  const [rows] = await pool.query(
+    "SELECT id, object_key, upload_id FROM case_direct_upload_sessions WHERE status IN ('uploading', 'failed') AND updated_at < ? LIMIT 50",
+    [cutoff]
+  );
+  if (rows.length) {
+    const { client, bucket } = getCaseVideoTosClient();
+    for (const row of rows) {
+      await client.abortMultipartUpload({ bucket, key: row.object_key, uploadId: row.upload_id }).catch(() => {});
+      await updateCaseDirectUploadSession(row.id, { status: "aborted", error: "上传会话超时，已自动清理" }).catch(() => {});
+    }
+    console.log(`[case-direct-upload-cleanup] 清理 ${rows.length} 个过期分片会话`);
+  }
+  const completedCutoff = new Date(Date.now() - CASE_DIRECT_SYNC_COMPLETED_SESSION_TTL_MS).toISOString();
+  const [deleted] = await pool.query(
+    "DELETE FROM case_direct_upload_sessions WHERE status IN ('completed', 'aborted') AND updated_at < ? LIMIT 200",
+    [completedCutoff]
+  );
+  if (deleted.affectedRows) console.log(`[case-direct-upload-cleanup] 删除 ${deleted.affectedRows} 条历史上传会话`);
+}
+
+function caseMediaBySourceHash(caseItem, sourceSha256) {
+  return (caseItem?.media || []).find(media => media && media.type === "video" && media.sourceSha256 === sourceSha256) || null;
 }
 
 async function uploadCaseVideoToTos(localPath, filename, contentType) {
@@ -590,6 +651,28 @@ async function initDb() {
     updated_at VARCHAR(40) NOT NULL,
     INDEX idx_project_upload_sessions_project (project_id),
     INDEX idx_project_upload_sessions_status (status, updated_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS case_direct_upload_sessions (
+    id VARCHAR(80) PRIMARY KEY,
+    case_id VARCHAR(64) NOT NULL,
+    source_video_id VARCHAR(32) NOT NULL,
+    source_sha256 CHAR(64) NOT NULL,
+    ext VARCHAR(16) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    caption TEXT,
+    filename VARCHAR(255) NOT NULL,
+    object_key VARCHAR(512) NOT NULL,
+    upload_id VARCHAR(255) NOT NULL,
+    file_size BIGINT UNSIGNED NOT NULL,
+    part_size INT UNSIGNED NOT NULL,
+    part_count INT UNSIGNED NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    media_url TEXT,
+    error TEXT,
+    created_at VARCHAR(40) NOT NULL,
+    updated_at VARCHAR(40) NOT NULL,
+    INDEX idx_case_direct_upload_case_hash (case_id, source_sha256),
+    INDEX idx_case_direct_upload_status (status, updated_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
   await pool.query(`CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -922,6 +1005,31 @@ function requireRole(req, res, roles) {
   return user;
 }
 
+function secureTokenEquals(candidate, expected) {
+  const left = Buffer.from(String(candidate || ""));
+  const right = Buffer.from(String(expected || ""));
+  return left.length === right.length && left.length > 0 && crypto.timingSafeEqual(left, right);
+}
+
+// 给视频号采集器签发的能力令牌只能操作明确允许的案例；它不是后台登录态，
+// 也不携带、读取或复用用户浏览器 Cookie。
+function requireCaseDirectSync(req, res, caseId) {
+  if (CASE_DIRECT_SYNC_TOKEN.length < 32) {
+    sendJson(res, 503, { error: "案例直传尚未在服务器启用" });
+    return false;
+  }
+  if (!CASE_DIRECT_SYNC_ALLOWED_CASE_IDS.has(caseId)) {
+    sendJson(res, 403, { error: "该案例不在直传允许范围" });
+    return false;
+  }
+  const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (!secureTokenEquals(bearer, CASE_DIRECT_SYNC_TOKEN)) {
+    sendJson(res, 401, { error: "案例直传授权无效" });
+    return false;
+  }
+  return true;
+}
+
 function auditText(value, max = 255) {
   return cleanString(value).slice(0, max);
 }
@@ -1198,6 +1306,12 @@ function normalizeCaseMedia(input) {
     }
     const size = Number(raw.size || 0);
     if (Number.isFinite(size) && size > 0) media.size = size;
+    // 直传采集器用原片哈希做幂等键。公开前台不会使用这两个字段，
+    // 但保存时必须保留，避免重试把同一原片重复登记为案例素材。
+    const sourceSha256 = cleanString(raw.sourceSha256).toLowerCase();
+    if (/^[a-f0-9]{64}$/.test(sourceSha256)) media.sourceSha256 = sourceSha256;
+    const sourceVideoId = cleanString(raw.sourceVideoId);
+    if (/^\d{8,32}$/.test(sourceVideoId)) media.sourceVideoId = sourceVideoId;
     if (raw.createdAt) media.createdAt = cleanString(raw.createdAt);
     return media;
   }).filter(Boolean);
@@ -2778,6 +2892,223 @@ async function handleApi(req, res, pathname) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // 视频号采集器直传：本机只获得单片、短时效 PUT 地址；TOS 长期密钥始终留在服务端。
+  const caseDirectUploadInit = pathname.match(/^\/api\/automation\/cases\/([^/]+)\/videos\/init$/);
+  if (req.method === "POST" && caseDirectUploadInit) {
+    const caseId = decodeURIComponent(caseDirectUploadInit[1]);
+    if (!requireCaseDirectSync(req, res, caseId)) return;
+    const body = await parseBody(req, 256 * 1024);
+    const sourceVideoId = cleanString(body.sourceVideoId);
+    const sourceSha256 = cleanString(body.sourceSha256).toLowerCase();
+    const ext = `.${cleanString(body.ext || "mp4").toLowerCase().replace(/^\./, "")}`;
+    const fileSize = Number(body.size);
+    if (!/^\d{8,32}$/.test(sourceVideoId) || !/^[a-f0-9]{64}$/.test(sourceSha256)) {
+      return sendJson(res, 400, { error: "视频号ID或原片SHA-256无效" });
+    }
+    if (!VIDEO_EXTS.includes(ext) || !Number.isSafeInteger(fileSize) || fileSize < 128 * 1024 || fileSize > 2 * 1024 * 1024 * 1024) {
+      return sendJson(res, 400, { error: "仅支持 128KB–2GB 的 mp4、m4v、mov、webm 原片" });
+    }
+    const db = readDb();
+    const caseIndex = (db.cases || []).findIndex(item => item.id === caseId);
+    if (caseIndex < 0) return sendJson(res, 404, { error: "目标案例不存在" });
+    const caseItem = db.cases[caseIndex];
+    const existingMedia = caseMediaBySourceHash(caseItem, sourceSha256);
+    if (existingMedia) {
+      return sendJson(res, 200, { ok: true, completed: true, storage: "tos-multipart", media: existingMedia });
+    }
+    const [priorRows] = await pool.query(
+      "SELECT * FROM case_direct_upload_sessions WHERE case_id = ? AND source_sha256 = ? AND status IN ('uploading', 'completed') ORDER BY updated_at DESC LIMIT 1",
+      [caseId, sourceSha256]
+    );
+    const prior = priorRows[0];
+    if (prior) {
+      return sendJson(res, 200, {
+        ok: true,
+        resumed: true,
+        sessionId: prior.id,
+        fileSize: Number(prior.file_size),
+        partSize: Number(prior.part_size),
+        partCount: Number(prior.part_count),
+        status: prior.status,
+        storage: "tos-multipart"
+      });
+    }
+
+    const partSize = CASE_DIRECT_SYNC_PART_SIZE;
+    const partCount = Math.ceil(fileSize / partSize);
+    const filename = `case_${caseId}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}${ext}`;
+    const object = caseVideoTosObject(filename);
+    const { client, bucket } = getCaseVideoTosClient();
+    let uploadId = "";
+    try {
+      const created = await client.createMultipartUpload({
+        bucket,
+        key: object.key,
+        contentType: MIME_TYPES[ext] || "video/mp4",
+        cacheControl: "public, max-age=31536000, immutable",
+        contentDisposition: "inline"
+      });
+      uploadId = created?.data?.UploadId || created?.UploadId || "";
+      if (!uploadId) throw new Error("TOS未返回Multipart UploadId");
+      const sessionId = createId("case_upload");
+      const ts = now();
+      try {
+        await pool.query(
+          `INSERT INTO case_direct_upload_sessions
+           (id, case_id, source_video_id, source_sha256, ext, title, caption, filename, object_key, upload_id, file_size, part_size, part_count, status, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [sessionId, caseId, sourceVideoId, sourceSha256, ext, cleanString(body.title).slice(0, 255), cleanString(body.caption).slice(0, 1000), filename, object.key, uploadId, fileSize, partSize, partCount, "uploading", ts, ts]
+        );
+      } catch (error) {
+        await client.abortMultipartUpload({ bucket, key: object.key, uploadId }).catch(() => {});
+        throw error;
+      }
+      return sendJson(res, 201, { ok: true, sessionId, fileSize, partSize, partCount, expiresIn: 1800, storage: "tos-multipart" });
+    } catch (error) {
+      console.error("[case-direct-upload-init]", error && (error.stack || error.message || error));
+      return sendJson(res, 502, { error: "案例直传初始化失败：" + (error.message || "未知错误") });
+    }
+  }
+
+  const caseDirectUploadPartUrl = pathname.match(/^\/api\/automation\/cases\/([^/]+)\/videos\/upload-session\/([^/]+)\/part-url$/);
+  if (req.method === "GET" && caseDirectUploadPartUrl) {
+    const caseId = decodeURIComponent(caseDirectUploadPartUrl[1]);
+    if (!requireCaseDirectSync(req, res, caseId)) return;
+    const session = await readCaseDirectUploadSession(decodeURIComponent(caseDirectUploadPartUrl[2]));
+    if (!session || session.case_id !== caseId) return sendJson(res, 404, { error: "上传会话不存在" });
+    if (session.status !== "uploading") return sendJson(res, 409, { error: "上传会话已结束", status: session.status });
+    const partNumber = Number(new URL(req.url, "http://localhost").searchParams.get("partNumber"));
+    if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > Number(session.part_count)) {
+      return sendJson(res, 400, { error: "无效的视频分片编号" });
+    }
+    try {
+      const { client, bucket } = getCaseVideoTosClient();
+      const url = client.getPreSignedUrl({
+        bucket,
+        key: session.object_key,
+        method: "PUT",
+        expires: 1800,
+        query: { uploadId: session.upload_id, partNumber: String(partNumber) }
+      });
+      return sendJson(res, 200, { ok: true, url, partNumber, partSize: Number(session.part_size), expiresIn: 1800 });
+    } catch (error) {
+      console.error("[case-direct-upload-sign]", error && (error.stack || error.message || error));
+      return sendJson(res, 502, { error: "视频分片地址生成失败：" + (error.message || "未知错误") });
+    }
+  }
+
+  const caseDirectUploadStatus = pathname.match(/^\/api\/automation\/cases\/([^/]+)\/videos\/upload-session\/([^/]+)\/status$/);
+  if (req.method === "GET" && caseDirectUploadStatus) {
+    const caseId = decodeURIComponent(caseDirectUploadStatus[1]);
+    if (!requireCaseDirectSync(req, res, caseId)) return;
+    const session = await readCaseDirectUploadSession(decodeURIComponent(caseDirectUploadStatus[2]));
+    if (!session || session.case_id !== caseId) return sendJson(res, 404, { error: "上传会话不存在" });
+    if (session.status === "completed") {
+      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, fileSize: Number(session.file_size), partSize: Number(session.part_size), partCount: Number(session.part_count), completedParts: Array.from({ length: Number(session.part_count) }, (_, index) => index + 1), mediaUrl: session.media_url || "" });
+    }
+    if (session.status === "aborted") return sendJson(res, 409, { error: "上传会话已取消", status: session.status });
+    try {
+      const { client, bucket } = getCaseVideoTosClient();
+      const listed = await client.listParts({ bucket, key: session.object_key, uploadId: session.upload_id, maxParts: 10000 });
+      const parts = listed?.data?.Parts || listed?.Parts || [];
+      const completedParts = parts.map(part => Number(part.PartNumber)).filter(Number.isInteger).sort((a, b) => a - b);
+      const uploadedBytes = parts.reduce((total, part) => total + Math.max(0, Number(part.Size) || 0), 0);
+      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, fileSize: Number(session.file_size), partSize: Number(session.part_size), partCount: Number(session.part_count), completedParts, uploadedBytes });
+    } catch (error) {
+      console.error("[case-direct-upload-status]", error && (error.stack || error.message || error));
+      return sendJson(res, 502, { error: "视频上传进度读取失败：" + (error.message || "未知错误") });
+    }
+  }
+
+  const caseDirectUploadComplete = pathname.match(/^\/api\/automation\/cases\/([^/]+)\/videos\/upload-session\/([^/]+)\/complete$/);
+  if (req.method === "POST" && caseDirectUploadComplete) {
+    const caseId = decodeURIComponent(caseDirectUploadComplete[1]);
+    if (!requireCaseDirectSync(req, res, caseId)) return;
+    const sessionId = decodeURIComponent(caseDirectUploadComplete[2]);
+    const session = await readCaseDirectUploadSession(sessionId);
+    if (!session || session.case_id !== caseId) return sendJson(res, 404, { error: "上传会话不存在" });
+    const db = readDb();
+    const caseIndex = (db.cases || []).findIndex(item => item.id === caseId);
+    if (caseIndex < 0) return sendJson(res, 404, { error: "目标案例不存在" });
+    const caseItem = db.cases[caseIndex];
+    const existingMedia = caseMediaBySourceHash(caseItem, session.source_sha256);
+    if (session.status === "completed" && existingMedia) {
+      return sendJson(res, 200, { ok: true, completed: true, storage: "tos-multipart", media: existingMedia });
+    }
+    if (session.status === "aborted") return sendJson(res, 409, { error: "上传会话已取消" });
+
+    const { client, bucket } = getCaseVideoTosClient();
+    let objectCompleted = false;
+    let databaseCommitted = false;
+    try {
+      let objectReady = false;
+      let headResult = null;
+      try { headResult = await client.headObject({ bucket, key: session.object_key }); } catch {}
+      if (headResult) {
+        assertTosObjectSize(headResult, session.file_size);
+        objectReady = true;
+      }
+      if (!objectReady) {
+        const listed = await client.listParts({ bucket, key: session.object_key, uploadId: session.upload_id, maxParts: 10000 });
+        const parts = listed?.data?.Parts || listed?.Parts || [];
+        const expectedCount = Number(session.part_count);
+        if (parts.length !== expectedCount) return sendJson(res, 409, { error: `视频仍有分片未上传（已收到${parts.length}/${expectedCount}片）` });
+        const byNumber = new Map(parts.map(part => [Number(part.PartNumber), part]));
+        for (let partNumber = 1; partNumber <= expectedCount; partNumber++) {
+          const part = byNumber.get(partNumber);
+          const expectedSize = partNumber < expectedCount ? Number(session.part_size) : Number(session.file_size) - (expectedCount - 1) * Number(session.part_size);
+          if (!part || !part.ETag || Number(part.Size) !== expectedSize) return sendJson(res, 409, { error: `视频第${partNumber}片不完整` });
+        }
+        await client.completeMultipartUpload({ bucket, key: session.object_key, uploadId: session.upload_id, completeAll: true });
+        headResult = await client.headObject({ bucket, key: session.object_key });
+        assertTosObjectSize(headResult, session.file_size);
+      }
+      objectCompleted = true;
+      const url = session.media_url || caseVideoTosObject(session.filename).url;
+      const media = existingMedia || {
+        type: "video",
+        url,
+        title: cleanString(session.title),
+        caption: cleanString(session.caption),
+        size: Number(session.file_size),
+        sourceSha256: session.source_sha256,
+        sourceVideoId: session.source_video_id,
+        createdAt: now()
+      };
+      if (existingMedia) {
+        databaseCommitted = true;
+      } else {
+        caseItem.media = [...(caseItem.media || []), media];
+        db.cases[caseIndex] = normalizeCase({ media: caseItem.media, updatedAt: now() }, caseItem);
+        await writeDb(db);
+        databaseCommitted = true;
+      }
+      await updateCaseDirectUploadSession(sessionId, { status: "completed", media_url: url, error: null });
+      return sendJson(res, existingMedia ? 200 : 201, { ok: true, completed: true, storage: "tos-multipart", media });
+    } catch (error) {
+      if (objectCompleted && !databaseCommitted) {
+        await client.deleteObject({ bucket, key: session.object_key }).catch(cleanupError => console.error("[case-direct-upload-orphan-cleanup]", cleanupError && (cleanupError.stack || cleanupError.message || cleanupError)));
+      }
+      await updateCaseDirectUploadSession(sessionId, { status: "failed", error: String(error.message || error).slice(0, 1000) }).catch(() => {});
+      console.error("[case-direct-upload-complete]", error && (error.stack || error.message || error));
+      return sendJson(res, 502, { error: "视频分片已上传，但案例登记失败：" + (error.message || "未知错误") });
+    }
+  }
+
+  const caseDirectUploadAbort = pathname.match(/^\/api\/automation\/cases\/([^/]+)\/videos\/upload-session\/([^/]+)\/abort$/);
+  if (req.method === "POST" && caseDirectUploadAbort) {
+    const caseId = decodeURIComponent(caseDirectUploadAbort[1]);
+    if (!requireCaseDirectSync(req, res, caseId)) return;
+    const session = await readCaseDirectUploadSession(decodeURIComponent(caseDirectUploadAbort[2]));
+    if (!session || session.case_id !== caseId) return sendJson(res, 404, { error: "上传会话不存在" });
+    if (session.status === "uploading" || session.status === "failed") {
+      const { client, bucket } = getCaseVideoTosClient();
+      await client.abortMultipartUpload({ bucket, key: session.object_key, uploadId: session.upload_id }).catch(() => {});
+      await updateCaseDirectUploadSession(session.id, { status: "aborted", error: "客户端取消上传" });
+    }
+    return sendJson(res, 200, { ok: true });
+  }
+
   // 案例视频上传:先流式写临时盘,再上传 TOS; 前台播放不再经过业务服务器
   if (req.method === "POST" && pathname === "/api/admin/upload-video") {
     const user = requireRole(req, res, ["admin"]);
@@ -3174,9 +3505,15 @@ initDb()
     await cleanupStaleProjectUploadSessions().catch(error => {
       console.error("[project-upload-cleanup]", error && (error.stack || error.message || error));
     });
+    await cleanupStaleCaseDirectUploadSessions().catch(error => {
+      console.error("[case-direct-upload-cleanup]", error && (error.stack || error.message || error));
+    });
     const cleanupTimer = setInterval(() => {
       cleanupStaleProjectUploadSessions().catch(error => {
         console.error("[project-upload-cleanup]", error && (error.stack || error.message || error));
+      });
+      cleanupStaleCaseDirectUploadSessions().catch(error => {
+        console.error("[case-direct-upload-cleanup]", error && (error.stack || error.message || error));
       });
     }, 6 * 60 * 60 * 1000);
     cleanupTimer.unref();
