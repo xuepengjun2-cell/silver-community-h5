@@ -1003,8 +1003,8 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column;
 }
 .case-list-card .admin-card-cover {
-  height: 144px;
-  flex: 0 0 144px;
+  height: 170px;
+  flex: 0 0 170px;
 }
 .case-list-card .admin-card-body {
   flex: 1;
