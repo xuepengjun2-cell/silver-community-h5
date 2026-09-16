@@ -1003,7 +1003,8 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column;
 }
 .case-list-card .admin-card-cover {
-  flex: 0 0 118px;
+  height: 144px;
+  flex: 0 0 144px;
 }
 .case-list-card .admin-card-body {
   flex: 1;
@@ -1076,7 +1077,8 @@ a { color: inherit; text-decoration: none; }
 }
 .case-list-card .admin-card-structure {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 34px;
   gap: 6px;
   margin: 0;
 }
@@ -1085,7 +1087,8 @@ a { color: inherit; text-decoration: none; }
   align-items: baseline;
   gap: 5px;
   min-width: 0;
-  min-height: 28px;
+  height: 34px;
+  min-height: 0;
   padding: 6px 8px;
   border-radius: 8px;
 }
@@ -1103,10 +1106,6 @@ a { color: inherit; text-decoration: none; }
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.case-list-card .audit-counts {
-  min-height: 20px;
-  margin: 0;
 }
 .case-list-card .admin-card-actions {
   display: grid;
@@ -1578,6 +1577,16 @@ a { color: inherit; text-decoration: none; }
 .btn.ghost.danger {
   color: #c0392b;
   border-color: rgba(192,57,43,0.35);
+}
+.case-list-card .admin-card-actions .case-delete-btn {
+  background: #fffafa;
+  color: #c0392b;
+  border: 1px solid #c0392b;
+}
+.case-list-card .admin-card-actions .case-delete-btn:hover {
+  background: #fff0ee;
+  border-color: #a92d23;
+  color: #a92d23;
 }
 .case-editor-area {
   height: calc(100vh - 92px);

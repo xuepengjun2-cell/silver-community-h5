@@ -1403,19 +1403,20 @@ async function renderCasesAdmin() {
         <div class="admin-card-body">
           <p class="admin-card-title" title="${esc(c.title)}">${esc(c.title)}</p>
           <p class="admin-card-meta" title="${esc(meta)}"><span>${esc(meta)}</span><span>共 ${n} 项素材</span></p>
-	          <div class="admin-card-structure case-card-stats" aria-label="素材数量">
-		            ${stat("视频", groups.videos.length)}
-		            ${stat("图片", groups.images.length)}
-		            ${stat("文档", groups.documents.length)}
-		            ${stat("链接", groups.links.length)}
+	          <div class="admin-card-structure case-card-stats" aria-label="案例数据">
+	            ${stat("视频", groups.videos.length)}
+	            ${stat("图片", groups.images.length)}
+	            ${stat("文档", groups.documents.length)}
+	            ${stat("链接", groups.links.length)}
+	            ${stat("查看", c.viewCount)}
+	            ${stat("下载", c.downloadCount)}
 	          </div>
-	          <div class="audit-counts"><span>查看 ${Number(c.viewCount || 0)}</span><span>下载 ${Number(c.downloadCount || 0)}</span></div>
 	          <div class="admin-card-actions">
 	            <button class="btn small" data-case-open="${esc(c.id)}">管理内容</button>
 	            <button class="btn secondary small" data-case-edit="${esc(c.id)}">编辑上传</button>
 	            ${c.sourceProjectId ? `<button class="btn ghost small" data-case-return-delivery="${esc(c.sourceProjectId)}">返回活动交付</button>` : ""}
 	            <button class="btn secondary small" data-case-toggle="${esc(c.id)}">${c.status === "published" ? "下架" : "发布"}</button>
-	            <button class="btn ghost small" data-case-del="${esc(c.id)}" style="color:#c0392b">删除</button>
+	            <button class="btn ghost small danger case-delete-btn" data-case-del="${esc(c.id)}">删除</button>
 	          </div>
         </div>
       </div>`;
