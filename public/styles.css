@@ -207,7 +207,7 @@ img { display: block; }
   padding: 0 14px;
   font-size: 13px;
 }
-.project-mobile-media-tip { width: 100%; max-width: 100%; margin: 10px 0 0; color: var(--accent); font-size: 15px; font-weight: 700; line-height: 1.5; white-space: nowrap; text-align: center; }
+.project-mobile-media-tip { width: 100%; max-width: 100%; margin: 10px 0 0; color: var(--accent); font-size: 15px; font-weight: 700; line-height: 1.5; text-align: center; }
 
 .btn.ghost {
   background: transparent;
@@ -2657,6 +2657,7 @@ img { display: block; }
 .project-preview-count { color: var(--accent); font-size: 13px; font-weight: 700; white-space: nowrap; }
 .project-preview-stage { min-height: min(68vh, 660px); display: grid; place-items: center; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: #1d1915; }
 .project-preview-image { display: block; max-width: 100%; max-height: 68vh; object-fit: contain; }
+.project-preview-image, .project-preview-video { -webkit-touch-callout: default; }
 .project-preview-video { display: block; width: min(100%, 1000px); max-height: 68vh; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
 .project-preview-document { display: grid; min-width: min(82vw, 380px); gap: 14px; justify-items: center; padding: 48px 30px; border-radius: 10px; background: #2d2924; color: #fff; text-align: center; }
 .project-preview-document strong { font-size: 24px; }
@@ -2911,6 +2912,9 @@ img { display: block; }
 .share-fallback-link-row .input { min-width: 0; flex: 1; height: 38px; font-size: 12px; }
 .share-fallback-link-row .btn { flex-shrink: 0; }
 .share-fallback-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.project-video-save-help .project-video-save-action { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; text-align: center; }
+.project-video-save-help .project-video-save-status { min-height: 20px; margin: 8px 0 0; color: var(--accent); font-weight: 700; }
+.project-video-save-help { max-height: calc(100dvh - 32px); overflow-y: auto; }
 @media (max-width: 520px) {
   .share-fallback { padding: 24px 18px 18px; }
   .share-fallback-link-row { align-items: stretch; flex-direction: column; }

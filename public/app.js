@@ -257,8 +257,15 @@ function isWeChatBrowser() {
   return /MicroMessenger|wxwork/i.test(navigator.userAgent || "");
 }
 
+function isIOSProjectDownload() {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+}
+
 function projectWeChatTip() {
   if (!isWeChatBrowser()) return "";
+  if (isIOSProjectDownload()) {
+    return `<aside class="project-wechat-tip" role="note"><strong>iPhone 微信保存提示</strong><span>图片请点开后长按保存；视频可先长按画面尝试保存。若没有“保存视频”选项，请点“保存方法”，在 Safari 中下载。无需登录。</span></aside>`;
+  }
   return `<aside class="project-wechat-tip" role="note"><strong>微信内打开提示</strong><span>如页面打不开，请点击右上角“…” → “在浏览器中打开”。单个素材分享会直接打开对应图片或视频预览，不要直接发送 TOS 文件地址。</span></aside>`;
 }
 
@@ -1660,6 +1667,10 @@ function projectDownloadButton(project, index) {
   if (type === "image" && isMobileProjectDownload()) {
     return "";
   }
+  if (type === "video" && isIOSProjectDownload()) {
+    const label = isWeChatBrowser() ? "保存方法" : "下载视频";
+    return `<button class="btn small" type="button" data-project-save-video="${index}">${label}</button>`;
+  }
   const name = projectMediaDisplayName(project.media[index], index);
   return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">下载${projectMediaLabel(type)}</button>`;
 }
@@ -1667,7 +1678,13 @@ function projectDownloadButton(project, index) {
 function projectMobileMediaTip(project, index) {
   const type = project.media[index]?.type;
   if (!isMobileProjectDownload() || !["image", "video"].includes(type)) return "";
-  const target = type === "video" ? "点视频右下角⋮，选择下载" : "长按图片，点击下载到相册";
+  const target = type === "image"
+    ? "长按图片，点击下载到相册"
+    : isIOSProjectDownload() && isWeChatBrowser()
+      ? "长按视频尝试保存；无保存选项请点“保存方法”"
+      : isIOSProjectDownload()
+        ? "点“下载视频”，再长按按钮选择“下载链接文件”"
+        : "点视频右下角⋮，选择下载";
   return `<p class="project-mobile-media-tip">特别提醒：${target}</p>`;
 }
 
@@ -1701,6 +1718,68 @@ function triggerProjectDownload(url, filename = "活动素材", type = "") {
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+function showIOSProjectVideoSaveHelp(project, index, download = null) {
+  document.querySelector("[data-project-video-save-help]")?.remove();
+  const wechat = isWeChatBrowser();
+  const modal = document.createElement("div");
+  modal.className = "share-fallback-mask";
+  modal.dataset.projectVideoSaveHelp = "1";
+  const title = projectMediaDisplayName(project.media[index], index);
+  modal.innerHTML = `
+    <section class="share-fallback project-video-save-help" role="dialog" aria-modal="true" aria-labelledby="projectVideoSaveTitle">
+      <button class="share-fallback-close" type="button" data-video-save-close aria-label="关闭">×</button>
+      <div class="eyebrow"><span class="eyebrow-dot"></span>活动相册 · 视频保存</div>
+      <h2 id="projectVideoSaveTitle">${esc(title)}</h2>
+      ${wechat ? `
+        <p>先在视频画面上长按；如果微信弹出“保存视频”，直接选择即可。</p>
+        <p>若没有保存选项，请点微信右上角“…” → “在浏览器中打开”，回到此视频点“下载视频”，再长按下载按钮。找不到“在浏览器中打开”时，可复制相册链接，粘贴到 Safari 打开。</p>
+        <button class="btn project-video-save-action" type="button" data-video-save-copy>复制相册链接</button>
+      ` : `
+        <p>请长按下方按钮，在 Safari 菜单中选“下载链接文件”。不要轻点按钮；下载后到 iPhone 的“文件”App → “浏览” → “下载”查找，视频不会自动进入“照片”。</p>
+        <a class="btn project-video-save-action" href="${esc(download.url)}" download="${esc(download.filename)}" data-video-save-longpress>长按这里下载视频</a>
+        <p class="project-video-save-status" data-video-save-status aria-live="polite"></p>
+      `}
+      <div class="share-fallback-actions"><button class="btn secondary small" type="button" data-video-save-close>返回视频</button></div>
+    </section>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelectorAll("[data-video-save-close]").forEach(button => button.addEventListener("click", close));
+  modal.addEventListener("click", event => { if (event.target === modal) close(); });
+  modal.querySelector("[data-video-save-copy]")?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    try {
+      await copyShareLink(projectShareHref(project.id, index));
+      button.textContent = "✓ 相册链接已复制";
+    } catch {
+      button.textContent = "复制失败，请用右上角菜单打开浏览器";
+    }
+  });
+  modal.querySelector("[data-video-save-longpress]")?.addEventListener("click", event => {
+    // iPhone 上轻点临时 TOS 地址会进入预览页；仅让原生长按菜单处理下载。
+    event.preventDefault();
+    const status = modal.querySelector("[data-video-save-status]");
+    if (status) status.textContent = "请按住上方按钮，选“下载链接文件”；不要轻点。";
+  });
+}
+
+function bindProjectDownloadEvents(project) {
+  document.querySelectorAll("[data-project-save-video]").forEach(btn => btn.addEventListener("click", async () => {
+    const index = Number(btn.dataset.projectSaveVideo);
+    if (isWeChatBrowser()) return showIOSProjectVideoSaveHelp(project, index);
+    try {
+      const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${index}`);
+      if (data.url) showIOSProjectVideoSaveHelp(project, index, data);
+    } catch (err) { alert(err.message); }
+  }));
+  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => {
+    try {
+      const index = Number(btn.dataset.projectDownload);
+      const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${index}`);
+      if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${index}`, project.media[index]?.type);
+    } catch (err) { alert(err.message); }
+  }));
 }
 
 function projectMediaCardHtml(project, m, manager = false) {
@@ -1924,7 +2003,7 @@ function renderProjectManager(project) {
   document.querySelectorAll("[data-project-lightbox-close]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = null; renderProjectManager(project); }));
   document.querySelectorAll("[data-project-lightbox-nav]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = Number(btn.dataset.projectLightboxNav); renderProjectManager(project); }));
   document.querySelector(".project-lightbox")?.addEventListener("click", e => { if (e.target.classList.contains("project-lightbox")) { state.projectLightboxIndex = null; renderProjectManager(project); } });
-  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => { try { const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${btn.dataset.projectDownload}`); if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${btn.dataset.projectDownload}`, project.media[Number(btn.dataset.projectDownload)]?.type); } catch (err) { alert(err.message); } }));
+  bindProjectDownloadEvents(project);
   document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectManager(project); }));
   document.querySelectorAll("[data-project-delete-media]").forEach(btn => btn.addEventListener("click", async () => {
     if (!confirm("确定删除这个素材吗？TOS 文件会保留，但相册中不再展示。")) return;
@@ -2000,7 +2079,7 @@ function renderProjectPreview(project, index, manager = false) {
     history.replaceState(null, "", projectPreviewHref(project.id, nextIndex, manager));
     loadProjectPreview(project.id, nextIndex, manager);
   }));
-  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => { try { const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${btn.dataset.projectDownload}`); if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${btn.dataset.projectDownload}`, project.media[Number(btn.dataset.projectDownload)]?.type); } catch (err) { alert(err.message); } }));
+  bindProjectDownloadEvents(project);
   document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectPreview(project, currentIndex, manager); }));
   document.querySelector("#projectPreviewDelete")?.addEventListener("click", async () => {
     if (!confirm("确定删除这个素材吗？TOS 文件会保留，但相册中不再展示。")) return;
@@ -2041,9 +2120,12 @@ function renderProjectAlbum(project) {
   const tab = ["images", "videos"].includes(state.projectMediaTab) ? state.projectMediaTab : projectDefaultMediaTab(project);
   const type = projectMediaTypeForTab(tab);
   const media = (project.media || []).map((m, index) => ({ ...m, index })).filter(m => !type || m.type === type);
+  const downloadNote = isIOSProjectDownload()
+    ? isWeChatBrowser() ? "图片点开后长按保存 · 视频请看保存方法" : "图片点开后长按保存 · 视频点下载后长按"
+    : "分享链接内可直接下载";
   app.className = `app-shell project-album-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
-    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}<span class="project-album-download-note">分享链接内可直接下载</span></div></div></section>${projectWeChatTip()}
+    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}<span class="project-album-download-note">${downloadNote}</span></div></div></section>${projectWeChatTip()}
     <section class="project-album-content"><div class="project-album-tabs"><button class="${tab === "images" ? "active" : ""}" data-project-tab="images">图片 <strong>${groups.images.length}</strong></button><button class="${tab === "videos" ? "active" : ""}" data-project-tab="videos">视频 <strong>${groups.videos.length}</strong></button></div>${media.length ? `<div class="project-media-grid public">${media.map(m => projectMediaCardHtml(project, m, false)).join("")}</div>` : `<div class="project-empty-state">该分类还没有素材。</div>`}</section>${projectLightboxHtml(project)}${loginModal()}`;
   document.querySelectorAll("[data-project-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectTab; state.projectLightboxIndex = null; renderProjectAlbum(project); }));
   bindProjectVideoThumbs();
@@ -2051,7 +2133,7 @@ function renderProjectAlbum(project) {
   document.querySelectorAll("[data-project-lightbox-close]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = null; renderProjectAlbum(project); }));
   document.querySelectorAll("[data-project-lightbox-nav]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = Number(btn.dataset.projectLightboxNav); renderProjectAlbum(project); }));
   document.querySelector(".project-lightbox")?.addEventListener("click", e => { if (e.target.classList.contains("project-lightbox")) { state.projectLightboxIndex = null; renderProjectAlbum(project); } });
-  document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => { try { const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${btn.dataset.projectDownload}`); if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${btn.dataset.projectDownload}`, project.media[Number(btn.dataset.projectDownload)]?.type); } catch (err) { alert(err.message); } }));
+  bindProjectDownloadEvents(project);
   document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectAlbum(project); }));
   bindProjectShareEvents();
   bindAuthEvents();
