@@ -264,7 +264,10 @@ function isIOSProjectDownload() {
 function projectWeChatTip() {
   if (!isWeChatBrowser()) return "";
   if (isIOSProjectDownload()) {
-    return `<aside class="project-wechat-tip" role="note"><strong>iPhone 微信保存提示</strong><span>图片请点开后长按保存；视频可先长按画面尝试保存。若没有“保存视频”选项，请点“保存方法”，在 Safari 中下载。无需登录。</span></aside>`;
+    return `<aside class="project-wechat-tip" role="note"><strong>iPhone 微信保存提示</strong><span>图片请点开后长按保存；视频点“复制视频下载链接”，粘贴到 Safari 下载到“文件”。无需登录。</span></aside>`;
+  }
+  if (isMobileProjectDownload()) {
+    return `<aside class="project-wechat-tip" role="note"><strong>微信内保存提示</strong><span>图片点开后长按保存；视频点开后用播放器右下角“⋮” → “下载”。相册分享链接仍可免登录打开。</span></aside>`;
   }
   return `<aside class="project-wechat-tip" role="note"><strong>微信内打开提示</strong><span>如页面打不开，请点击右上角“…” → “在浏览器中打开”。单个素材分享会直接打开对应图片或视频预览，不要直接发送 TOS 文件地址。</span></aside>`;
 }
@@ -1667,9 +1670,11 @@ function projectDownloadButton(project, index) {
   if (type === "image" && isMobileProjectDownload()) {
     return "";
   }
+  if (type === "video" && isWeChatBrowser() && isMobileProjectDownload() && !isIOSProjectDownload()) {
+    return "";
+  }
   if (type === "video" && isIOSProjectDownload()) {
-    const label = isWeChatBrowser() ? "保存方法" : "下载视频";
-    return `<button class="btn small" type="button" data-project-save-video="${index}">${label}</button>`;
+    return `<button class="btn small" type="button" data-project-save-video="${index}">${isWeChatBrowser() ? "复制视频下载链接" : "下载视频"}</button>`;
   }
   const name = projectMediaDisplayName(project.media[index], index);
   return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">下载${projectMediaLabel(type)}</button>`;
@@ -1681,9 +1686,9 @@ function projectMobileMediaTip(project, index) {
   const target = type === "image"
     ? "长按图片，点击下载到相册"
     : isIOSProjectDownload() && isWeChatBrowser()
-      ? "长按视频尝试保存；无保存选项请点“保存方法”"
+      ? "点“复制视频下载链接”，用 Safari 打开并下载"
       : isIOSProjectDownload()
-        ? "点“下载视频”，再长按按钮选择“下载链接文件”"
+        ? "点“下载视频”；若未开始下载，长按链接选“下载链接文件”"
         : "点视频右下角⋮，选择下载";
   return `<p class="project-mobile-media-tip">特别提醒：${target}</p>`;
 }
@@ -1720,9 +1725,14 @@ function triggerProjectDownload(url, filename = "活动素材", type = "") {
   link.remove();
 }
 
-function showIOSProjectVideoSaveHelp(project, index, download = null) {
+function projectVideoDownloadHref(project, index) {
+  return apiUrl(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download-file?i=${index}`);
+}
+
+function showIOSProjectVideoSaveHelp(project, index, { copied = false, copyFailed = false } = {}) {
   document.querySelector("[data-project-video-save-help]")?.remove();
   const wechat = isWeChatBrowser();
+  const downloadUrl = projectVideoDownloadHref(project, index);
   const modal = document.createElement("div");
   modal.className = "share-fallback-mask";
   modal.dataset.projectVideoSaveHelp = "1";
@@ -1733,13 +1743,13 @@ function showIOSProjectVideoSaveHelp(project, index, download = null) {
       <div class="eyebrow"><span class="eyebrow-dot"></span>活动相册 · 视频保存</div>
       <h2 id="projectVideoSaveTitle">${esc(title)}</h2>
       ${wechat ? `
-        <p>先在视频画面上长按；如果微信弹出“保存视频”，直接选择即可。</p>
-        <p>若没有保存选项，请点微信右上角“…” → “在浏览器中打开”，回到此视频点“下载视频”，再长按下载按钮。找不到“在浏览器中打开”时，可复制相册链接，粘贴到 Safari 打开。</p>
-        <button class="btn project-video-save-action" type="button" data-video-save-copy>复制相册链接</button>
+        <p>${copied ? "已复制这个视频的下载入口。" : "微信未能自动复制下载入口。"}打开 iPhone 的 Safari，长按地址栏选择“粘贴并前往”。无需重新查找视频或登录。</p>
+        <p>视频将下载到“文件”App → “浏览” → “下载”，不会自动进入“照片”。</p>
+        <button class="btn project-video-save-action" type="button" data-video-save-copy>重新复制视频下载链接</button>
+        ${copyFailed ? `<div class="share-fallback-link-row"><input class="input" type="text" readonly value="${esc(downloadUrl)}" aria-label="视频下载入口，长按复制"></div>` : ""}
       ` : `
-        <p>请长按下方按钮，在 Safari 菜单中选“下载链接文件”。不要轻点按钮；下载后到 iPhone 的“文件”App → “浏览” → “下载”查找，视频不会自动进入“照片”。</p>
-        <a class="btn project-video-save-action" href="${esc(download.url)}" download="${esc(download.filename)}" data-video-save-longpress>长按这里下载视频</a>
-        <p class="project-video-save-status" data-video-save-status aria-live="polite"></p>
+        <p>在 Safari 点下方按钮开始下载；若没有开始，长按按钮并选择“下载链接文件”。完成后到“文件”App → “浏览” → “下载”查找。</p>
+        <a class="btn project-video-save-action" href="${esc(downloadUrl)}" rel="noreferrer">下载到文件</a>
       `}
       <div class="share-fallback-actions"><button class="btn secondary small" type="button" data-video-save-close>返回视频</button></div>
     </section>`;
@@ -1750,28 +1760,29 @@ function showIOSProjectVideoSaveHelp(project, index, download = null) {
   modal.querySelector("[data-video-save-copy]")?.addEventListener("click", async event => {
     const button = event.currentTarget;
     try {
-      await copyShareLink(projectShareHref(project.id, index));
-      button.textContent = "✓ 相册链接已复制";
+      await copyShareLink(downloadUrl);
+      button.textContent = "✓ 视频下载链接已复制";
     } catch {
-      button.textContent = "复制失败，请用右上角菜单打开浏览器";
+      button.textContent = "复制失败，请长按下方链接复制";
+      if (!modal.querySelector(".share-fallback-link-row")) {
+        button.insertAdjacentHTML("afterend", `<div class="share-fallback-link-row"><input class="input" type="text" readonly value="${esc(downloadUrl)}" aria-label="视频下载入口，长按复制"></div>`);
+      }
     }
-  });
-  modal.querySelector("[data-video-save-longpress]")?.addEventListener("click", event => {
-    // iPhone 上轻点临时 TOS 地址会进入预览页；仅让原生长按菜单处理下载。
-    event.preventDefault();
-    const status = modal.querySelector("[data-video-save-status]");
-    if (status) status.textContent = "请按住上方按钮，选“下载链接文件”；不要轻点。";
   });
 }
 
 function bindProjectDownloadEvents(project) {
   document.querySelectorAll("[data-project-save-video]").forEach(btn => btn.addEventListener("click", async () => {
     const index = Number(btn.dataset.projectSaveVideo);
-    if (isWeChatBrowser()) return showIOSProjectVideoSaveHelp(project, index);
-    try {
-      const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${index}`);
-      if (data.url) showIOSProjectVideoSaveHelp(project, index, data);
-    } catch (err) { alert(err.message); }
+    if (isWeChatBrowser()) {
+      try {
+        await copyShareLink(projectVideoDownloadHref(project, index));
+        return showIOSProjectVideoSaveHelp(project, index, { copied: true });
+      } catch {
+        return showIOSProjectVideoSaveHelp(project, index, { copyFailed: true });
+      }
+    }
+    showIOSProjectVideoSaveHelp(project, index);
   }));
   document.querySelectorAll("[data-project-download]").forEach(btn => btn.addEventListener("click", async () => {
     try {
@@ -2061,7 +2072,7 @@ function renderProjectPreview(project, index, manager = false) {
   app.className = `app-shell project-preview-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
     <div class="project-preview-nav"><button class="btn secondary" id="projectPreviewBack" type="button">← 返回相册</button><a class="btn secondary" href="${esc(backHref)}">相册首页</a></div>${projectWeChatTip()}
-    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
+    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar${current.type === "video" && isIOSProjectDownload() && isWeChatBrowser() ? " project-preview-toolbar-ios-wechat" : ""}">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
 
   const previewVideo = document.querySelector(".project-preview-video");
   if (previewVideo) {
@@ -2121,8 +2132,8 @@ function renderProjectAlbum(project) {
   const type = projectMediaTypeForTab(tab);
   const media = (project.media || []).map((m, index) => ({ ...m, index })).filter(m => !type || m.type === type);
   const downloadNote = isIOSProjectDownload()
-    ? isWeChatBrowser() ? "图片点开后长按保存 · 视频请看保存方法" : "图片点开后长按保存 · 视频点下载后长按"
-    : "分享链接内可直接下载";
+    ? isWeChatBrowser() ? "图片长按保存 · 视频复制链接到 Safari 下载" : "图片长按保存 · 视频点下载到文件"
+    : isWeChatBrowser() && isMobileProjectDownload() ? "图片长按保存 · 视频右下角⋮下载" : "分享链接内可直接下载";
   app.className = `app-shell project-album-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
     <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}<span class="project-album-download-note">${downloadNote}</span></div></div></section>${projectWeChatTip()}

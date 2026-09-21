@@ -2915,6 +2915,11 @@ img { display: block; }
 .project-video-save-help .project-video-save-action { display: flex; width: 100%; min-height: 48px; align-items: center; justify-content: center; text-align: center; }
 .project-video-save-help .project-video-save-status { min-height: 20px; margin: 8px 0 0; color: var(--accent); font-weight: 700; }
 .project-video-save-help { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.project-video-save-help .share-fallback-link-row { margin-top: 10px; }
+@media (max-width: 480px) {
+  .project-preview-toolbar-ios-wechat { flex-wrap: wrap; }
+  .project-preview-toolbar-ios-wechat > .btn { flex: 1 1 calc(50% - 5px); }
+}
 @media (max-width: 520px) {
   .share-fallback { padding: 24px 18px 18px; }
   .share-fallback-link-row { align-items: stretch; flex-direction: column; }

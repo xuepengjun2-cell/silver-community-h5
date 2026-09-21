@@ -2357,6 +2357,38 @@ async function handleApi(req, res, pathname) {
     }
   }
 
+  const publicProjectDownloadFile = pathname.match(/^\/api\/public\/activity-projects\/([^/]+)\/download-file$/);
+  if (req.method === "GET" && publicProjectDownloadFile) {
+    // iPhone 微信中复制此稳定入口到 Safari：每次访问都重新校验分享状态，
+    // 再跳转到短时效、attachment 的 TOS 地址，不暴露可长期绕过下架的文件链接。
+    const db = readDb();
+    const item = (db.activityProjects || []).find(p => p.id === decodeURIComponent(publicProjectDownloadFile[1]));
+    if (!item || item.status !== "published" || item.shareEnabled === false) return sendJson(res, 404, { error: "活动相册不存在或分享已关闭" });
+    const rawIndex = new URL(req.url, "http://localhost").searchParams.get("i");
+    const idx = Number(rawIndex);
+    const m = /^\d+$/.test(rawIndex || "") && Number.isSafeInteger(idx) && Array.isArray(item.media) ? item.media[idx] : null;
+    if (!m || m.type !== "video" || !m.url) return sendJson(res, 404, { error: "视频不存在" });
+    // 仅为本项目 TOS 视频生成跳转；绝不将数据库中的任意外部 URL 当作重定向目标。
+    if (!String(m.url).startsWith(`${PROJECT_VIDEO_PUBLIC_BASE}/`)) {
+      return sendJson(res, 422, { error: "此视频暂不支持浏览器直链下载" });
+    }
+    try {
+      if (!projectTosObjectKey(m.url)) return sendJson(res, 422, { error: "此视频暂不支持浏览器直链下载" });
+      const url = projectDownloadUrl(item, m, idx);
+      const filename = projectDownloadFileName(item, m, idx);
+      await recordAuditLog(req, {
+        action: "download", resourceType: "activity_project_media", resourceId: item.id,
+        resourceTitle: item.title, mediaIndex: idx, mediaType: m.type,
+        filename, statusCode: 302
+      }, getAuthedUser(req));
+      res.writeHead(302, { Location: url, "Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer" });
+      return res.end();
+    } catch (error) {
+      console.error("[project-download-redirect]", error && (error.stack || error.message || error));
+      return sendJson(res, 502, { error: "下载地址生成失败,请稍后重试" });
+    }
+  }
+
   const myProjectId = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)$/);
   if (myProjectId && (req.method === "GET" || req.method === "PATCH" || req.method === "DELETE")) {
     const user = requireRole(req, res, ["admin", "operator", "member"]);
