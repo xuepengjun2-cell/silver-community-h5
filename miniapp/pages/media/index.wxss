@@ -1,0 +1,10 @@
+.media-title { margin-bottom: 28rpx; word-break: break-all; }
+.stage { min-height: 360rpx; max-height: 900rpx; overflow: hidden; display: flex; align-items: center; justify-content: center; background: #211f1d; border-radius: 20rpx; }
+.stage-video { width: 100%; height: 560rpx; }
+.stage-image { width: 100%; max-height: 900rpx; }
+.save-button { margin: 32rpx 0 18rpx; }
+.save-note { margin: 18rpx 2rpx 30rpx; }
+.reason { margin: 18rpx 0 30rpx; }
+.media-nav { display: flex; gap: 16rpx; margin-top: 22rpx; }
+.media-nav .button { flex: 1; min-width: 0; font-size: 29rpx; }
+.back-error { margin-top: 30rpx; }

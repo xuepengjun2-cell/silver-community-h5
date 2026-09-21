@@ -1,0 +1,11 @@
+{
+  "appid": "wx58bef83060b92027",
+  "description": "银发活动相册 C 端原生小程序（个人主体开发版）",
+  "miniprogramRoot": "./",
+  "compileType": "miniprogram",
+  "setting": {
+    "es6": true,
+    "postcss": true,
+    "urlCheck": true
+  }
+}

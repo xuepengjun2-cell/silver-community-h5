@@ -1,0 +1,9 @@
+.entry-page { padding-top: 92rpx; }
+.entry-lead { margin: 36rpx 0 56rpx; }
+.entry-card { padding: 32rpx; }
+.entry-card-title { font-size: 35rpx; font-weight: 700; margin-bottom: 14rpx; }
+.link-input { height: 96rpx; padding: 0 22rpx; margin-top: 30rpx; border-radius: 16rpx; background: #f7f3ef; font-size: 29rpx; }
+.input-placeholder { color: #99918b; }
+.entry-open { margin-top: 22rpx; }
+.entry-error { color: #b42318; font-size: 28rpx; margin-top: 18rpx; }
+.entry-notice { margin-top: 36rpx; }

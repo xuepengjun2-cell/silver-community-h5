@@ -1,0 +1,33 @@
+<view class="page album-page">
+  <view wx:if="{{loading}}" class="state">正在打开活动相册…</view>
+  <view wx:elif="{{error}}" class="state">
+    <view class="state-title">暂时看不到这个相册</view>
+    <view class="muted">{{error}}</view>
+    <button class="button button-secondary retry" bindtap="onRetry">重新加载</button>
+  </view>
+  <block wx:else>
+    <image wx:if="{{cover}}" class="cover" src="{{cover}}" mode="aspectFill"/>
+    <view wx:else class="cover cover-empty">活动相册</view>
+    <view class="eyebrow album-eyebrow">美好时光 · 一起珍藏</view>
+    <view class="title">{{project.title}}</view>
+    <view class="muted album-meta">{{project.dateLabel || '活动回忆'}}{{project.city ? ' · ' + project.city : ''}}</view>
+    <view wx:if="{{project.description}}" class="album-description">{{project.description}}</view>
+    <view class="album-actions">
+      <button class="button button-primary" open-type="share">分享相册给朋友</button>
+    </view>
+    <view class="tabs">
+      <view class="tab {{tab === 'all' ? 'active' : ''}}" data-tab="all" bindtap="onTab">全部 {{tiles.length}}</view>
+      <view class="tab {{tab === 'image' ? 'active' : ''}}" data-tab="image" bindtap="onTab">照片 {{imageCount}}</view>
+      <view class="tab {{tab === 'video' ? 'active' : ''}}" data-tab="video" bindtap="onTab">视频 {{videoCount}}</view>
+    </view>
+    <view wx:if="{{shown.length}}" class="media-grid">
+      <view wx:for="{{shown}}" wx:key="index" class="media-tile card" data-index="{{item.index}}" bindtap="onMedia">
+        <image wx:if="{{item.imageUrl}}" class="tile-image" src="{{item.imageUrl}}" mode="aspectFill" lazy-load="true"/>
+        <view wx:else class="tile-video"><text class="play-icon">▶</text><text>点开观看视频</text></view>
+        <view class="tile-name">{{item.name}}</view>
+      </view>
+    </view>
+    <view wx:else class="state">这个分类暂时没有照片或视频</view>
+    <view class="notice album-note">点开照片或视频后，再点“保存到手机相册”。不需要登录。</view>
+  </block>
+</view>

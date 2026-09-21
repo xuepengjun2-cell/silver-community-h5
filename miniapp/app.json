@@ -1,0 +1,15 @@
+{
+  "pages": [
+    "pages/entry/index",
+    "pages/album/index",
+    "pages/media/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "活动相册",
+    "navigationBarBackgroundColor": "#fffaf4",
+    "navigationBarTextStyle": "black",
+    "backgroundColor": "#fffaf4",
+    "backgroundTextStyle": "light"
+  },
+  "sitemapLocation": "sitemap.json"
+}
