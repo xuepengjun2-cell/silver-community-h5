@@ -2645,6 +2645,7 @@ img { display: block; }
 .project-album-count { color: var(--accent); font-size: 12px; font-weight: 700; }
 .project-album-meta { margin-top: 10px; color: var(--hint); font-size: 13px; }
 .project-album-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+.project-album-download-note { align-self: center; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .project-album-content { padding: 22px 0 60px; }
 .project-preview-shell { width: min(100%, 1180px); }
 .project-preview-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 0 0; }

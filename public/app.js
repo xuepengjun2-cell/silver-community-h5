@@ -1661,9 +1661,6 @@ function projectDownloadButton(project, index) {
     return "";
   }
   const name = projectMediaDisplayName(project.media[index], index);
-  if (!state.user) {
-    return `<button class="btn secondary small" type="button" data-project-login title="登录后下载${esc(name)}">登录后下载</button>`;
-  }
   return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">下载${projectMediaLabel(type)}</button>`;
 }
 
@@ -2046,7 +2043,7 @@ function renderProjectAlbum(project) {
   const media = (project.media || []).map((m, index) => ({ ...m, index })).filter(m => !type || m.type === type);
   app.className = `app-shell project-album-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
-    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}${state.user ? "" : `<button class="btn secondary small" type="button" data-open-login>登录下载</button>`}</div></div></section>${projectWeChatTip()}
+    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}<span class="project-album-download-note">分享链接内可直接下载</span></div></div></section>${projectWeChatTip()}
     <section class="project-album-content"><div class="project-album-tabs"><button class="${tab === "images" ? "active" : ""}" data-project-tab="images">图片 <strong>${groups.images.length}</strong></button><button class="${tab === "videos" ? "active" : ""}" data-project-tab="videos">视频 <strong>${groups.videos.length}</strong></button></div>${media.length ? `<div class="project-media-grid public">${media.map(m => projectMediaCardHtml(project, m, false)).join("")}</div>` : `<div class="project-empty-state">该分类还没有素材。</div>`}</section>${projectLightboxHtml(project)}${loginModal()}`;
   document.querySelectorAll("[data-project-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectTab; state.projectLightboxIndex = null; renderProjectAlbum(project); }));
   bindProjectVideoThumbs();

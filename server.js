@@ -2285,7 +2285,7 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
-  // ---- 活动交付相册：公开 H5 浏览，上传和下载需要登录 ----
+  // ---- 活动交付相册：公开分享链接可浏览和下载；上传与管理仍需登录 ----
   const projectPath = pathname.match(/^\/api\/(my|admin)\/activity-projects(?:\/([^/]+))?$/);
   const projectId = projectPath && projectPath[2] ? decodeURIComponent(projectPath[2]) : "";
 
@@ -2332,8 +2332,9 @@ async function handleApi(req, res, pathname) {
 
   const publicProjectDownload = pathname.match(/^\/api\/public\/activity-projects\/([^/]+)\/download$/);
   if (req.method === "GET" && publicProjectDownload) {
-    const user = requireRole(req, res, VALID_ROLES);
-    if (!user) return;
+    // 与公开相册详情保持同一边界：已发布且分享未关闭的相册，持有分享链接即可下载。
+    // 其他下载能力（活动 SOP、精彩案例）仍保持各自原有的登录要求。
+    const user = getAuthedUser(req);
     const db = readDb();
     const item = (db.activityProjects || []).find(p => p.id === decodeURIComponent(publicProjectDownload[1]));
     if (!item || item.status !== "published" || item.shareEnabled === false) return sendJson(res, 404, { error: "活动相册不存在或分享已关闭" });
