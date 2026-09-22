@@ -18,6 +18,13 @@
 .item-main .muted { margin-top: 12rpx; }
 .item-actions { padding: 0 24rpx 24rpx; }
 .catalog-heading { margin: 28rpx 0; }
-.catalog { padding: 24rpx; margin-bottom: 18rpx; }
-.catalog .muted { margin-top: 10rpx; }
+.catalog-card { overflow: hidden; margin-bottom: 24rpx; }
+.catalog-cover { width: 100%; height: 310rpx; display: block; }
+.catalog-cover-empty { display: flex; align-items: center; justify-content: center; color: #ad4e2c; background: #f1dfcc; font-weight: 700; }
+.catalog-body { padding: 26rpx; }
+.catalog-kicker { color: #b6502d; font-size: 25rpx; font-weight: 700; margin-bottom: 12rpx; }
+.catalog-meta { margin-top: 12rpx; }
+.catalog-summary { color: #5d554e; font-size: 28rpx; line-height: 1.45; margin-top: 16rpx; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.catalog-actions { display: flex; gap: 14rpx; margin-top: 24rpx; }
+.catalog-actions .button { flex: 1; min-height: 76rpx; font-size: 29rpx; }
 .logout { margin: 48rpx auto; color: #906354; background: none; font-size: 28rpx; }

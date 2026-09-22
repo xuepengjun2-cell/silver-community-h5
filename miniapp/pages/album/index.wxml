@@ -28,6 +28,6 @@
       </view>
     </view>
     <view wx:else class="state">这个分类暂时没有照片或视频</view>
-    <view class="notice album-note">点开照片或视频后，再点“保存到手机相册”。不需要登录。</view>
+    <view class="notice album-note">点开照片或视频后，可保存符合格式的 JPG、PNG 或 MP4 交付版，不需要登录；尚未生成交付版的素材会显示原因。</view>
   </block>
 </view>

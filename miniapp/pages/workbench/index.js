@@ -1,5 +1,6 @@
 const { api, getSession, logout, clearSession } = require("../../utils/auth");
 const { albumPath } = require("../../utils/album");
+const { cardView, catalogPath, sharePayload } = require("../../utils/catalog");
 
 Page({
   data: {
@@ -19,8 +20,10 @@ Page({
         api(wx, "/public/cases", { token: session.token })
       ]);
       this.setData({
-        projects: mine.projects || [], activities: activities.activities || [],
-        cases: cases.cases || [], loading: false
+        projects: mine.projects || [],
+        activities: (activities.activities || []).map(item => cardView(item, "activities")),
+        cases: (cases.cases || []).map(item => cardView(item, "cases")),
+        loading: false
       });
     } catch (error) {
       if (error.statusCode === 401) {
@@ -58,7 +61,16 @@ Page({
   onCatalog(event) {
     const type = event.currentTarget.dataset.type;
     const id = event.currentTarget.dataset.id;
-    wx.navigateTo({ url: `/pages/catalog/index?type=${type}&id=${encodeURIComponent(id)}` });
+    wx.navigateTo({ url: catalogPath(type, id) });
+  },
+  onShareAppMessage(options) {
+    const dataset = options.target && options.target.dataset || {};
+    const type = dataset.type;
+    const item = type === "cases"
+      ? this.data.cases.find(row => row.id === dataset.id)
+      : this.data.activities.find(row => row.id === dataset.id);
+    if (item && ["cases", "activities"].includes(type)) return sharePayload(item, type);
+    return { title: "开开华彩活动工作台", path: "/pages/entry/index" };
   },
   async onLogout() {
     try { await logout(wx); }

@@ -56,11 +56,12 @@ function saveSource(media) {
 function saveEligibility(media) {
   if (!trustedMediaUrl(media)) return { ok: false, reason: "这个素材尚未接入相册保存服务，请联系活动主办方。" };
   if (media.type === "image") {
-    if (/\.svg(?:\?|$)/i.test(media.url)) return { ok: false, reason: "SVG 图片暂不能直接保存到相册，请主办方上传 JPG 或 PNG。" };
+    if (!/\.(?:jpe?g|png)(?:\?|$)/i.test(media.url)) return { ok: false, reason: "这张照片还不是可保存的 JPG 或 PNG，请联系活动主办方转换后再试。" };
     return { ok: true, reason: "" };
   }
   const source = saveSource(media);
   if (!isMp4(source)) return { ok: false, reason: "原视频不是 MP4，请主办方上传可保存的 MP4 版本。" };
+  if (!Number.isFinite(Number(source.size)) || Number(source.size) <= 0) return { ok: false, reason: "视频大小尚未确认，请联系活动主办方补全交付文件。" };
   if (Number(source.size) > MAX_VIDEO_BYTES) return { ok: false, reason: "视频超过 200 MB，请主办方上传压缩后的 MP4 版本。" };
   return { ok: true, reason: "" };
 }

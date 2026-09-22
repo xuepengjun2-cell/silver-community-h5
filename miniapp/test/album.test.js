@@ -36,6 +36,8 @@ test("仅下载本项目 CDN 媒体；MP4 不超过微信 200 MB 限制", () => 
   assert.match(saveEligibility({ ...mp4, url: mp4.url.replace(".mp4", ".mov") }).reason, /MP4/);
   assert.equal(saveEligibility({ ...mp4, url: "https://evil.example.com/x.mp4" }).ok, false);
   assert.equal(saveEligibility({ ...image, url: image.url.replace(".jpg", ".svg") }).ok, false);
+  assert.equal(saveEligibility({ ...image, url: image.url.replace(".jpg", ".heic") }).ok, false);
+  assert.equal(saveEligibility({ ...mp4, size: undefined }).ok, false);
   assert.equal(saveEligibility({
     ...mp4, url: mp4.url.replace(".mp4", ".mov"), size: MAX_VIDEO_BYTES + 1,
     delivery: { url: mp4.url, size: mp4.size }

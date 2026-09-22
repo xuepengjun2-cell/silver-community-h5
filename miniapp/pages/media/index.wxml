@@ -13,7 +13,7 @@
       <image wx:else class="stage-image" src="{{media.url}}" mode="widthFix"/>
     </view>
     <button class="button {{canSave && !busy ? 'button-primary' : 'button-disabled'}} save-button" disabled="{{busy || !canSave}}" bindtap="onSave">
-      {{busy ? '正在下载 ' + progress + '%' : '保存到手机相册'}}
+      {{busy ? '正在下载 ' + progress + '%' : canSave ? '保存到手机相册' : '暂无可保存版本'}}
     </button>
     <view wx:if="{{reason}}" class="notice reason">{{reason}}</view>
     <view wx:else class="muted save-note">点击后直接存入系统“照片”App，不需要登录；第一次保存时请允许添加到相册。</view>

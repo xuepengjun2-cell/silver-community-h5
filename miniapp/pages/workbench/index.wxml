@@ -29,11 +29,31 @@
     </block>
     <block wx:elif="{{tab === 'activities'}}">
       <view class="section-title catalog-heading">活动库 · {{activities.length}}</view>
-      <view wx:for="{{activities}}" wx:key="id" class="card catalog" data-type="activities" data-id="{{item.id}}" bindtap="onCatalog"><view class="item-title">{{item.title}}</view><view class="muted">{{item.category}} · {{item.city}}</view></view>
+      <view wx:for="{{activities}}" wx:key="id" class="card catalog-card">
+        <image wx:if="{{item.cover}}" class="catalog-cover" src="{{item.cover}}" mode="aspectFill" lazy-load="true"/>
+        <view wx:else class="catalog-cover catalog-cover-empty">活动 SOP</view>
+        <view class="catalog-body">
+          <view class="catalog-kicker">活动 SOP · {{item.category || '活动方案'}}</view>
+          <view class="item-title">{{item.title}}</view>
+          <view class="muted catalog-meta">{{item.city || '同城适用'}}{{item.price ? ' · ' + item.price : ''}}</view>
+          <view wx:if="{{item.intro}}" class="catalog-summary">{{item.intro}}</view>
+          <view class="catalog-actions"><button class="button button-primary" data-type="activities" data-id="{{item.id}}" bindtap="onCatalog">查看方案</button><button class="button button-secondary" open-type="share" data-type="activities" data-id="{{item.id}}">分享</button></view>
+        </view>
+      </view>
     </block>
     <block wx:else>
       <view class="section-title catalog-heading">精彩案例 · {{cases.length}}</view>
-      <view wx:for="{{cases}}" wx:key="id" class="card catalog" data-type="cases" data-id="{{item.id}}" bindtap="onCatalog"><view class="item-title">{{item.title}}</view><view class="muted">{{item.category}} · {{item.city}}</view></view>
+      <view wx:for="{{cases}}" wx:key="id" class="card catalog-card">
+        <image wx:if="{{item.cover}}" class="catalog-cover" src="{{item.cover}}" mode="aspectFill" lazy-load="true"/>
+        <view wx:else class="catalog-cover catalog-cover-empty">精彩案例</view>
+        <view class="catalog-body">
+          <view class="catalog-kicker">精彩案例 · {{item.category || '活动实录'}}</view>
+          <view class="item-title">{{item.title}}</view>
+          <view class="muted catalog-meta">{{item.city || '全国适用'}}{{item.dateLabel ? ' · ' + item.dateLabel : ''}} · {{item.count}} 项素材</view>
+          <view wx:if="{{item.intro}}" class="catalog-summary">{{item.intro}}</view>
+          <view class="catalog-actions"><button class="button button-primary" data-type="cases" data-id="{{item.id}}" bindtap="onCatalog">查看案例</button><button class="button button-secondary" open-type="share" data-type="cases" data-id="{{item.id}}">分享</button></view>
+        </view>
+      </view>
     </block>
   </block>
   <button class="logout" bindtap="onLogout">退出登录</button>

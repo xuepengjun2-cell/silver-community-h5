@@ -1,30 +1,54 @@
 <view class="page catalog-page">
-  <view wx:if="{{loading}}" class="state">正在加载…</view>
-  <view wx:elif="{{error}}" class="state">{{error}}</view>
+  <view wx:if="{{loading}}" class="state">正在加载内容…</view>
+  <view wx:elif="{{error}}" class="state"><view>{{error}}</view><button class="button button-secondary retry" bindtap="load">重新加载</button></view>
   <block wx:else>
-    <image wx:if="{{item.cover}}" src="{{item.cover}}" mode="aspectFill" class="cover"/>
-    <view class="eyebrow">{{type === 'cases' ? '精彩案例' : '活动库'}}</view>
+    <image wx:if="{{cover}}" src="{{cover}}" mode="aspectFill" class="hero"/>
+    <view wx:else class="hero hero-empty">{{type === 'cases' ? '精彩案例' : '活动 SOP'}}</view>
+    <view class="eyebrow content-eyebrow">{{type === 'cases' ? '精彩案例 · 真实活动交付' : '活动 SOP · 标准化执行'}}</view>
     <view class="title">{{item.title}}</view>
-    <view class="muted meta">{{item.city}} · {{item.category}} {{item.dateLabel}}</view>
-    <view wx:if="{{item.intro || item.description}}" class="card body">{{item.intro || item.description}}</view>
-    <view wx:if="{{type === 'activities'}}" class="card body">
-      <view wx:if="{{item.price}}">参考价格：{{item.price}}</view>
-      <view wx:if="{{item.capacity}}">适合人数：{{item.capacity}}</view>
-      <view wx:if="{{item.duration}}">活动时长：{{item.duration}}</view>
-      <view wx:if="{{item.location}}">推荐场地：{{item.location}}</view>
-    </view>
-    <view wx:if="{{highlights.length}}" class="title media-head">活动亮点</view>
-    <view wx:for="{{highlights}}" wx:for-item="highlight" wx:key="index" class="card body">{{highlight}}</view>
-    <view wx:if="{{schedule.length}}" class="title media-head">当日时间轴</view>
-    <view wx:for="{{schedule}}" wx:for-item="step" wx:key="index" class="card body">{{step.time}} · {{step.item}}</view>
-    <view wx:if="{{type === 'activities' && !item.planLocked}}" class="title media-head">执行 SOP</view>
-    <view wx:if="{{plan.target}}" class="card body">活动定位：{{plan.target}}</view>
-    <view wx:if="{{plan.materials}}" class="card body">所需物料：{{plan.materials}}</view>
-    <view wx:if="{{plan.staffing}}" class="card body">人员分工：{{plan.staffing}}</view>
-    <view wx:if="{{plan.conversion}}" class="card body">话术与转化承接：{{plan.conversion}}</view>
-    <view wx:if="{{plan.risk}}" class="card body">风险预案：{{plan.risk}}</view>
-    <view wx:if="{{media.length}}" class="title media-head">活动素材 · {{media.length}}</view>
-    <view wx:for="{{media}}" wx:key="index" class="card media"><image wx:if="{{item.type === 'image'}}" class="photo" src="{{item.url}}" mode="widthFix"/><video wx:elif="{{item.type === 'video'}}" class="video" src="{{item.url}}" controls/><view>{{item.title || item.caption}}</view></view>
-    <view class="notice">完整的 SOP 编辑、导入审核及总部账号权限管理仍在原 H5 后台；这里展示已发布内容。</view>
+    <view class="muted meta">{{item.category || '活动内容'}}{{item.city ? ' · ' + item.city : ''}}{{item.dateLabel ? ' · ' + item.dateLabel : ''}}</view>
+    <view wx:if="{{item.intro || item.description}}" class="card intro">{{item.intro || item.description}}</view>
+    <button class="button button-primary share" open-type="share">{{type === 'cases' ? '分享精彩案例' : '分享活动方案'}}</button>
+
+    <block wx:if="{{type === 'activities'}}">
+      <view class="section-heading"><view class="section-line"></view><view>活动概览</view></view>
+      <view class="facts">
+        <view wx:for="{{facts}}" wx:for-item="fact" wx:key="label" class="card fact"><view class="fact-label">{{fact.label}}</view><view class="fact-value">{{fact.value}}</view></view>
+      </view>
+      <block wx:if="{{highlights.length}}">
+        <view class="section-heading"><view class="section-line"></view><view>活动亮点</view></view>
+        <view class="highlights"><view wx:for="{{highlights}}" wx:for-item="highlight" wx:key="index" class="card highlight"><text class="highlight-mark">✓</text><text>{{highlight}}</text></view></view>
+      </block>
+      <block wx:if="{{schedule.length}}">
+        <view class="section-heading"><view class="section-line"></view><view>当日活动时间轴</view></view>
+        <view class="card timeline"><view wx:for="{{schedule}}" wx:for-item="step" wx:key="index" class="timeline-row"><view class="timeline-dot"></view><view class="timeline-time">{{step.time || '活动节点'}}</view><view class="timeline-item">{{step.item}}</view></view></view>
+      </block>
+      <view class="section-heading"><view class="section-line"></view><view>执行 SOP</view></view>
+      <view wx:if="{{item.planLocked}}" class="notice locked"><view>完整执行方案需主办方账号登录后查看。</view><button class="button button-secondary" bindtap="onLogin">主办方登录</button></view>
+      <view wx:elif="{{planSections.length}}" class="sop-list"><view wx:for="{{planSections}}" wx:for-item="section" wx:key="key" class="card sop-card"><view class="sop-title"><text>{{section.icon}}</text><text>{{section.title}}</text></view><view class="sop-body">{{section.content}}</view></view></view>
+      <view wx:else class="notice">这场活动尚未填写执行 SOP。</view>
+      <block wx:if="{{activityImages.length || activityVideos.length}}">
+        <view class="section-heading"><view class="section-line"></view><view>参考素材</view></view>
+        <view wx:if="{{activityImages.length}}" class="gallery"><image wx:for="{{activityImages}}" wx:key="index" class="gallery-photo" src="{{item.url}}" mode="aspectFill" lazy-load="true" data-url="{{item.url}}" bindtap="onImage"/></view>
+        <view wx:for="{{activityVideos}}" wx:key="index" class="card video-card"><view wx:if="{{playingIndex === item.index}}"><video class="video-player" src="{{item.url}}" controls="true" autoplay="true"/></view><view wx:else class="video-placeholder" data-index="{{item.index}}" bindtap="onVideo">▶ 点开参考视频 {{index + 1}}</view></view>
+      </block>
+      <view wx:if="{{item.contact}}" class="notice contact">报名咨询：{{item.contact}}</view>
+    </block>
+
+    <block wx:else>
+      <view class="section-heading"><view class="section-line"></view><view>案例素材 · {{media.length}}</view></view>
+      <view wx:if="{{mediaTabs.length}}" class="media-tabs"><view wx:for="{{mediaTabs}}" wx:for-item="tab" wx:key="key" class="media-tab {{activeTab === tab.key ? 'active' : ''}}" data-tab="{{tab.key}}" bindtap="onTab">{{tab.label}} {{tab.count}}</view></view>
+      <view wx:if="{{!media.length}}" class="notice">案例尚未添加素材。</view>
+      <view wx:else class="case-grid">
+        <view wx:for="{{shownMedia}}" wx:key="index" class="card case-media">
+          <image wx:if="{{item.type === 'image'}}" class="case-image" src="{{item.url}}" mode="aspectFill" lazy-load="true" data-url="{{item.url}}" bindtap="onImage"/>
+          <block wx:elif="{{item.type === 'video'}}"><video wx:if="{{playingIndex === item.index}}" class="case-video" src="{{item.url}}" poster="{{cover}}" controls="true" autoplay="true"/><view wx:else class="case-video-poster" data-index="{{item.index}}" bindtap="onVideo"><image wx:if="{{cover}}" src="{{cover}}" mode="aspectFill"/><text class="play">▶</text></view></block>
+          <view wx:else class="case-other">{{item.type === 'document' ? '📄 文档素材' : '🔗 外部平台素材'}}</view>
+          <view class="case-media-title">{{item.title}}</view>
+        </view>
+      </view>
+      <button wx:if="{{hasMore}}" class="button button-secondary more" bindtap="onMore">继续查看</button>
+      <view class="notice case-note">案例可直接分享和预览；案例素材的下载权限仍按原 H5 规则，不因分享而变成免登录下载。</view>
+    </block>
   </block>
 </view>
