@@ -1,13 +1,12 @@
 <view class="page entry-page">
   <view class="eyebrow">开开华彩 · 活动回忆</view>
-  <view class="title">把精彩时刻，<br/>保存到手机相册</view>
-  <view class="muted entry-lead">收到朋友分享的小程序相册卡片，点开即可看照片和视频。无需注册、无需输入密码。</view>
-  <view class="card entry-card">
-    <view class="entry-card-title">已有网页相册链接？</view>
-    <view class="muted">活动主办方可在这里粘贴原来的相册链接，打开后再分享小程序卡片给大家。</view>
-    <input class="link-input" value="{{link}}" bindinput="onInput" placeholder="粘贴活动相册分享链接" placeholder-class="input-placeholder"/>
-    <button class="button button-primary entry-open" bindtap="onOpen">打开活动相册</button>
+  <view class="title">活动相册工作台</view>
+  <view class="muted entry-lead">主办方使用原 H5 账号登录，创建活动、上传素材并直接分享小程序相册卡片。</view>
+  <view wx:if="{{loading}}" class="state">正在检查登录状态…</view>
+  <view wx:else class="card entry-card">
+    <view class="entry-card-title">我是活动主办方</view>
+    <button class="button button-primary entry-open" bindtap="onLogin">账号登录 · 进入工作台</button>
     <view wx:if="{{error}}" class="entry-error">{{error}}</view>
   </view>
-  <view class="notice entry-notice">保存照片或视频时，微信会询问是否允许添加到系统相册；只在您点“保存”时申请权限。</view>
+  <view class="notice entry-notice">客户收到分享卡片后直接进入对应相册，查看与保存无需登录，也不需要复制网页链接。</view>
 </view>

@@ -5,6 +5,7 @@ page {
   color: #29251f;
   font-size: 34rpx;
 }
+button { box-sizing: border-box; }
 view, button, input, image, video { box-sizing: border-box; }
 .page { min-height: 100vh; padding: 36rpx 32rpx calc(64rpx + env(safe-area-inset-bottom)); }
 .eyebrow { color: #ae4c2c; font-size: 27rpx; font-weight: 700; letter-spacing: 3rpx; }

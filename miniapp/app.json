@@ -1,6 +1,10 @@
 {
   "pages": [
     "pages/entry/index",
+    "pages/login/index",
+    "pages/workbench/index",
+    "pages/manage/index",
+    "pages/catalog/index",
     "pages/album/index",
     "pages/media/index"
   ],

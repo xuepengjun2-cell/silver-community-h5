@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@volcengine/tos-sdk": "^2.9.1",
+    "busboy": "^1.6.0",
     "mysql2": "^3.11.0"
   }
 }

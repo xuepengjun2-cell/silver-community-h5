@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const mysql = require("mysql2/promise");
+const { MAX_VIDEO_BYTES: MINIAPP_MAX_VIDEO_BYTES, receiveUpload: receiveMiniappUpload, processImage: processMiniappImage, processVideo: processMiniappVideo } = require("./server/miniapp-media");
 const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
 
 const PORT = Number(process.env.PORT || 5174);
@@ -95,6 +96,11 @@ const DEFAULT_TOS_SDK_PATH = "/opt/course-tob/node_modules/@volcengine/tos-sdk";
 const PROJECT_VIDEO_PART_SIZE = 16 * 1024 * 1024;
 const PROJECT_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const PROJECT_UPLOAD_COMPLETED_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MINIAPP_STAGE_DIR = path.join(DATA_DIR, ".miniapp-upload-staging");
+const MINIAPP_JOBS_FILE = path.join(DATA_DIR, "miniapp-video-jobs.json");
+const _miniappJobs = new Map();
+let _miniappJobWrites = Promise.resolve();
+let _miniappQueue = Promise.resolve();
 // 视频号采集终端的原片直传：令牌仅保留在服务端环境和用户本机钥匙串，
 // 从不下发 TOS 长期密钥。未配置令牌时接口保持关闭。
 const CASE_DIRECT_SYNC_TOKEN = String(process.env.CASE_DIRECT_SYNC_TOKEN || "").trim();
@@ -936,6 +942,91 @@ function getAuthedUser(req) {
   const db = readDb();
   const user = db.users.find(x => x.id === session.userId && x.status === "active");
   return user || null;
+}
+
+function saveMiniappJobs() {
+  const snapshot = JSON.stringify([..._miniappJobs.values()]);
+  const write = _miniappJobWrites.then(async () => {
+    const temp = `${MINIAPP_JOBS_FILE}.tmp`;
+    await fs.promises.writeFile(temp, snapshot, { mode: 0o600 });
+    await fs.promises.rename(temp, MINIAPP_JOBS_FILE);
+  });
+  _miniappJobWrites = write.catch(() => {});
+  return write;
+}
+
+function enqueueMiniappVideo(job) {
+  _miniappQueue = _miniappQueue.catch(() => {}).then(async () => {
+    let uploadedKey = "";
+    let committed = false;
+    try {
+      job.status = "processing";
+      await saveMiniappJobs();
+      const source = path.join(MINIAPP_STAGE_DIR, job.id, "source");
+      const target = path.join(MINIAPP_STAGE_DIR, job.id, "delivery.mp4");
+      const size = await processMiniappVideo(source, target);
+      const fingerprint = await hashFileSHA256(target);
+      const db = readDb();
+      const idx = (db.activityProjects || []).findIndex(item => item.id === job.projectId);
+      if (idx < 0) throw new Error("活动相册已删除，视频不再发布。 ");
+      const project = db.activityProjects[idx];
+      if (project.ownerId !== job.ownerId) throw new Error("相册所属账号已变更，停止发布。 ");
+      const existing = (project.media || []).find(item => item.type === "video" && item.fingerprint === fingerprint);
+      if (!existing) {
+        const filename = `project_${project.id}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}.mp4`;
+        const url = await uploadProjectFileToTos(target, filename, "video", "video/mp4");
+        uploadedKey = projectTosObjectKey(url);
+        const { client, bucket } = getCaseVideoTosClient();
+        assertTosObjectSize(await client.headObject({ bucket, key: uploadedKey }), size);
+        const media = { type: "video", url, title: "活动视频", caption: "", size, fingerprint, createdAt: now() };
+        project.media = [...(project.media || []), media];
+        project.updatedAt = now();
+        db.activityProjects[idx] = normalizeActivityProject(project, project);
+        await writeDb(db);
+      }
+      committed = true;
+      job.status = "ready";
+      job.error = "";
+    } catch (error) {
+      job.status = "failed";
+      job.error = String(error.message || "视频处理失败").slice(0, 240);
+      console.error("[miniapp-video-process]", job.id, error && (error.stack || error.message || error));
+      if (uploadedKey && !committed) {
+        try {
+          const { client, bucket } = getCaseVideoTosClient();
+          await client.deleteObject({ bucket, key: uploadedKey });
+        } catch (cleanupError) { console.error("[miniapp-video-orphan]", cleanupError); }
+      }
+    } finally {
+      job.updatedAt = now();
+      await saveMiniappJobs().catch(error => console.error("[miniapp-video-job-persist]", error));
+      await fs.promises.rm(path.join(MINIAPP_STAGE_DIR, job.id), { recursive: true, force: true }).catch(error => console.error("[miniapp-staging-cleanup]", error));
+    }
+  });
+}
+
+async function resumeMiniappJobs() {
+  await fs.promises.mkdir(MINIAPP_STAGE_DIR, { recursive: true, mode: 0o700 });
+  try {
+    const jobs = JSON.parse(await fs.promises.readFile(MINIAPP_JOBS_FILE, "utf8"));
+    if (Array.isArray(jobs)) for (const job of jobs) {
+      if (/^miniapp_[a-f0-9]{24}$/.test(job.id || "")) _miniappJobs.set(job.id, job);
+    }
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  for (const job of _miniappJobs.values()) {
+    if (!["queued", "processing"].includes(job.status)) continue;
+    if (fs.existsSync(path.join(MINIAPP_STAGE_DIR, job.id, "source"))) enqueueMiniappVideo(job);
+    else { job.status = "failed"; job.error = "上传中断，请重新选择视频。 "; job.updatedAt = now(); }
+  }
+  const stageNames = await fs.promises.readdir(MINIAPP_STAGE_DIR);
+  for (const name of stageNames) {
+    if (!/^miniapp_[a-f0-9]{24}$/.test(name)) continue;
+    const job = _miniappJobs.get(name);
+    if (!job || !["queued", "processing"].includes(job.status)) {
+      await fs.promises.rm(path.join(MINIAPP_STAGE_DIR, name), { recursive: true, force: true });
+    }
+  }
+  await saveMiniappJobs();
 }
 
 function mysqlDateFromSeconds(seconds) {
@@ -1994,7 +2085,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "POST" && pathname === "/api/logout") {
-    const token = getCookieToken(req);
+    const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "") || getCookieToken(req);
     const sessions = readSessions();
     if (token) delete sessions[token];
     await writeSessions(sessions);
@@ -2676,6 +2767,85 @@ async function handleApi(req, res, pathname) {
       await updateProjectUploadSession(sessionId, { status: "aborted", error: "客户端取消上传" });
     }
     return sendJson(res, 200, { ok: true });
+  }
+
+  const miniappJobStatus = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/miniapp-media\/(miniapp_[a-f0-9]{24})$/);
+  if (req.method === "GET" && miniappJobStatus) {
+    const user = requireRole(req, res, ["admin", "operator", "member"]);
+    if (!user) return;
+    const projectId = decodeURIComponent(miniappJobStatus[1]);
+    const project = (readDb().activityProjects || []).find(item => item.id === projectId);
+    const job = _miniappJobs.get(miniappJobStatus[2]);
+    if (!project || !projectCanManage(user, project) || !job || job.projectId !== projectId || job.uploadedBy !== user.id && user.role !== "admin") {
+      return sendJson(res, 404, { error: "上传任务不存在或没有权限。" });
+    }
+    return sendJson(res, 200, { jobId: job.id, status: job.status, error: job.error || "" });
+  }
+
+  const miniappMediaUpload = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/miniapp-media$/);
+  if (req.method === "POST" && miniappMediaUpload) {
+    const user = requireRole(req, res, ["admin", "operator", "member"]);
+    if (!user) return;
+    const projectId = decodeURIComponent(miniappMediaUpload[1]);
+    const project = (readDb().activityProjects || []).find(item => item.id === projectId);
+    if (!project || !projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能上传到这个活动相册。" });
+    const type = new URL(req.url, "http://localhost").searchParams.get("type");
+    if (type !== "image" && type !== "video") return sendJson(res, 400, { error: "仅支持上传照片或视频。" });
+    const contentLength = Number(req.headers["content-length"] || 0);
+    if (contentLength > (type === "video" ? MINIAPP_MAX_VIDEO_BYTES : 50 * 1024 * 1024) + 1024 * 1024) {
+      req.resume();
+      return sendJson(res, 413, { error: "压缩后素材仍超出上传大小限制。" });
+    }
+    const jobId = `miniapp_${crypto.randomBytes(12).toString("hex")}`;
+    const staging = path.join(MINIAPP_STAGE_DIR, jobId);
+    let queued = false;
+    let uploadedKey = "";
+    let committed = false;
+    try {
+      await receiveMiniappUpload(req, staging, type);
+      if (type === "video") {
+        const job = { id: jobId, projectId, ownerId: project.ownerId, uploadedBy: user.id, status: "queued", error: "", createdAt: now(), updatedAt: now() };
+        _miniappJobs.set(jobId, job);
+        await saveMiniappJobs();
+        queued = true;
+        enqueueMiniappVideo(job);
+        return sendJson(res, 202, { ok: true, jobId, status: "queued" });
+      }
+      const output = path.join(staging, "delivery.jpg");
+      const size = await processMiniappImage(path.join(staging, "source"), output);
+      const fingerprint = await hashFileSHA256(output);
+      const db = readDb();
+      const idx = (db.activityProjects || []).findIndex(item => item.id === projectId);
+      if (idx < 0) return sendJson(res, 404, { error: "活动相册已删除。" });
+      const current = db.activityProjects[idx];
+      if (!projectCanManage(user, current)) return sendJson(res, 403, { error: "活动相册权限已变化。" });
+      const duplicate = (current.media || []).find(item => item.type === "image" && item.fingerprint === fingerprint);
+      if (duplicate) return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, project: publicProject(current, db) });
+      const filename = `project_${projectId}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}.jpg`;
+      const url = await uploadProjectFileToTos(output, filename, "image", "image/jpeg");
+      uploadedKey = projectTosObjectKey(url);
+      const { client, bucket } = getCaseVideoTosClient();
+      assertTosObjectSize(await client.headObject({ bucket, key: uploadedKey }), size);
+      const media = { type: "image", url, title: "活动照片", caption: "", size, fingerprint, createdAt: now() };
+      current.media = [...(current.media || []), media];
+      if (!current.cover) current.cover = url;
+      current.updatedAt = now();
+      db.activityProjects[idx] = normalizeActivityProject(current, current);
+      await writeDb(db);
+      committed = true;
+      return sendJson(res, 201, { ok: true, media, project: publicProject(db.activityProjects[idx], db) });
+    } catch (error) {
+      console.error("[miniapp-media-upload]", error && (error.stack || error.message || error));
+      if (uploadedKey && !committed) {
+        try {
+          const { client, bucket } = getCaseVideoTosClient();
+          await client.deleteObject({ bucket, key: uploadedKey });
+        } catch (cleanupError) { console.error("[miniapp-media-orphan]", cleanupError); }
+      }
+      return sendJson(res, /过大|超过/.test(error.message || "") ? 413 : 422, { error: error.message || "素材处理失败，请重试。" });
+    } finally {
+      if (!queued) await fs.promises.rm(staging, { recursive: true, force: true }).catch(error => console.error("[miniapp-staging-cleanup]", error));
+    }
   }
 
   const myProjectMedia = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/media$/);
@@ -3535,6 +3705,7 @@ const server = http.createServer(async (req, res) => {
 
 initDb()
   .then(async () => {
+    await resumeMiniappJobs();
     await cleanupStaleProjectUploadSessions().catch(error => {
       console.error("[project-upload-cleanup]", error && (error.stack || error.message || error));
     });

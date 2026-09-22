@@ -1,0 +1,40 @@
+<view class="page workbench">
+  <view class="eyebrow">开开华彩 · 主办方工作台</view>
+  <view class="title">你好，{{user.name || user.username || '主办方'}}</view>
+  <view class="muted subtitle">原 H5 账号登录 · 相册数据和网页工作台同步</view>
+  <view class="tabs">
+    <view data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
+    <view data-tab="activities" bindtap="onTab" class="tab {{tab === 'activities' ? 'active' : ''}}">活动库</view>
+    <view data-tab="cases" bindtap="onTab" class="tab {{tab === 'cases' ? 'active' : ''}}">精彩案例</view>
+  </view>
+  <view wx:if="{{loading}}" class="state">正在加载工作台…</view>
+  <view wx:elif="{{error}}" class="state"><view>{{error}}</view><button class="button button-secondary" bindtap="load">重试</button></view>
+  <block wx:else>
+    <block wx:if="{{tab === 'projects'}}">
+      <view class="section-header"><view class="section-title">我的活动相册 · {{projects.length}}</view><button class="button button-primary add" bindtap="onCreateOpen">＋ 新建活动</button></view>
+      <view wx:if="{{creating}}" class="card create">
+        <view class="section-title">创建活动相册</view>
+        <input class="field" data-field="title" value="{{title}}" bindinput="onField" placeholder="活动名称（必填）"/>
+        <picker mode="date" bindchange="onDate"><view class="field picker">{{dateLabel || '选择活动日期'}}</view></picker>
+        <input class="field" data-field="city" value="{{city}}" bindinput="onField" placeholder="城市/地区"/>
+        <textarea class="field description" data-field="description" value="{{description}}" bindinput="onField" placeholder="给客户看的活动说明" maxlength="500"/>
+        <view class="create-actions"><button class="button button-secondary" bindtap="onCreateClose">取消</button><button class="button button-primary" loading="{{busy}}" disabled="{{busy}}" bindtap="onCreate">创建并上传</button></view>
+      </view>
+      <view wx:if="{{!projects.length}}" class="state">暂无活动相册。点击“新建活动”开始上传。</view>
+      <view wx:for="{{projects}}" wx:key="id" class="card item">
+        <image wx:if="{{item.cover}}" class="thumb" src="{{item.cover}}" mode="aspectFill"/>
+        <view class="item-main"><view class="item-title">{{item.title}}</view><view class="muted">{{item.dateLabel || '日期待填写'}} · {{item.city || '地区待填写'}}</view><view class="muted">{{item.media.length}} 个素材 · {{item.shareEnabled && item.status === 'published' ? '可分享' : '未开放分享'}}</view></view>
+        <view class="item-actions"><button class="button button-primary" data-id="{{item.id}}" bindtap="onManage">管理 / 上传</button><button wx:if="{{item.shareEnabled && item.status === 'published'}}" class="button button-secondary" data-id="{{item.id}}" bindtap="onView">客户相册</button></view>
+      </view>
+    </block>
+    <block wx:elif="{{tab === 'activities'}}">
+      <view class="section-title catalog-heading">活动库 · {{activities.length}}</view>
+      <view wx:for="{{activities}}" wx:key="id" class="card catalog" data-type="activities" data-id="{{item.id}}" bindtap="onCatalog"><view class="item-title">{{item.title}}</view><view class="muted">{{item.category}} · {{item.city}}</view></view>
+    </block>
+    <block wx:else>
+      <view class="section-title catalog-heading">精彩案例 · {{cases.length}}</view>
+      <view wx:for="{{cases}}" wx:key="id" class="card catalog" data-type="cases" data-id="{{item.id}}" bindtap="onCatalog"><view class="item-title">{{item.title}}</view><view class="muted">{{item.category}} · {{item.city}}</view></view>
+    </block>
+  </block>
+  <button class="logout" bindtap="onLogout">退出登录</button>
+</view>

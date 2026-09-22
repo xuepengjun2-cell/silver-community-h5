@@ -1,18 +1,19 @@
 const { parseShareInput, albumPath } = require("../../utils/album");
+const { validateSession } = require("../../utils/auth");
 
 Page({
-  data: { link: "", error: "" },
-  onLoad(options) {
+  data: { loading: true, error: "" },
+  async onLoad(options) {
     const parsed = options && options.id ? parseShareInput(options.id) : null;
-    if (parsed) wx.redirectTo({ url: albumPath(parsed.id, parsed.index) });
-  },
-  onInput(event) { this.setData({ link: event.detail.value, error: "" }); },
-  onOpen() {
-    const parsed = parseShareInput(this.data.link);
-    if (!parsed) {
-      this.setData({ error: "请粘贴已发布的活动相册分享链接。" });
-      return;
+    if (parsed) return wx.redirectTo({ url: albumPath(parsed.id, parsed.index) });
+    try {
+      const session = await validateSession(wx);
+      if (session) return wx.redirectTo({ url: "/pages/workbench/index" });
+    } catch (error) {
+      // 断网时保留本地登录态，不能把暂时无网误判为账号过期。
+      this.setData({ error: error.message });
     }
-    wx.navigateTo({ url: albumPath(parsed.id, parsed.index) });
-  }
+    this.setData({ loading: false });
+  },
+  onLogin() { wx.navigateTo({ url: "/pages/login/index" }); }
 });

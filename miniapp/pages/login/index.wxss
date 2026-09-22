@@ -1,0 +1,8 @@
+.login-page { padding-top: 82rpx; }
+.lead { margin: 28rpx 0 48rpx; }
+.form { padding: 34rpx; }
+.label { font-size: 30rpx; font-weight: 650; margin: 24rpx 0 12rpx; }
+.field { height: 96rpx; padding: 0 22rpx; border: 1rpx solid #dfd1c7; border-radius: 16rpx; background: #fff; }
+.placeholder { color: #99918b; }
+.submit { margin-top: 36rpx; }
+.error { color: #ad321d; font-size: 28rpx; margin-top: 20rpx; }

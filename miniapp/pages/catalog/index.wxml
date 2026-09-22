@@ -1,0 +1,30 @@
+<view class="page catalog-page">
+  <view wx:if="{{loading}}" class="state">正在加载…</view>
+  <view wx:elif="{{error}}" class="state">{{error}}</view>
+  <block wx:else>
+    <image wx:if="{{item.cover}}" src="{{item.cover}}" mode="aspectFill" class="cover"/>
+    <view class="eyebrow">{{type === 'cases' ? '精彩案例' : '活动库'}}</view>
+    <view class="title">{{item.title}}</view>
+    <view class="muted meta">{{item.city}} · {{item.category}} {{item.dateLabel}}</view>
+    <view wx:if="{{item.intro || item.description}}" class="card body">{{item.intro || item.description}}</view>
+    <view wx:if="{{type === 'activities'}}" class="card body">
+      <view wx:if="{{item.price}}">参考价格：{{item.price}}</view>
+      <view wx:if="{{item.capacity}}">适合人数：{{item.capacity}}</view>
+      <view wx:if="{{item.duration}}">活动时长：{{item.duration}}</view>
+      <view wx:if="{{item.location}}">推荐场地：{{item.location}}</view>
+    </view>
+    <view wx:if="{{highlights.length}}" class="title media-head">活动亮点</view>
+    <view wx:for="{{highlights}}" wx:for-item="highlight" wx:key="index" class="card body">{{highlight}}</view>
+    <view wx:if="{{schedule.length}}" class="title media-head">当日时间轴</view>
+    <view wx:for="{{schedule}}" wx:for-item="step" wx:key="index" class="card body">{{step.time}} · {{step.item}}</view>
+    <view wx:if="{{type === 'activities' && !item.planLocked}}" class="title media-head">执行 SOP</view>
+    <view wx:if="{{plan.target}}" class="card body">活动定位：{{plan.target}}</view>
+    <view wx:if="{{plan.materials}}" class="card body">所需物料：{{plan.materials}}</view>
+    <view wx:if="{{plan.staffing}}" class="card body">人员分工：{{plan.staffing}}</view>
+    <view wx:if="{{plan.conversion}}" class="card body">话术与转化承接：{{plan.conversion}}</view>
+    <view wx:if="{{plan.risk}}" class="card body">风险预案：{{plan.risk}}</view>
+    <view wx:if="{{media.length}}" class="title media-head">活动素材 · {{media.length}}</view>
+    <view wx:for="{{media}}" wx:key="index" class="card media"><image wx:if="{{item.type === 'image'}}" class="photo" src="{{item.url}}" mode="widthFix"/><video wx:elif="{{item.type === 'video'}}" class="video" src="{{item.url}}" controls/><view>{{item.title || item.caption}}</view></view>
+    <view class="notice">完整的 SOP 编辑、导入审核及总部账号权限管理仍在原 H5 后台；这里展示已发布内容。</view>
+  </block>
+</view>

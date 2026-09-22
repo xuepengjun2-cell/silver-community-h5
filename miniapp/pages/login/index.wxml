@@ -1,0 +1,13 @@
+<view class="page login-page">
+  <view class="eyebrow">开开华彩 · 主办方</view>
+  <view class="title">登录活动工作台</view>
+  <view class="muted lead">使用原 H5 的主办方账号；客户打开分享卡片不需要登录。</view>
+  <view class="card form">
+    <view class="label">账号</view>
+    <input class="field" value="{{username}}" bindinput="onUser" placeholder="请输入账号" placeholder-class="placeholder"/>
+    <view class="label">密码</view>
+    <input class="field" value="{{password}}" bindinput="onPassword" password="true" placeholder="请输入密码" placeholder-class="placeholder"/>
+    <view wx:if="{{error}}" class="error">{{error}}</view>
+    <button class="button button-primary submit" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">登录并进入</button>
+  </view>
+</view>

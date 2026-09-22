@@ -1,6 +1,6 @@
 {
   "appid": "wx58bef83060b92027",
-  "description": "银发活动相册 C 端原生小程序（个人主体开发版）",
+  "description": "银发活动相册主办方工作台与客户免登录分享（个人主体开发版）",
   "miniprogramRoot": "./",
   "compileType": "miniprogram",
   "setting": {
