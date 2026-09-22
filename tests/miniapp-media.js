@@ -16,6 +16,7 @@ function info(duration, codec = "hevc", width = 1920) {
 test("按时长计算 MP4 交付版码率，不把 MOV 原片直接发布", () => {
   assert.equal(videoEncoding(info(60)).bitrate, 2300);
   assert.ok(videoEncoding(info(600)).bitrate < 2300);
+  assert.ok(videoEncoding(info(2400)).bitrate >= 350, "低清晰度允许 40 分钟内视频生成较小的 MP4");
   assert.throws(() => videoEncoding(info(2401)), /40分钟/);
   assert.throws(() => videoEncoding(info(600, "hevc", 8000)), /4K/);
 });

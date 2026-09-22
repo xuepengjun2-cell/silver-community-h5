@@ -1498,7 +1498,6 @@ function projectAuditTotal(project, action) {
     .reduce((sum, x) => sum + Number(x.count || 0), 0);
 }
 
-const PROJECT_VIDEO_MULTIPART_THRESHOLD = 16 * 1024 * 1024;
 const PROJECT_VIDEO_PART_RETRIES = 4;
 const PROJECT_VIDEO_UPLOAD_WORKERS = 3;
 const PROJECT_VIDEO_PART_TIMEOUT_MS = 180000;
@@ -1539,6 +1538,20 @@ async function projectFetchWithTimeout(url, options, timeoutMs = PROJECT_VIDEO_P
   }
 }
 
+async function waitProjectVideoDelivery(projectId, sessionId, onProgress) {
+  const endpoint = `/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}`;
+  const deadline = Date.now() + 45 * 60 * 1000;
+  while (Date.now() < deadline) {
+    if (onProgress) onProgress({ percent: 100, phase: "processing" });
+    await projectUploadSleep(5000);
+    const status = await api(`${endpoint}/status`);
+    if (status.status === "completed") return api(`${endpoint}/complete?delivery=1`, { method: "POST", body: {} });
+    if (status.status === "delivery_failed") throw new Error(`${status.error || "视频处理失败"}。原片已保留，重新选择同一文件可重试转码。`);
+    if (status.status !== "processing") throw new Error("视频处理状态异常，请稍后重新选择同一文件核查。 ");
+  }
+  throw new Error("视频仍在后台处理，请稍后重新选择同一文件查询，不要再次上传原片。 ");
+}
+
 async function uploadProjectVideoMultipart(projectId, file, onProgress) {
   const name = String(file.name || "video.mp4");
   const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "mp4";
@@ -1550,7 +1563,15 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress) {
     try {
       const status = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/status`);
       if (status.status === "completed") {
-        const completed = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete`, { method: "POST", body: {} });
+        const completed = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete?delivery=1`, { method: "POST", body: {} });
+        clearProjectUploadState(storageKey);
+        return completed;
+      }
+      if (["processing", "delivery_failed"].includes(status.status)) {
+        if (status.status === "delivery_failed") {
+          await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete?delivery=1`, { method: "POST", body: {} });
+        }
+        const completed = await waitProjectVideoDelivery(projectId, sessionId, onProgress);
         clearProjectUploadState(storageKey);
         return completed;
       }
@@ -1560,9 +1581,8 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress) {
         clearProjectUploadState(storageKey);
         sessionId = "";
       }
-    } catch {
-      clearProjectUploadState(storageKey);
-      sessionId = "";
+    } catch (error) {
+      throw new Error(`原上传会话需要核查：${error.message || "网络异常"}`);
     }
   }
   if (!init) {
@@ -1630,9 +1650,10 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress) {
   };
   try {
     await Promise.all(Array.from({ length: Math.min(PROJECT_VIDEO_UPLOAD_WORKERS, Math.max(1, pending.length)) }, () => worker()));
-    const result = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete`, { method: "POST", body: {} });
+    const result = await api(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/complete?delivery=1`, { method: "POST", body: {} });
+    const delivered = result.status === "processing" ? await waitProjectVideoDelivery(projectId, sessionId, onProgress) : result;
     clearProjectUploadState(storageKey);
-    return result;
+    return delivered;
   } catch (error) {
     persistState();
     throw error;
@@ -1644,7 +1665,7 @@ async function uploadProjectMediaFile(projectId, file, onProgress) {
   if (!type) throw new Error("活动相册仅支持图片和视频");
   const name = String(file.name || "file");
   const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "bin";
-  if (type === "video" && Number(file.size || 0) >= PROJECT_VIDEO_MULTIPART_THRESHOLD) {
+  if (type === "video") {
     return uploadProjectVideoMultipart(projectId, file, onProgress);
   }
   const query = new URLSearchParams({ type, ext, title: name });
@@ -1998,7 +2019,9 @@ function renderProjectManager(project) {
       if (progress) progress.textContent = `正在上传本批 ${done + 1}/${files.length}：${file.name} · 已累计 ${state.currentProject?.media?.length || project.media?.length || 0} 个`;
       try {
         const data = await uploadProjectMediaFile(project.id, file, progressState => {
-          if (progress) progress.textContent = `正在上传本批 ${done + 1}/${files.length}：${file.name} · ${progressState.percent}%`;
+          if (progress) progress.textContent = progressState.phase === "processing"
+            ? `正在后台压缩并生成 MP4：${file.name} · 原片已上传，请勿重复提交`
+            : `正在上传本批 ${done + 1}/${files.length}：${file.name} · ${progressState.percent}%`;
         });
         state.currentProject = data.project || state.currentProject;
         done++;

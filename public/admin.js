@@ -1841,8 +1841,9 @@ function renderCaseAdminDetail() {
 	    c.media.push({ type:"image", url: toRelativeUpload(data.url) });
 	  };
 		  const uploadOneVideo = async f => {
+		    if (f.size > 300 * 1024 * 1024) throw new Error("案例视频单个不能超过300MB，请先分段");
 		    const ext = (f.name.split(".").pop() || "mp4").toLowerCase();
-		    const toVideoMedia = ({ url, fingerprint }) => ({ type: "video", url, fingerprint });
+		    const toVideoMedia = ({ url, fingerprint, size }) => ({ type: "video", url, fingerprint, size });
 		    const hasVideo = candidate => {
 		      if (!candidate || candidate.type !== "video") return false;
 		      return (c.media || []).some(item =>
@@ -1850,14 +1851,38 @@ function renderCaseAdminDetail() {
 		        ((item.url && item.url === candidate.url) || (item.fingerprint && candidate.fingerprint && item.fingerprint === candidate.fingerprint))
 		      );
 		    };
-		    const res = await fetch(apiUrl(`/api/admin/upload-video?ext=${encodeURIComponent(ext)}`), {
-	      method: "POST",
-	      credentials: SILVER_PUBLIC_MODE ? "include" : "same-origin",
-	      body: f
-	    });
-	    const data = await res.json().catch(() => ({}));
-		    if (!res.ok) throw new Error(data.error || `视频上传失败 HTTP ${res.status}`);
-		    const mediaItem = toVideoMedia({ url: toRelativeUpload(data.url), fingerprint: data.fingerprint || data.hash });
+		    const storageKey = `silver_case_video_job:${state.user?.id || ""}:${c.id || "draft"}:${f.name}:${f.size}:${f.lastModified || 0}`;
+		    let savedJobId = "";
+		    try { savedJobId = localStorage.getItem(storageKey) || ""; } catch {}
+		    let delivered = null;
+		    if (savedJobId) {
+		      try { delivered = await api(`/api/admin/video-jobs/${encodeURIComponent(savedJobId)}`); }
+		      catch { try { localStorage.removeItem(storageKey); } catch {} }
+		    }
+		    if (!delivered || delivered.status === "failed") {
+		      const res = await fetch(apiUrl(`/api/admin/upload-video?ext=${encodeURIComponent(ext)}&delivery=1`), {
+	        method: "POST",
+	        credentials: SILVER_PUBLIC_MODE ? "include" : "same-origin",
+	        body: f
+	      });
+	      delivered = await res.json().catch(() => ({}));
+		      if (!res.ok) throw new Error(delivered.error || `视频上传失败 HTTP ${res.status}`);
+		      if (delivered.jobId) try { localStorage.setItem(storageKey, delivered.jobId); } catch {}
+		    }
+		    if (delivered.jobId && delivered.status !== "ready") {
+		      const deadline = Date.now() + 40 * 60 * 1000;
+		      while (Date.now() < deadline) {
+		        await new Promise(resolve => setTimeout(resolve, 5000));
+		        delivered = await api(`/api/admin/video-jobs/${encodeURIComponent(delivered.jobId)}`);
+		        const tip = document.querySelector("#cUploadTip");
+		        if (tip) tip.textContent = `后台正在生成 MP4 交付版：${f.name}（请保持页面打开）`;
+		        if (delivered.status === "ready") break;
+		        if (delivered.status === "failed") throw new Error(delivered.error || "视频转码失败，请重新上传");
+		      }
+		      if (delivered.status !== "ready") throw new Error("视频仍在后台处理，请稍后查询任务状态，不要重复上传");
+		    }
+		    if (!delivered.url) throw new Error("视频处理成功但缺少交付地址，请联系管理员核查");
+		    const mediaItem = toVideoMedia({ url: toRelativeUpload(delivered.url), fingerprint: delivered.fingerprint || delivered.hash, size: delivered.size });
 		    if (hasVideo(mediaItem)) throw new Error("该视频素材已存在，已跳过重复上传");
 		    c.media.push(mediaItem);
 		  };

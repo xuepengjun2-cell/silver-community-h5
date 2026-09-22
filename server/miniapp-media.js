@@ -95,7 +95,7 @@ function videoEncoding(probed) {
   }
   if (Number(video.width) > 4096 || Number(video.height) > 4096) throw new Error("视频分辨率过大，请先降低到4K以内。 ");
   const bitrate = Math.min(2300, Math.floor(TARGET_DELIVERY_BYTES * 8 / duration / 1000 - (audio ? 96 : 0)));
-  if (bitrate < 480) throw new Error("视频太长，压缩到可保存大小会明显失真，请分段上传。 ");
+  if (bitrate < 350) throw new Error("视频太长，压缩到可保存大小会明显失真，请分段上传。 ");
   return { video, audio, duration, bitrate };
 }
 
@@ -113,19 +113,45 @@ async function processImage(source, target) {
 
 async function processVideo(source, target) {
   const input = videoEncoding(await probe(source));
+  const sourceSize = (await fsp.stat(source)).size;
+  const sourceBitrate = Math.floor(sourceSize * 8 * 0.9 / input.duration / 1000 - (input.audio ? 96 : 0));
+  const verifiedOutput = async () => {
+    const result = videoEncoding(await probe(target));
+    if (result.video.codec_name !== "h264" || result.audio && result.audio.codec_name !== "aac" || Math.abs(result.duration - input.duration) > Math.max(1, input.duration * 0.02)) {
+      throw new Error("生成的视频未通过格式或时长校验，请重新上传。 ");
+    }
+  };
+  // 已兼容的原视频只转封装并把索引移到文件头，避免重复有损编码。
+  if (input.video.codec_name === "h264" && (!input.audio || input.audio.codec_name === "aac") &&
+      (sourceSize < 5 * 1024 * 1024 || input.video.width <= 1280 && input.video.height <= 720 && sourceBitrate <= 2300) &&
+      sourceSize < MAX_DELIVERY_BYTES) {
+    try {
+      await run("ffmpeg", [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
+        "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "-y", target
+      ], 10 * 60 * 1000);
+      const copied = (await fsp.stat(target)).size;
+      if (copied > 0 && copied < MAX_DELIVERY_BYTES) {
+        await verifiedOutput();
+        return copied;
+      }
+    } catch { /* 不可转封装时回退转码；原件仍保持不变。 */ }
+    await fsp.rm(target, { force: true });
+  }
+  // 原片码率已低时不盲目把小文件放大；交付大小上限仍由最终校验决定。
+  const bitrate = Math.max(350, Math.min(input.bitrate, sourceBitrate));
+  const maxWidth = bitrate < 700 ? 854 : 1280;
+  const maxHeight = bitrate < 700 ? 480 : 720;
   await run("ffmpeg", [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
-    "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25",
-    "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-b:v", `${input.bitrate}k`,
-    "-maxrate", `${input.bitrate}k`, "-bufsize", `${input.bitrate * 2}k`,
+    "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${maxWidth},iw)':h='min(${maxHeight},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25`,
+    "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-b:v", `${bitrate}k`,
+    "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
     "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-y", target
-  ], 30 * 60 * 1000);
+  ], 90 * 60 * 1000);
   const stat = await fsp.stat(target);
   if (!stat.size || stat.size >= MAX_DELIVERY_BYTES) throw new Error("视频处理后仍超过190MB，请分段上传。 ");
-  const result = videoEncoding(await probe(target));
-  if (result.video.codec_name !== "h264" || result.audio && result.audio.codec_name !== "aac" || Math.abs(result.duration - input.duration) > Math.max(1, input.duration * 0.02)) {
-    throw new Error("生成的视频未通过格式或时长校验，请重新上传。 ");
-  }
+  await verifiedOutput();
   return stat.size;
 }
 
