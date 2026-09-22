@@ -25,7 +25,7 @@
     <view class="section-title">现场素材 · {{tiles.length}}</view>
     <view wx:if="{{!tiles.length}}" class="state">还没有素材，选择照片或视频上传。</view>
     <view wx:for="{{tiles}}" wx:key="index" class="card tile">
-      <image wx:if="{{item.type === 'image'}}" class="tile-cover" src="{{item.url}}" mode="aspectFill" data-index="{{item.index}}" bindtap="onPreview"/>
+      <image wx:if="{{item.type === 'image' || item.poster}}" class="tile-cover" src="{{item.poster || item.url}}" mode="aspectFill" data-index="{{item.index}}" bindtap="onPreview"/>
       <view wx:else class="tile-video" data-index="{{item.index}}" bindtap="onPreview">▶ 视频</view>
       <view class="tile-details"><view class="tile-name">{{item.label}}</view><view class="muted">{{item.ready ? '可保存' : '需处理后才能保存'}}</view><button class="remove" data-index="{{item.index}}" bindtap="onDelete">从相册移除</button></view>
     </view>

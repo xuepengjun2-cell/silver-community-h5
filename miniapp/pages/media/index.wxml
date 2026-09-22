@@ -9,7 +9,7 @@
     <view class="eyebrow">{{media.type === 'video' ? '活动视频' : '活动照片'}} · {{index + 1}} / {{count}}</view>
     <view class="title media-title">{{name}}</view>
     <view class="stage">
-      <video wx:if="{{media.type === 'video'}}" id="albumVideo" class="stage-video" src="{{media.url}}" controls="true" show-fullscreen-btn="true" object-fit="contain" bindplay="onVideoPlay"/>
+      <video wx:if="{{media.type === 'video'}}" id="albumVideo" class="stage-video" src="{{media.url}}" poster="{{poster}}" controls="true" show-fullscreen-btn="true" object-fit="contain" bindplay="onVideoPlay"/>
       <image wx:else class="stage-image" src="{{media.url}}" mode="widthFix"/>
     </view>
     <button class="button {{canSave && !busy ? 'button-primary' : 'button-disabled'}} save-button" disabled="{{busy || !canSave}}" bindtap="onSave">

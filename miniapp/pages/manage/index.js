@@ -1,5 +1,5 @@
 const { api, getSession, clearSession } = require("../../utils/auth");
-const { parseAlbumOptions, albumPath, displayName, saveEligibility } = require("../../utils/album");
+const { parseAlbumOptions, albumPath, displayName, saveEligibility, trustedMediaUrl } = require("../../utils/album");
 const { uploadMedia, getVideoJob } = require("../../utils/upload");
 
 Page({
@@ -37,6 +37,7 @@ Page({
       videos: media.filter(m => m.type === "video").length,
       tiles: media.map((m, index) => ({
         index, type: m.type, url: m.url, label: displayName(m, index),
+        poster: trustedMediaUrl({ type: "image", url: m.poster }),
         ready: saveEligibility(m).ok
       }))
     });

@@ -23,7 +23,8 @@ Page({
       const project = await getProject(wx, this.projectId);
       const tiles = (project.media || []).map((media, index) => ({
         index, type: media.type, name: displayName(media, index),
-        imageUrl: media.type === "image" ? trustedMediaUrl(media) : ""
+        imageUrl: media.type === "image" ? trustedMediaUrl(media) :
+          trustedMediaUrl({ type: "image", url: media.poster })
       })).filter(item => item.type === "image" || item.type === "video");
       const imageCount = tiles.filter(item => item.type === "image").length;
       const videoCount = tiles.length - imageCount;

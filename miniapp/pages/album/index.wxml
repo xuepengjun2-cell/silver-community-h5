@@ -24,6 +24,7 @@
       <view wx:for="{{shown}}" wx:key="index" class="media-tile card" data-index="{{item.index}}" bindtap="onMedia">
         <image wx:if="{{item.imageUrl}}" class="tile-image" src="{{item.imageUrl}}" mode="aspectFill" lazy-load="true"/>
         <view wx:else class="tile-video"><text class="play-icon">▶</text><text>点开观看视频</text></view>
+        <view wx:if="{{item.type === 'video' && item.imageUrl}}" class="tile-play">▶</view>
         <view class="tile-name">{{item.name}}</view>
       </view>
     </view>

@@ -1843,7 +1843,7 @@ function renderCaseAdminDetail() {
 		  const uploadOneVideo = async f => {
 		    if (f.size > 300 * 1024 * 1024) throw new Error("案例视频单个不能超过300MB，请先分段");
 		    const ext = (f.name.split(".").pop() || "mp4").toLowerCase();
-		    const toVideoMedia = ({ url, fingerprint, size }) => ({ type: "video", url, fingerprint, size });
+		    const toVideoMedia = ({ url, poster, fingerprint, size }) => ({ type: "video", url, poster, fingerprint, size });
 		    const hasVideo = candidate => {
 		      if (!candidate || candidate.type !== "video") return false;
 		      return (c.media || []).some(item =>
@@ -1882,7 +1882,7 @@ function renderCaseAdminDetail() {
 		      if (delivered.status !== "ready") throw new Error("视频仍在后台处理，请稍后查询任务状态，不要重复上传");
 		    }
 		    if (!delivered.url) throw new Error("视频处理成功但缺少交付地址，请联系管理员核查");
-		    const mediaItem = toVideoMedia({ url: toRelativeUpload(delivered.url), fingerprint: delivered.fingerprint || delivered.hash, size: delivered.size });
+		    const mediaItem = toVideoMedia({ url: toRelativeUpload(delivered.url), poster: delivered.poster, fingerprint: delivered.fingerprint || delivered.hash, size: delivered.size });
 		    if (hasVideo(mediaItem)) throw new Error("该视频素材已存在，已跳过重复上传");
 		    c.media.push(mediaItem);
 		  };

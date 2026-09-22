@@ -1818,10 +1818,11 @@ function projectMediaCardHtml(project, m, manager = false) {
   if (!["image", "video"].includes(m.type)) return "";
   const mediaName = projectMediaDisplayName(m, m.index);
   if (!manager) {
+    const poster = m.type === "video" && m.poster ? `<img src="${esc(m.poster)}" alt="${esc(mediaName)}首帧" loading="lazy">` : "";
     const visual = m.type === "image"
       ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
       : m.type === "video"
-      ? `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video><span class="project-gallery-play">▶</span>`
+      ? `${poster || `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video>`}<span class="project-gallery-play">▶</span>`
       : "";
     return `<button class="project-gallery-tile" type="button" data-project-open-media="${m.index}" aria-label="打开${projectMediaLabel(m.type)}：${esc(mediaName)}">
       ${visual}<span class="project-gallery-name" title="${esc(mediaName)}">${esc(mediaName)}</span><span class="project-gallery-badge">${projectMediaLabel(m.type)}</span>
@@ -1831,7 +1832,7 @@ function projectMediaCardHtml(project, m, manager = false) {
   const visual = m.type === "image"
     ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
     : m.type === "video"
-    ? `<button class="project-media-video-preview" type="button" data-project-open-media="${m.index}" aria-label="打开视频 ${m.index + 1}"><video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video><span class="project-gallery-play">▶</span></button>`
+    ? `<button class="project-media-video-preview" type="button" data-project-open-media="${m.index}" aria-label="打开视频 ${m.index + 1}">${m.poster ? `<img src="${esc(m.poster)}" alt="${esc(mediaName)}首帧" loading="lazy">` : `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video>`}<span class="project-gallery-play">▶</span></button>`
     : "";
   return `<article class="project-media-card ${selected}" data-project-media-index="${m.index}">
     <div class="project-media-visual">${visual}</div>
@@ -1860,7 +1861,7 @@ function projectLightboxHtml(project) {
   const body = m.type === "image"
     ? `<img class="project-lightbox-image" src="${esc(m.url)}" alt="${esc(m.title || project.title)}">`
     : m.type === "video"
-    ? `<video class="project-lightbox-video" src="${esc(m.url)}" controls playsinline preload="metadata"></video>`
+    ? `<video class="project-lightbox-video" src="${esc(m.url)}"${m.poster ? ` poster="${esc(m.poster)}"` : ""} controls playsinline preload="metadata"></video>`
     : `<div class="project-lightbox-document"><strong>文档素材</strong><span>${esc(m.title || "活动交付文档")}</span><a class="btn small" href="${esc(m.url)}" target="_blank" rel="noreferrer">打开文档</a></div>`;
   return `<div class="project-lightbox" role="dialog" aria-modal="true" aria-label="查看活动素材">
     <button class="project-lightbox-close" type="button" data-project-lightbox-close aria-label="关闭">×</button>
@@ -2087,7 +2088,7 @@ function renderProjectPreview(project, index, manager = false) {
   const body = current.type === "image"
     ? `<img class="project-preview-image" src="${esc(current.url)}" alt="${esc(current.title || project.title)}">`
     : current.type === "video"
-    ? `<video class="project-preview-video" src="${esc(current.url)}" controls playsinline preload="metadata"></video>`
+    ? `<video class="project-preview-video" src="${esc(current.url)}"${current.poster ? ` poster="${esc(current.poster)}"` : ""} controls playsinline preload="metadata"></video>`
     : "";
   const backHref = manager
     ? `${SILVER_FRONT_BASE}/?view=project-manage&project=${encodeURIComponent(project.id)}`

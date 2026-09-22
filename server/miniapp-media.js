@@ -62,7 +62,11 @@ async function receiveUpload(req, directory, type) {
 
 function run(command, args, timeoutMs = 15 * 60 * 1000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    // The shared production host must keep serving requests while FFmpeg runs.
+    const lowered = process.platform === "linux" && command === "ffmpeg";
+    const actualCommand = lowered ? "nice" : command;
+    const actualArgs = lowered ? ["-n", "19", "ionice", "-c", "3", command, ...args] : args;
+    const child = spawn(actualCommand, actualArgs, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     let stdout = "";
     let settled = false;
@@ -81,7 +85,7 @@ function run(command, args, timeoutMs = 15 * 60 * 1000) {
 }
 
 async function probe(file) {
-  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height", "-of", "json", file], 30 * 1000);
+  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,pix_fmt", "-of", "json", file], 30 * 1000);
   try { return JSON.parse(raw); }
   catch { throw new Error("无法识别媒体格式。 "); }
 }
@@ -122,7 +126,7 @@ async function processVideo(source, target) {
     }
   };
   // 已兼容的原视频只转封装并把索引移到文件头，避免重复有损编码。
-  if (input.video.codec_name === "h264" && (!input.audio || input.audio.codec_name === "aac") &&
+  if (input.video.codec_name === "h264" && input.video.pix_fmt === "yuv420p" && (!input.audio || input.audio.codec_name === "aac") &&
       (sourceSize < 5 * 1024 * 1024 || input.video.width <= 1280 && input.video.height <= 720 && sourceBitrate <= 2300) &&
       sourceSize < MAX_DELIVERY_BYTES) {
     try {
@@ -145,7 +149,7 @@ async function processVideo(source, target) {
   await run("ffmpeg", [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
     "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${maxWidth},iw)':h='min(${maxHeight},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25`,
-    "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-b:v", `${bitrate}k`,
+    "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-pix_fmt", "yuv420p", "-b:v", `${bitrate}k`,
     "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
     "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-y", target
   ], 90 * 60 * 1000);
@@ -155,7 +159,24 @@ async function processVideo(source, target) {
   return stat.size;
 }
 
+async function processVideoPoster(video, target) {
+  // Decode the first actual video frame; never use a fake generic cover.
+  await run("ffmpeg", [
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-i", video,
+    "-map", "0:v:0", "-frames:v", "1",
+    "-vf", "scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+    "-q:v", "4", "-y", target
+  ], 2 * 60 * 1000);
+  const stat = await fsp.stat(target);
+  if (!stat.size || stat.size > 3 * 1024 * 1024) throw new Error("视频首帧封面生成失败，请重试。 ");
+  const info = await probe(target);
+  if (!(info.streams || []).some(stream => stream.codec_name === "mjpeg" && stream.width > 0 && stream.height > 0)) {
+    throw new Error("视频首帧封面未通过格式校验，请重试。 ");
+  }
+  return stat.size;
+}
+
 module.exports = {
   MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, MAX_DELIVERY_BYTES,
-  receiveUpload, videoEncoding, processImage, processVideo
+  receiveUpload, videoEncoding, processImage, processVideo, processVideoPoster
 };
