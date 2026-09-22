@@ -81,6 +81,16 @@ async function guard(extraBytes = 0) {
   if (!match || Number(match[1]) < 500 * 1024) throw new Error("Memory guard: below 500MiB");
   if (os.loadavg()[0] > 3.0) throw new Error("Server load too high; migration paused");
 }
+async function waitForCapacity(extraBytes = 0) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    try { return await guard(extraBytes); }
+    catch (error) {
+      if (!/Server load too high/.test(error.message) || attempt === 11) throw error;
+      console.log(`waiting for CPU load to settle (${os.loadavg()[0].toFixed(2)}); service health checked`);
+      await new Promise(resolve => setTimeout(resolve, 15000));
+    }
+  }
+}
 function tos(env) {
   const { TosClient } = require("@volcengine/tos-sdk");
   const cfg = { ...fileEnv("/etc/itinerary-admin.env"), ...fileEnv("/opt/learning-upload/tos.env"), ...env };
@@ -158,7 +168,7 @@ async function main() {
   baselinePid = pm2Pid();
   if (!baselinePid || baselinePid < 2) throw new Error("Silver PM2 process is not running");
   const env = serviceEnv();
-  await guard();
+  await waitForCapacity();
   const token = run ? await adminToken(env) : null;
   const project = run
     ? (await api("/admin/activity-projects", { token })).projects.find(p => p.id === ID)
@@ -177,13 +187,13 @@ async function main() {
     if (onlyIndex !== null && item.index !== onlyIndex) continue;
     if (journal().some(x => x.index === item.index && x.phase === "published")) continue;
     if (processed >= limit) break;
-    await guard();
+    await waitForCapacity();
     const live = (await api(`/public/activity-projects/${ID}`)).project.media[item.index];
     if (!live || live.url !== item.url) throw new Error(`Media #${item.index} changed; stop before overwrite`);
     const head = await fetch(item.url, { method: "HEAD", signal: AbortSignal.timeout(12000) });
     const sourceSize = Number(head.headers.get("content-length"));
     if (!head.ok || !Number.isSafeInteger(sourceSize) || sourceSize <= 0 || sourceSize > 2 * 1024 ** 3 || item.size && item.size !== sourceSize) throw new Error(`Source #${item.index} size changed`);
-    await guard(sourceSize + MAX_OUTPUT + 100 * 1024 * 1024);
+    await waitForCapacity(sourceSize + MAX_OUTPUT + 100 * 1024 * 1024);
     const source = path.join(workdir, `source-${item.index}.video`);
     const output = path.join(workdir, `delivery-${item.index}.mp4`);
     const posterFile = path.join(workdir, `poster-${item.index}.jpg`);
@@ -212,7 +222,7 @@ async function main() {
       append({ phase: "uploaded", index: item.index, url, poster, sourceSize, sourceHash, size: outputSize, posterSize, fingerprint, duration: after.duration });
       await cdnReady(url, outputSize, "video/mp4");
       await cdnReady(poster, posterSize, "image/jpeg");
-      await guard();
+      await waitForCapacity();
       const switched = await api(`/admin/activity-projects/${ID}/media/${item.index}/delivery`, {
         token, method: "PATCH", body: { oldUrl: item.url, url, poster, size: outputSize, fingerprint }
       });
@@ -226,7 +236,7 @@ async function main() {
       for (const file of [source, output, posterFile]) if (fs.existsSync(file)) fs.unlinkSync(file);
     }
   }
-  await guard();
+  await waitForCapacity();
   console.log(`batch complete: ${journal().filter(x => x.phase === "published").length}/36; Silver healthy`);
 }
 main().catch(error => { console.error(`STOP: ${error.message}`); process.exitCode = 1; });

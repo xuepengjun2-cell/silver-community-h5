@@ -147,7 +147,7 @@ async function processVideo(source, target) {
   const maxWidth = bitrate < 700 ? 854 : 1280;
   const maxHeight = bitrate < 700 ? 480 : 720;
   await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-i", source,
     "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${maxWidth},iw)':h='min(${maxHeight},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25`,
     "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-pix_fmt", "yuv420p", "-b:v", `${bitrate}k`,
     "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
