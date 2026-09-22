@@ -1,7 +1,7 @@
 <view class="page login-page">
-  <view class="eyebrow">开开华彩 · 主办方</view>
+  <view class="eyebrow">开开华彩 · 活动工作台</view>
   <view class="title">登录活动工作台</view>
-  <view class="muted lead">使用原 H5 的主办方账号；客户打开分享卡片不需要登录。</view>
+  <view class="muted lead">使用原 H5 账号；系统按账号权限展示内容。客户打开相册分享卡片不需要登录。</view>
   <view class="card form">
     <view class="label">账号</view>
     <input class="field" value="{{username}}" bindinput="onUser" placeholder="请输入账号" placeholder-class="placeholder"/>

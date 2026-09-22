@@ -1,12 +1,16 @@
 <view class="page entry-page">
-  <view class="eyebrow">开开华彩 · 活动回忆</view>
-  <view class="title">活动相册工作台</view>
-  <view class="muted entry-lead">主办方使用原 H5 账号登录，创建活动、上传素材并直接分享小程序相册卡片。</view>
+  <view class="eyebrow">开开华彩 · 活动工作台</view>
+  <view class="title">账号登录</view>
+  <view class="muted entry-lead">使用原 H5 账号登录，系统会按账号权限展示可用内容。</view>
   <view wx:if="{{loading}}" class="state">正在检查登录状态…</view>
   <view wx:else class="card entry-card">
-    <view class="entry-card-title">我是活动主办方</view>
-    <button class="button button-primary entry-open" bindtap="onLogin">账号登录 · 进入工作台</button>
+    <view class="entry-card-title">进入活动工作台</view>
+    <view class="entry-label">账号</view>
+    <input class="entry-field" value="{{username}}" bindinput="onUser" placeholder="请输入账号" maxlength="80"/>
+    <view class="entry-label">密码</view>
+    <input class="entry-field" value="{{password}}" bindinput="onPassword" placeholder="请输入密码" password="true"/>
     <view wx:if="{{error}}" class="entry-error">{{error}}</view>
+    <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">登录并进入</button>
   </view>
-  <view class="notice entry-notice">客户收到分享卡片后直接进入对应相册，查看与保存无需登录，也不需要复制网页链接。</view>
+  <view class="notice entry-notice">客户从分享卡片直接进入对应相册，不经过本登录页；符合交付格式的照片和视频可免登录保存。</view>
 </view>

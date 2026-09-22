@@ -1,9 +1,9 @@
 <view class="page workbench">
   <view class="eyebrow">开开华彩 · 主办方工作台</view>
   <view class="title">你好，{{user.name || user.username || '主办方'}}</view>
-  <view class="muted subtitle">原 H5 账号登录 · 相册数据和网页工作台同步</view>
+  <view class="muted subtitle">{{canManageProjects ? '主办方账号' : '资料查看账号'}} · 按现有账号权限展示</view>
   <view class="tabs">
-    <view data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
+    <view wx:if="{{canManageProjects}}" data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
     <view data-tab="activities" bindtap="onTab" class="tab {{tab === 'activities' ? 'active' : ''}}">活动库</view>
     <view data-tab="cases" bindtap="onTab" class="tab {{tab === 'cases' ? 'active' : ''}}">精彩案例</view>
   </view>
@@ -29,7 +29,13 @@
     </block>
     <block wx:elif="{{tab === 'activities'}}">
       <view class="section-title catalog-heading">活动库 · {{activities.length}}</view>
-      <view wx:for="{{activities}}" wx:key="id" class="card catalog-card">
+      <view class="activity-search">
+        <input class="activity-search-input" value="{{activityQuery}}" bindinput="onActivitySearch" confirm-type="search" maxlength="60" placeholder="搜索活动名称、城市、类别、关键词"/>
+        <button wx:if="{{activityQuery}}" class="activity-search-clear" bindtap="onActivityClear">清空</button>
+      </view>
+      <view wx:if="{{activityQuery}}" class="muted search-count">找到 {{visibleActivities.length}} 项活动</view>
+      <view wx:if="{{activityQuery && !visibleActivities.length}}" class="state search-empty">没有匹配的活动，换个关键词试试。</view>
+      <view wx:for="{{visibleActivities}}" wx:key="id" class="card catalog-card">
         <image wx:if="{{item.cover}}" class="catalog-cover" src="{{item.cover}}" mode="aspectFill" lazy-load="true"/>
         <view wx:else class="catalog-cover catalog-cover-empty">活动 SOP</view>
         <view class="catalog-body">

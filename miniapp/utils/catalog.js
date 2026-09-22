@@ -35,8 +35,17 @@ function cardView(item, type) {
     dateLabel: item.dateLabel || "",
     count,
     cover,
-    shareCover: shareImage(cover)
+    shareCover: shareImage(cover),
+    searchText: [item.title, item.category, item.city, item.region, item.activityType,
+      item.intro, item.description, ...(Array.isArray(item.tags) ? item.tags : [])]
+      .filter(Boolean).join(" ").toLocaleLowerCase()
   };
+}
+
+function filterCatalogCards(cards, query) {
+  const words = String(query || "").trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return cards;
+  return cards.filter(card => words.every(word => String(card.searchText || "").includes(word)));
 }
 
 function sharePayload(item, type) {
@@ -47,4 +56,4 @@ function sharePayload(item, type) {
   };
 }
 
-module.exports = { catalogPath, cardView, catalogCover, shareImage, sharePayload };
+module.exports = { catalogPath, cardView, catalogCover, shareImage, sharePayload, filterCatalogCards };

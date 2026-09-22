@@ -1,6 +1,9 @@
 const config = require("../config");
 
 const SESSION_KEY = "silver_miniapp_session_v1";
+const ALLOWED_ROLES = ["admin", "operator", "member", "viewer"];
+
+function canManageProjects(user) { return Boolean(user && ["admin", "operator", "member"].includes(user.role)); }
 
 function getSession(wxApi) {
   const value = wxApi.getStorageSync(SESSION_KEY);
@@ -34,8 +37,8 @@ function api(wxApi, path, { method = "GET", data, token } = {}) {
 
 async function login(wxApi, username, password) {
   const response = await api(wxApi, "/login", { method: "POST", data: { username, password } });
-  if (!response.token || !response.user || !["admin", "operator", "member"].includes(response.user.role)) {
-    throw new Error("此账号没有活动相册管理权限，请联系管理员。");
+  if (!response.token || !response.user || !ALLOWED_ROLES.includes(response.user.role)) {
+    throw new Error("此账号没有小程序访问权限，请联系管理员。");
   }
   const session = { token: response.token, user: response.user };
   wxApi.setStorageSync(SESSION_KEY, session);
@@ -47,11 +50,13 @@ async function validateSession(wxApi) {
   if (!session) return null;
   try {
     const { user } = await api(wxApi, "/me", { token: session.token });
-    if (!user || !["admin", "operator", "member"].includes(user.role)) {
+    if (!user || !ALLOWED_ROLES.includes(user.role)) {
       clearSession(wxApi);
       return null;
     }
-    return { ...session, user };
+    const refreshed = { ...session, user };
+    wxApi.setStorageSync(SESSION_KEY, refreshed);
+    return refreshed;
   } catch (error) {
     if (error.statusCode === 401) clearSession(wxApi);
     throw error;
@@ -65,4 +70,4 @@ async function logout(wxApi) {
   } finally { clearSession(wxApi); }
 }
 
-module.exports = { SESSION_KEY, api, login, logout, getSession, clearSession, validateSession };
+module.exports = { SESSION_KEY, api, login, logout, getSession, clearSession, validateSession, canManageProjects };

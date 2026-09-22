@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { login, logout, getSession, validateSession, SESSION_KEY } = require("../utils/auth");
+const { login, logout, getSession, validateSession, canManageProjects, SESSION_KEY } = require("../utils/auth");
 const { prepareMedia, MAX_VIDEO } = require("../utils/upload");
 
 function fakeWx(response) {
@@ -30,10 +30,21 @@ test("主办方复用 H5 账号但客户端仅存 token，退出后服务端撤�
   assert.equal(getSession(wx), null);
 });
 
-test("不让只读账号获得相册管理入口", async () => {
+test("只读账号可登录资料工作台，但不能获得相册管理入口", async () => {
   const wx = fakeWx(() => ({ statusCode: 200, data: { user: { role: "viewer" }, token: "x" } }));
-  await assert.rejects(() => login(wx, "user", "password"), /没有活动相册管理权限/);
-  assert.equal(getSession(wx), null);
+  await login(wx, "user", "password");
+  assert.equal(getSession(wx).user.role, "viewer");
+  assert.equal(canManageProjects(getSession(wx).user), false);
+  assert.equal(canManageProjects({ role: "member" }), true);
+});
+
+test("登录态复核以服务端最新角色为准", async () => {
+  const wx = fakeWx(options => options.url.endsWith("/login")
+    ? { statusCode: 200, data: { user: { role: "operator" }, token: "x" } }
+    : { statusCode: 200, data: { user: { role: "viewer" } } });
+  await login(wx, "user", "password");
+  assert.equal(canManageProjects((await validateSession(wx)).user), false);
+  assert.equal(getSession(wx).user.role, "viewer");
 });
 
 test("视频压缩后超出交付边界时不调用上传", async () => {
