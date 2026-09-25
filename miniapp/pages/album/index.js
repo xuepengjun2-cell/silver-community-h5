@@ -16,6 +16,10 @@ Page({
     }
     this.loadAlbum();
   },
+  onShow() {
+    // 客户从分享卡片进入时，左上角“返回首页”会落到主办方登录页；客户页面不显示它。
+    if (typeof wx.hideHomeButton === "function") wx.hideHomeButton();
+  },
   onPullDownRefresh() { this.loadAlbum().finally(() => wx.stopPullDownRefresh()); },
   async loadAlbum() {
     this.setData({ loading: true, error: "" });

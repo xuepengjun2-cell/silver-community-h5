@@ -1,7 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { login, logout, getSession, validateSession, canManageProjects, SESSION_KEY } = require("../utils/auth");
-const { prepareMedia, MAX_VIDEO } = require("../utils/upload");
+const { prepareMedia, uploadMedia, MAX_VIDEO } = require("../utils/upload");
 
 function fakeWx(response) {
   const storage = new Map();
@@ -53,4 +53,15 @@ test("视频压缩后超出交付边界时不调用上传", async () => {
     getFileInfo: options => options.success({ size: MAX_VIDEO })
   };
   await assert.rejects(() => prepareMedia(wx, "/temporary/source.mov", "video"), /分段上传/);
+});
+
+test("上传使用 10 分钟超时，超时提示连接 Wi-Fi 或分段", async () => {
+  let uploadOptions;
+  const wx = {
+    compressImage: options => options.success({ tempFilePath: "/temporary/compressed.jpg" }),
+    getFileInfo: options => options.success({ size: 1024 }),
+    uploadFile(options) { uploadOptions = options; options.fail({ errMsg: "uploadFile:fail timeout" }); return {}; }
+  };
+  await assert.rejects(() => uploadMedia(wx, { projectId: "project_85aae4b746069044", source: "/temporary/source.jpg", type: "image", token: "t" }), /上传超时/);
+  assert.equal(uploadOptions.timeout, 10 * 60 * 1000);
 });

@@ -571,6 +571,7 @@ let _siteConfig = { heroTitle: "", heroDesc: "", featuredIds: [], banners: [] };
 let _sessions = {};
 let _persistedSnapshot = null;
 let _writeQueue = Promise.resolve();
+let _sessionWriteQueue = Promise.resolve();
 
 function snapshotDbCollections() {
   const clone = value => JSON.parse(JSON.stringify(value || []));
@@ -866,14 +867,28 @@ async function persistSiteConfig() {
   }
 }
 
+// 过期登录态没有保留价值，写入前从内存移除，避免 sessions 表只增不减。
+function pruneExpiredSessions() {
+  const nowMs = Date.now();
+  for (const [token, session] of Object.entries(_sessions)) {
+    if (!(new Date(session.expiresAt).getTime() > nowMs)) delete _sessions[token];
+  }
+}
+
+// 整表替换放在同一事务内；writeSessions 串行排队，并发登录不会交错“删除/逐条插入”而撞主键。
 async function persistSessions() {
-  await pool.query("DELETE FROM sessions");
-  for (const token of Object.keys(_sessions)) {
-    const s = _sessions[token];
-    await pool.query(
-      `INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?,?,?,?)`,
-      [token, s.userId, s.createdAt, s.expiresAt]
-    );
+  const rows = Object.entries(_sessions).map(([token, s]) => [token, s.userId, s.createdAt, s.expiresAt]);
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query("DELETE FROM sessions");
+    if (rows.length) await conn.query("INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES ?", [rows]);
+    await conn.commit();
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
   }
 }
 
@@ -887,7 +902,13 @@ async function writeDb() {
 function readSiteConfig() { return _siteConfig; }
 async function writeSiteConfig(c) { _siteConfig = c; await persistSiteConfig(); }
 function readSessions() { return _sessions; }
-async function writeSessions(s) { _sessions = s; await persistSessions(); }
+async function writeSessions(s) {
+  _sessions = s;
+  pruneExpiredSessions();
+  const run = _sessionWriteQueue.then(() => persistSessions());
+  _sessionWriteQueue = run.catch(() => {});
+  return run;
+}
 
 // =====================================================================
 
@@ -1004,12 +1025,15 @@ function enqueueMiniappVideo(job) {
         job.error = "";
         return;
       }
-      const db = readDb();
-      const idx = (db.activityProjects || []).findIndex(item => item.id === job.projectId);
-      if (idx < 0) throw new Error("活动相册已删除，视频不再发布。 ");
-      const project = db.activityProjects[idx];
+      const project = (readDb().activityProjects || []).find(item => item.id === job.projectId);
+      if (!project) throw new Error("活动相册已删除，视频不再发布。 ");
       if (project.ownerId !== job.ownerId) throw new Error("相册所属账号已变更，停止发布。 ");
       const existing = (project.media || []).find(item => item.type === "video" && item.fingerprint === fingerprint);
+      // 上传 TOS 期间相册可能被新建、删除、编辑或关闭分享，写回时按 id 取最新相册。
+      const sameOwner = current => {
+        if (current.ownerId !== job.ownerId) throw new Error("相册所属账号已变更，停止发布。 ");
+        return current;
+      };
       if (!existing) {
         const filename = `project_${project.id}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}.mp4`;
         const url = await uploadProjectFileToTos(target, filename, "video", "video/mp4");
@@ -1023,10 +1047,13 @@ function enqueueMiniappVideo(job) {
         uploadedKeys.push(posterKey);
         assertTosObjectSize(await client.headObject({ bucket, key: posterKey }), posterSize);
         const media = { type: "video", url, poster, title: "活动视频", caption: "", size, fingerprint, createdAt: now() };
-        project.media = [...(project.media || []), media];
-        project.updatedAt = now();
-        db.activityProjects[idx] = normalizeActivityProject(project, project);
-        await writeDb(db);
+        const result = commitActivityProject(job.projectId, current => ({
+          ...sameOwner(current), media: [...(current.media || []), media], updatedAt: now()
+        }));
+        if (!result) throw new Error("活动相册已删除，视频不再发布。 ");
+        // 缓存已引用这些对象；即使随后持久化失败，也不能再按“未发布”删除它们。
+        committed = true;
+        await writeDb(result.db);
       } else if (!existing.poster) {
         const posterName = `project_${project.id}_${job.id}_poster.jpg`;
         const poster = await uploadProjectFileToTos(posterFile, posterName, "image", "image/jpeg");
@@ -1034,10 +1061,16 @@ function enqueueMiniappVideo(job) {
         uploadedKeys.push(posterKey);
         const { client, bucket } = getCaseVideoTosClient();
         assertTosObjectSize(await client.headObject({ bucket, key: posterKey }), posterSize);
-        existing.poster = poster;
-        project.updatedAt = now();
-        db.activityProjects[idx] = normalizeActivityProject(project, project);
-        await writeDb(db);
+        const result = commitActivityProject(job.projectId, current => {
+          const media = sameOwner(current).media || [];
+          const same = media.find(item => item.type === "video" && item.fingerprint === fingerprint);
+          if (!same) throw new Error("同内容视频已从相册移除，首帧不再发布。 ");
+          if (same.poster) return null;
+          return { ...current, media: media.map(item => item === same ? { ...item, poster } : item), updatedAt: now() };
+        });
+        if (!result) throw new Error("活动相册已删除，视频不再发布。 ");
+        committed = true;
+        if (result.changed) await writeDb(result.db);
       }
       committed = true;
       job.status = "ready";
@@ -1094,11 +1127,13 @@ function enqueueProjectVideoDelivery(sessionId) {
         await downloadVideo(signedSource, source, Number(session.file_size), H5_PROJECT_VIDEO_MAX_BYTES);
         const size = await processMiniappVideo(source, target);
         const fingerprint = await hashFileSHA256(target);
-        const currentDb = readDb();
-        const currentIndex = (currentDb.activityProjects || []).findIndex(item => item.id === session.project_id);
-        const currentUploader = (currentDb.users || []).find(item => item.id === session.owner_id && item.status === "active");
-        if (currentIndex < 0 || !projectCanManage(currentUploader, currentDb.activityProjects[currentIndex])) throw new Error("活动相册或上传权限已变更，原片暂不发布。 ");
-        const project = currentDb.activityProjects[currentIndex];
+        // 转码和上传 TOS 期间相册可能被新建、删除、编辑或关闭分享：权限在写回时按最新相册复核。
+        const assertCanPublish = current => {
+          const currentUploader = (readDb().users || []).find(item => item.id === session.owner_id && item.status === "active");
+          if (!current || !projectCanManage(currentUploader, current)) throw new Error("活动相册或上传权限已变更，原片暂不发布。 ");
+          return current;
+        };
+        const project = assertCanPublish((readDb().activityProjects || []).find(item => item.id === session.project_id));
         const sameContent = (project.media || []).find(item => item.type === "video" && item.fingerprint === fingerprint && projectTosObjectKey(item.url).startsWith(`${PROJECT_VIDEO_TOS_PREFIX}/`));
         if (sameContent) publishedUrl = sameContent.url;
         if (sameContent && sameContent.poster) publishedPoster = sameContent.poster;
@@ -1116,19 +1151,30 @@ function enqueueProjectVideoDelivery(sessionId) {
           await uploadProjectFileToTos(target, filename, "video", "video/mp4");
           uploadedKeys.push(delivery.key);
           assertTosObjectSize(await client.headObject({ bucket, key: delivery.key }), size);
-          project.media = [...(project.media || []), {
+          const media = {
             type: "video", url: delivery.url, poster: publishedPoster, title: cleanString(session.title), caption: "", size, fingerprint, createdAt: now()
-          }];
-          project.updatedAt = now();
-          currentDb.activityProjects[currentIndex] = normalizeActivityProject(project, project);
+          };
+          const result = commitActivityProject(session.project_id, current => ({
+            ...assertCanPublish(current), media: [...(current.media || []), media], updatedAt: now()
+          }));
+          if (!result) throw new Error("活动相册已删除，原片暂不发布。 ");
           publicationAttempted = true;
-          await writeDb(currentDb);
+          await writeDb(result.db);
         } else if ((sameContent || duplicate) && !(sameContent || duplicate).poster) {
-          (sameContent || duplicate).poster = publishedPoster;
-          project.updatedAt = now();
-          currentDb.activityProjects[currentIndex] = normalizeActivityProject(project, project);
+          const existingUrl = (sameContent || duplicate).url;
+          const result = commitActivityProject(session.project_id, current => {
+            const media = assertCanPublish(current).media || [];
+            const same = media.find(item => item.type === "video" && item.url === existingUrl);
+            if (!same) throw new Error("同内容视频已从相册移除，原片暂时保留。 ");
+            if (same.poster) {
+              publishedPoster = same.poster;
+              return null;
+            }
+            return { ...current, media: media.map(item => item === same ? { ...item, poster: publishedPoster } : item), updatedAt: now() };
+          });
+          if (!result) throw new Error("活动相册已删除，原片暂不发布。 ");
           publicationAttempted = true;
-          await writeDb(currentDb);
+          if (result.changed) await writeDb(result.db);
         }
       }
       if (!publishedPoster || !await projectMediaPersisted(session.project_id, publishedUrl, publishedPoster)) throw new Error("交付文件或首帧尚未写入数据库，原片暂时保留。 ");
@@ -1696,6 +1742,21 @@ function projectMediaDuplicate(media, fingerprint, size) {
 
 function projectCanManage(user, project) {
   return Boolean(user && project && (user.role === "admin" || user.role === "operator" || project.ownerId === user.id));
+}
+
+// 相册缓存数组会被新建(unshift)、删除(splice)、PATCH 整体替换改变；跨过 await（上传 TOS、转码、
+// 读请求体）之前取到的下标或相册对象都可能已经失效。写回必须在此刻按 id 重新定位，
+// 并在同一同步片段内基于最新相册生成新版本。update 必须同步执行：返回新的相册字段，
+// 或返回 null 表示无需修改；抛出的错误原样交给调用方。相册已删除时返回 null。
+function commitActivityProject(projectId, update) {
+  const db = readDb();
+  const list = db.activityProjects || [];
+  const idx = list.findIndex(item => item.id === projectId);
+  if (idx < 0) return null;
+  const next = update(list[idx]);
+  if (!next) return { db, project: list[idx], changed: false };
+  list[idx] = normalizeActivityProject(next, list[idx]);
+  return { db, project: list[idx], changed: true };
 }
 
 function publicProject(project, db, options = {}) {
@@ -2674,17 +2735,18 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, { ok: true });
     }
     const body = await parseBody(req);
-    const next = normalizeActivityProject({
+    // 读取请求体期间可能有上传追加素材或其他相册增删，按 id 基于最新相册合并。
+    const result = commitActivityProject(item.id, current => ({
       ...body,
-      ownerId: item.ownerId,
-      ownerName: item.ownerName,
-      media: item.media,
-      status: user.role === "admin" && body.status ? body.status : item.status,
+      ownerId: current.ownerId,
+      ownerName: current.ownerName,
+      media: current.media,
+      status: user.role === "admin" && body.status ? body.status : current.status,
       updatedAt: now()
-    }, item);
-    db.activityProjects[idx] = next;
-    await writeDb(db);
-    return sendJson(res, 200, { ok: true, project: publicProject(next, db) });
+    }));
+    if (!result) return sendJson(res, 404, { error: "活动相册不存在" });
+    await writeDb(result.db);
+    return sendJson(res, 200, { ok: true, project: publicProject(result.project, result.db) });
   }
 
   // 大视频采用 TOS Multipart：浏览器只拿短时效的单片 PUT 地址，避免维持一个几百 MB 的 API 长请求。
@@ -2905,26 +2967,27 @@ async function handleApi(req, res, pathname) {
       }
 
       const url = session.media_url || projectVideoTosObject(session.filename).url;
-      const current = Array.isArray(project.media) ? project.media : [];
-      const duplicate = current.find(item => item && item.url === url);
-      const media = duplicate || {
-        type: "video",
-        url,
-        title: cleanString(session.title),
-        caption: "",
-        size: Number(session.file_size),
-        createdAt: now()
-      };
-      if (duplicate) databaseCommitted = true;
-      if (!duplicate) {
-        project.media = [...current, media];
-        project.updatedAt = now();
-        db.activityProjects[idx] = normalizeActivityProject(project, project);
-        await writeDb(db);
-        databaseCommitted = true;
-      }
+      let duplicate = null;
+      let media = null;
+      // 合并分片期间相册可能被增删或编辑：按 id 取最新相册再追加。
+      const result = commitActivityProject(projectId, current => {
+        const list = Array.isArray(current.media) ? current.media : [];
+        duplicate = list.find(item => item && item.url === url) || null;
+        media = duplicate || {
+          type: "video",
+          url,
+          title: cleanString(session.title),
+          caption: "",
+          size: Number(session.file_size),
+          createdAt: now()
+        };
+        return duplicate ? null : { ...current, media: [...list, media], updatedAt: now() };
+      });
+      if (!result) throw new Error("活动相册已删除");
+      databaseCommitted = true;
+      if (result.changed) await writeDb(result.db);
       await updateProjectUploadSession(sessionId, { status: "completed", media_url: url, error: null });
-      return sendJson(res, duplicate ? 200 : 201, { ok: true, media, project: publicProject(db.activityProjects[idx], db), storage: "tos-multipart" });
+      return sendJson(res, duplicate ? 200 : 201, { ok: true, media, project: publicProject(result.project, result.db), storage: "tos-multipart" });
     } catch (error) {
       if (objectCompleted && !databaseCommitted && !H5_AUTO_VIDEO_DELIVERY) {
         await client.deleteObject({ bucket, key: session.object_key }).catch(cleanupError => {
@@ -3003,26 +3066,26 @@ async function handleApi(req, res, pathname) {
       const output = path.join(staging, "delivery.jpg");
       const size = await processMiniappImage(path.join(staging, "source"), output);
       const fingerprint = await hashFileSHA256(output);
-      const db = readDb();
-      const idx = (db.activityProjects || []).findIndex(item => item.id === projectId);
-      if (idx < 0) return sendJson(res, 404, { error: "活动相册已删除。" });
-      const current = db.activityProjects[idx];
+      const current = (readDb().activityProjects || []).find(item => item.id === projectId);
+      if (!current) return sendJson(res, 404, { error: "活动相册已删除。" });
       if (!projectCanManage(user, current)) return sendJson(res, 403, { error: "活动相册权限已变化。" });
       const duplicate = (current.media || []).find(item => item.type === "image" && item.fingerprint === fingerprint);
-      if (duplicate) return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, project: publicProject(current, db) });
+      if (duplicate) return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, project: publicProject(current, readDb()) });
       const filename = `project_${projectId}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}.jpg`;
       const url = await uploadProjectFileToTos(output, filename, "image", "image/jpeg");
       uploadedKey = projectTosObjectKey(url);
       const { client, bucket } = getCaseVideoTosClient();
       assertTosObjectSize(await client.headObject({ bucket, key: uploadedKey }), size);
       const media = { type: "image", url, title: "活动照片", caption: "", size, fingerprint, createdAt: now() };
-      current.media = [...(current.media || []), media];
-      if (!current.cover) current.cover = url;
-      current.updatedAt = now();
-      db.activityProjects[idx] = normalizeActivityProject(current, current);
-      await writeDb(db);
+      // 上传 TOS 期间相册可能被新建、删除、编辑或关闭分享：按 id 取最新相册写回。
+      const result = commitActivityProject(projectId, latest => {
+        if (!projectCanManage(user, latest)) throw Object.assign(new Error("活动相册权限已变化。"), { httpStatus: 403 });
+        return { ...latest, media: [...(latest.media || []), media], cover: latest.cover || url, updatedAt: now() };
+      });
+      if (!result) throw Object.assign(new Error("活动相册已删除。"), { httpStatus: 404 });
       committed = true;
-      return sendJson(res, 201, { ok: true, media, project: publicProject(db.activityProjects[idx], db) });
+      await writeDb(result.db);
+      return sendJson(res, 201, { ok: true, media, project: publicProject(result.project, result.db) });
     } catch (error) {
       console.error("[miniapp-media-upload]", error && (error.stack || error.message || error));
       if (uploadedKey && !committed) {
@@ -3031,7 +3094,7 @@ async function handleApi(req, res, pathname) {
           await client.deleteObject({ bucket, key: uploadedKey });
         } catch (cleanupError) { console.error("[miniapp-media-orphan]", cleanupError); }
       }
-      return sendJson(res, /过大|超过/.test(error.message || "") ? 413 : 422, { error: error.message || "素材处理失败，请重试。" });
+      return sendJson(res, error.httpStatus || (/过大|超过/.test(error.message || "") ? 413 : 422), { error: error.message || "素材处理失败，请重试。" });
     } finally {
       if (!queued) await fs.promises.rm(staging, { recursive: true, force: true }).catch(error => console.error("[miniapp-staging-cleanup]", error));
     }
@@ -3100,8 +3163,13 @@ async function handleApi(req, res, pathname) {
       if (size === 0) { fs.unlink(dest, () => {}); return sendJson(res, 400, { error: "未收到素材数据" }); }
       try {
         const fingerprint = await hashFileSHA256(dest);
-        const current = Array.isArray(project.media) ? project.media : [];
-        const duplicate = projectMediaDuplicate(current, fingerprint, size);
+        // 接收文件可能耗时较长：查重和写回都以最新相册为准，不沿用请求开始时的对象或下标。
+        const latest = (readDb().activityProjects || []).find(p => p.id === project.id);
+        if (!latest) {
+          fs.unlink(dest, () => {});
+          return sendJson(res, 404, { error: "活动相册不存在" });
+        }
+        const duplicate = projectMediaDuplicate(latest.media, fingerprint, size);
         if (duplicate) {
           fs.unlink(dest, () => {});
           return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, storage: "tos" });
@@ -3116,13 +3184,20 @@ async function handleApi(req, res, pathname) {
           fingerprint,
           createdAt: now()
         };
-        project.media = [...current, media];
-        if (!project.cover && type === "image") project.cover = url;
-        project.updatedAt = now();
-        db.activityProjects[idx] = normalizeActivityProject(project, project);
-        await writeDb(db);
+        const result = commitActivityProject(project.id, current => {
+          const next = { ...current, media: [...(current.media || []), media], updatedAt: now() };
+          if (!next.cover && type === "image") next.cover = url;
+          return next;
+        });
         fs.unlink(dest, () => {});
-        return sendJson(res, 201, { ok: true, media, project: publicProject(db.activityProjects[idx], db), storage: "tos" });
+        if (!result) {
+          // 上传期间相册已被删除：删掉刚上传的对象，避免留下无人引用的文件。
+          const { client, bucket } = getCaseVideoTosClient();
+          await client.deleteObject({ bucket, key: projectTosObjectKey(url) }).catch(error => console.error("[project-media-orphan]", error && (error.message || error)));
+          return sendJson(res, 404, { error: "活动相册已删除" });
+        }
+        await writeDb(result.db);
+        return sendJson(res, 201, { ok: true, media, project: publicProject(result.project, result.db), storage: "tos" });
       } catch (error) {
         fs.unlink(dest, () => {});
         console.error("[project-media-tos]", error && (error.stack || error.message || error));
@@ -3194,55 +3269,9 @@ async function handleApi(req, res, pathname) {
     const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const db = readDb();
-    const list = (db.activityProjects || []).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map(p => publicProject(p, db, { includeOwner: true }));
+    // 复制后再排序：原地排序缓存会让进行中的上传按旧下标写到别的相册。
+    const list = [...(db.activityProjects || [])].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map(p => publicProject(p, db, { includeOwner: true }));
     return sendJson(res, 200, { projects: list, count: list.length });
-  }
-
-  // One-time Shaoxing album migration: compare-and-swap a verified MP4 and its
-  // first-frame poster without rewriting other album metadata or media order.
-  const shaoxingDelivery = pathname.match(/^\/api\/admin\/activity-projects\/project_85aae4b746069044\/media\/(\d+)\/delivery$/);
-  if (req.method === "PATCH" && shaoxingDelivery) {
-    const user = requireRole(req, res, ["admin"]);
-    if (!user) return;
-    const index = Number(shaoxingDelivery[1]);
-    if (!Number.isSafeInteger(index) || index < 0 || index > 36) return sendJson(res, 400, { error: "绍兴素材序号无效" });
-    const body = await parseBody(req, 2048);
-    const oldUrl = cleanString(body.oldUrl);
-    const url = cleanString(body.url);
-    const poster = cleanString(body.poster);
-    const size = Number(body.size);
-    const fingerprint = cleanString(body.fingerprint).toLowerCase();
-    if (!oldUrl.startsWith(`${PROJECT_VIDEO_PUBLIC_BASE}/`) || !url.startsWith(`${PROJECT_VIDEO_PUBLIC_BASE}/`) || !/\.mp4$/.test(url) ||
-        !poster.startsWith(`${PROJECT_IMAGE_PUBLIC_BASE}/`) || !/\.jpe?g$/.test(poster) ||
-        !Number.isSafeInteger(size) || size <= 0 || size >= MINIAPP_MAX_VIDEO_BYTES || !/^[a-f0-9]{64}$/.test(fingerprint)) {
-      return sendJson(res, 400, { error: "交付文件地址、大小或校验值无效" });
-    }
-    const videoKey = projectTosObjectKey(url);
-    const posterKey = projectTosObjectKey(poster);
-    if (!videoKey.startsWith(`${PROJECT_VIDEO_TOS_PREFIX}/`) || !posterKey.startsWith(`${PROJECT_IMAGE_TOS_PREFIX}/`)) {
-      return sendJson(res, 400, { error: "交付文件不在指定相册存储目录" });
-    }
-    const db = readDb();
-    const project = (db.activityProjects || []).find(item => item.id === "project_85aae4b746069044");
-    const current = project && project.media && project.media[index];
-    if (!current || current.type !== "video" || current.url !== oldUrl) {
-      if (current && current.url === url && current.poster === poster && current.size === size && current.fingerprint === fingerprint) {
-        return sendJson(res, 200, { ok: true, unchanged: true, media: current });
-      }
-      return sendJson(res, 409, { error: "绍兴相册素材已变化，停止替换" });
-    }
-    const { client, bucket } = getCaseVideoTosClient();
-    const posterSize = tosContentLength(await client.headObject({ bucket, key: posterKey }));
-    if (tosContentLength(await client.headObject({ bucket, key: videoKey })) !== size ||
-        !posterSize || posterSize > 3 * 1024 * 1024) {
-      return sendJson(res, 422, { error: "交付视频或首帧封面尚未通过云端校验" });
-    }
-    project.media[index] = { ...current, url, poster, size, fingerprint };
-    project.updatedAt = now();
-    await writeDb(db);
-    const persisted = await projectMediaPersisted(project.id, url, poster);
-    if (!persisted) return sendJson(res, 503, { error: "写入校验失败，原视频仍保留" });
-    return sendJson(res, 200, { ok: true, media: project.media[index] });
   }
 
   if (req.method === "GET" && pathname === "/api/admin/cases") {
@@ -3521,10 +3550,16 @@ async function handleApi(req, res, pathname) {
       if (existingMedia) {
         databaseCommitted = true;
       } else {
-        caseItem.media = [...(caseItem.media || []), media];
-        db.cases[caseIndex] = normalizeCase({ media: caseItem.media, updatedAt: now() }, caseItem);
-        await writeDb(db);
+        // TOS 合并期间案例可能被新建或删除：按 id 定位最新案例再追加，不沿用旧下标。
+        const cases = readDb().cases || [];
+        const latestIndex = cases.findIndex(item => item.id === caseId);
+        if (latestIndex < 0) throw new Error("目标案例已删除");
+        const latest = cases[latestIndex];
+        if (!caseMediaBySourceHash(latest, session.source_sha256)) {
+          cases[latestIndex] = normalizeCase({ media: [...(latest.media || []), media], updatedAt: now() }, latest);
+        }
         databaseCommitted = true;
+        await writeDb(readDb());
       }
       await updateCaseDirectUploadSession(sessionId, { status: "completed", media_url: url, error: null });
       return sendJson(res, existingMedia ? 200 : 201, { ok: true, completed: true, storage: "tos-multipart", media });

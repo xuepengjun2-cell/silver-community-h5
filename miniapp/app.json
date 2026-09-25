@@ -15,5 +15,9 @@
     "backgroundColor": "#fffaf4",
     "backgroundTextStyle": "light"
   },
+  "networkTimeout": {
+    "uploadFile": 600000,
+    "downloadFile": 600000
+  },
   "sitemapLocation": "sitemap.json"
 }
