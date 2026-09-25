@@ -7,7 +7,8 @@
     "start": "node server.js",
     "check": "node --check server.js && node --check server/activity-hub-sso.js && node --check server/miniapp-media.js && node --check server/video-delivery-io.js && node --check public/app.js && node --check public/admin.js",
     "test:sso": "node tests/activity-hub-sso.js",
-    "test:media": "node --test tests/miniapp-media.js tests/video-delivery-io.js miniapp/test/*.test.js"
+    "test:media": "node --test tests/miniapp-media.js tests/video-delivery-io.js miniapp/test/*.test.js",
+    "test:concurrency": "node --test tests/concurrency/concurrent-writes.test.js"
   },
   "engines": {
     "node": ">=18"
