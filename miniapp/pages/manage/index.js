@@ -1,6 +1,7 @@
 const { api, getSession, clearSession } = require("../../utils/auth");
 const { parseAlbumOptions, albumPath, displayName, saveEligibility, trustedMediaUrl } = require("../../utils/album");
 const { uploadMedia, getVideoJob } = require("../../utils/upload");
+const { privacyErrorMessage } = require("../../utils/errors");
 
 Page({
   data: {
@@ -65,6 +66,8 @@ Page({
       const result = await new Promise((resolve, reject) => wx.chooseMedia({
         count: type === "image" ? 9 : 1,
         mediaType: [type], sourceType: ["album", "camera"],
+        // 相机拍摄默认最长 10 秒，60 秒是微信允许的上限；从相册选择不受此限制。
+        maxDuration: 60,
         success: resolve, fail: reject
       }));
       const session = getSession(wx);
@@ -84,7 +87,7 @@ Page({
       }
       if (type === "image") wx.showToast({ title: "照片已上传", icon: "success" });
     } catch (error) {
-      if (!/cancel/i.test(error.errMsg || "")) wx.showModal({ title: "上传未完成", content: error.message || "请稍后重试。", showCancel: false });
+      if (!/cancel/i.test(error.errMsg || "")) wx.showModal({ title: "上传未完成", content: privacyErrorMessage(error) || error.message || "请稍后重试。", showCancel: false });
       this.setData({ progress: "" });
     } finally { this.setData({ busy: false }); }
   },

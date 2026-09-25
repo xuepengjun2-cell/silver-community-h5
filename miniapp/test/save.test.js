@@ -26,14 +26,19 @@ function fakeWx(media, options = {}) {
       request.success({ statusCode: 200, data: { project: { id, media: [media] } } });
     },
     downloadFile(request) {
-      calls.push(["download", request.url]);
+      calls.push(["download", request.url, request.timeout]);
+      if (options.downloadFail) {
+        process.nextTick(() => request.fail(options.downloadFail));
+        return {};
+      }
       process.nextTick(() => request.success({ statusCode: 200, tempFilePath: "wxfile://tmp_demo" }));
       return { onProgressUpdate(callback) { callback({ progress: 56 }); } };
     },
     saveVideoToPhotosAlbum(request) {
       calls.push(["save-video", request.filePath]);
       saves += 1;
-      if (options.denyOnce && saves === 1) request.fail({ errMsg: "saveVideoToPhotosAlbum:fail auth deny" });
+      if (options.saveFail) request.fail(options.saveFail);
+      else if (options.denyOnce && saves === 1) request.fail({ errMsg: "saveVideoToPhotosAlbum:fail auth deny" });
       else request.success({});
     },
     saveImageToPhotosAlbum(request) {
@@ -88,4 +93,20 @@ test("存在服务端生成的 MP4 交付版时预览保留 MOV，保存下载 M
   const wxApi = fakeWx(original);
   await saveMedia(wxApi, { projectId: id, index: 0, media: original });
   assert.equal(wxApi.calls.find(item => item[0] === "download")[1], video.url);
+});
+
+test("大视频下载使用 10 分钟超时，超时给出可操作提示", async () => {
+  const wxApi = fakeWx(video);
+  await saveMedia(wxApi, { projectId: id, index: 0, media: video });
+  assert.equal(wxApi.calls.find(item => item[0] === "download")[2], 10 * 60 * 1000);
+  const slow = fakeWx(video, { downloadFail: { errMsg: "downloadFile:fail timeout" } });
+  await assert.rejects(saveMedia(slow, { projectId: id, index: 0, media: video }), /下载超时/);
+});
+
+test("隐私保护指引未声明或用户未同意时，说明真实原因且不误导去设置页", async () => {
+  const undeclared = fakeWx(video, { saveFail: { errno: 112, errMsg: "saveVideoToPhotosAlbum:fail api scope is not declared in the privacy agreement" } });
+  await assert.rejects(saveMedia(undeclared, { projectId: id, index: 0, media: video }), /用户隐私保护指引/);
+  assert.equal(undeclared.calls.filter(item => item[0] === "save-video").length, 1);
+  const declined = fakeWx(video, { saveFail: { errno: 104, errMsg: "saveVideoToPhotosAlbum:fail privacy permission is not authorized" } });
+  await assert.rejects(saveMedia(declined, { projectId: id, index: 0, media: video }), /同意/);
 });

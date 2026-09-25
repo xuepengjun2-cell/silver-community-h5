@@ -1,5 +1,6 @@
 const config = require("../config");
 const { api } = require("./auth");
+const { isTimeout } = require("./errors");
 
 const MAX_IMAGE = 50 * 1024 * 1024;
 const MAX_VIDEO = 190 * 1024 * 1024;
@@ -32,6 +33,7 @@ function uploadFile(wxApi, { projectId, type, path, token, onProgress }) {
       url: `${config.apiBase}/my/activity-projects/${projectId}/miniapp-media?type=${type}`,
       filePath: path,
       name: "media",
+      timeout: config.transferTimeoutMs,
       header: { Authorization: `Bearer ${token}` },
       success(response) {
         let data;
@@ -40,7 +42,11 @@ function uploadFile(wxApi, { projectId, type, path, token, onProgress }) {
         if (response.statusCode >= 200 && response.statusCode < 300) return resolve(data);
         reject(new Error(data.error || (response.statusCode === 404 ? "上传服务尚未上线，请稍后重试。" : "上传失败，请重试。")));
       },
-      fail(error) { reject(new Error(error.errMsg || "上传中断，请检查网络。")); }
+      fail(error) {
+        reject(new Error(isTimeout(error)
+          ? "网络较慢，上传超时。请连接 Wi-Fi 后重试，较长的视频请分段上传。"
+          : error.errMsg || "上传中断，请检查网络。"));
+      }
     });
     if (task && typeof task.onProgressUpdate === "function") task.onProgressUpdate(progress => onProgress(progress.progress));
   });

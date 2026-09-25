@@ -17,6 +17,10 @@ Page({
     this.index = parsed.index;
     this.loadMedia();
   },
+  onShow() {
+    // 客户从单素材分享卡片进入时，同样不显示通往主办方登录页的“返回首页”。
+    if (typeof wx.hideHomeButton === "function") wx.hideHomeButton();
+  },
   async loadMedia() {
     this.setData({ loading: true, error: "" });
     try {

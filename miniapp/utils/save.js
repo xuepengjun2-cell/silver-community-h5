@@ -1,10 +1,13 @@
+const { transferTimeoutMs } = require("../config");
 const { getProject, recordDownloadIntent } = require("./api");
 const { saveEligibility, saveSource, trustedMediaUrl } = require("./album");
+const { privacyErrorMessage, isTimeout } = require("./errors");
 
 function downloadFile(wxApi, url, onProgress) {
   return new Promise((resolve, reject) => {
     const task = wxApi.downloadFile({
       url,
+      timeout: transferTimeoutMs,
       success(result) {
         if (result.statusCode !== 200 || !result.tempFilePath) {
           return reject(new Error("视频或照片下载未完成，请稍后重试。"));
@@ -15,7 +18,9 @@ function downloadFile(wxApi, url, onProgress) {
         const detail = String(error && error.errMsg || "");
         reject(new Error(/exceed|limit|200\s*mb|too large/i.test(detail)
           ? "视频超过微信单次下载限制，请主办方上传小于 200 MB 的 MP4 版本。"
-          : "下载失败，请检查网络或稍后重试。"));
+          : isTimeout(error)
+            ? "网络较慢，下载超时。请连接 Wi-Fi 后重试。"
+            : "下载失败，请检查网络或稍后重试。"));
       }
     });
     if (task && typeof task.onProgressUpdate === "function") {
@@ -86,7 +91,7 @@ async function saveMedia(wxApi, { projectId, index, media, onProgress }) {
     }
   } catch (error) {
     if (error instanceof Error) throw error;
-    throw new Error("保存失败，请检查相册权限和手机剩余空间后再试。");
+    throw new Error(privacyErrorMessage(error) || "保存失败，请检查相册权限和手机剩余空间后再试。");
   } finally {
     cleanTempFile(wxApi, tempFilePath);
   }
