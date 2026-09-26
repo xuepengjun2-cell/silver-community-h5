@@ -336,7 +336,7 @@ function roleLabel(r) {
 }
 
 function canDownload() {
-  return Boolean(state.user);
+  return Boolean(state.user && state.user.canDownload !== false);
 }
 
 function saveFavs() {
@@ -545,7 +545,15 @@ function loginModal() {
         </div>
         <div class="field">
           <label>姓名/昵称</label>
-          <input class="input" name="name" placeholder="方便管理员识别">
+          <input class="input" name="name" placeholder="请填写便于总部核实的真实姓名" required>
+        </div>
+        <div class="field">
+          <label>联系方式</label>
+          <input class="input" name="contact" placeholder="仅用于账号申请核实" required>
+        </div>
+        <div class="field">
+          <label>城市 / 所属机构</label>
+          <div style="display:flex;gap:8px"><input class="input" name="city" placeholder="城市"><input class="input" name="organization" placeholder="所属机构"></div>
         </div>
         <div class="field">
           <label>密码</label>
@@ -677,7 +685,10 @@ function bindAuthEvents() {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     try {
-      const data = await api("/api/register", { method:"POST", body:{ username:f.get("username"), password:f.get("password"), name:f.get("name") } });
+      const data = await api("/api/register", { method:"POST", body:{
+        username:f.get("username"), password:f.get("password"), name:f.get("name"),
+        contact:f.get("contact"), city:f.get("city"), organization:f.get("organization")
+      } });
       state.authTab = "login";
       state.authOk = true;
       state.authMessage = (data && data.message) || "申请已提交，请等待管理员开通后登录";

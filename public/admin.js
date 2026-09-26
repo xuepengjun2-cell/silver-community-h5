@@ -13,6 +13,7 @@ const state = {
   activities: [],
   activityProjects: [],
   users: [],
+  wechatApplications: [],
   auditSummary: [],
   activeTab: "activities",
   editingId: null,
@@ -158,16 +159,18 @@ function showLogin(error = "") {
 // ---- 数据刷新 ----
 async function refreshData() {
   const isAdmin = state.user?.role === "admin";
-  const [activityResult, userResult, projectResult, auditResult] = await Promise.all([
+  const [activityResult, userResult, projectResult, auditResult, wechatResult] = await Promise.all([
     api("/api/admin/activities"),
     isAdmin ? api("/api/admin/users") : Promise.resolve({ users: [] }),
     isAdmin ? api("/api/admin/activity-projects") : Promise.resolve({ projects: [] }),
-    isAdmin ? api("/api/admin/audit-summary") : Promise.resolve({ summaries: [] })
+    isAdmin ? api("/api/admin/audit-summary") : Promise.resolve({ summaries: [] }),
+    isAdmin ? api("/api/admin/wechat/applications") : Promise.resolve({ applications: [] })
   ]);
   state.activities = activityResult.activities || [];
   state.auditSummary = auditResult.summaries || [];
   if (isAdmin) {
     state.users = userResult.users || [];
+    state.wechatApplications = wechatResult.applications || [];
     state.activityProjects = (projectResult.projects || []).map(applyAuditCountsToProject);
     state.activities = state.activities.map(applyAuditCountsToActivity);
   }
@@ -212,7 +215,8 @@ function renderShell() {
     ? `<span style="display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;background:#e8462c;color:#fff;border-radius:9px;font-size:11px;margin-left:6px;padding:0 5px;font-weight:600">${n}</span>`
     : "";
   const pendingBadge = navBadge((state.activities || []).filter(x => x.status === "pending").length);
-  const userBadge = navBadge((state.users || []).filter(x => x.status === "disabled").length);
+  const userBadge = navBadge((state.users || []).filter(x => x.status === "pending").length
+    + (state.wechatApplications || []).filter(x => x.status === "pending").length);
   const projectBadge = navBadge((state.activityProjects || []).filter(x => !x.sourceCaseId && (x.media || []).length).length);
 
   adminApp.innerHTML = `
@@ -1955,6 +1959,43 @@ function renderCaseAdminDetail() {
 }
 
 // ---- 账号管理 ----
+function wechatApplicationsHtml() {
+  const applications = state.wechatApplications || [];
+  const pending = applications.filter(item => item.status === "pending");
+  const decided = applications.filter(item => item.status !== "pending").slice(0, 30);
+  const userOptions = state.users.filter(user => ["active", "pending"].includes(user.status) && user.role !== "admin")
+    .map(user => `<option value="${esc(user.id)}">${esc(user.name || user.username)} · ${esc(user.username)} · ${esc(roleLabel(user.role))}${user.status === "pending" ? " · H5 待审" : ""}</option>`).join("");
+  return `<div class="panel" style="margin-bottom:16px;border:1px solid #f0c9a8">
+    <div class="panel-header"><h2>微信小程序申请 <span style="color:#e8462c">(${pending.length} 待核实)</span></h2></div>
+    <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
+      ${pending.length ? pending.map(item => `<div class="user-card" data-wx-id="${esc(item.id)}" style="display:block">
+        <strong>${esc(item.name)} · ${esc(item.city || "城市未填")} · ${esc(item.organization || "机构未填")}</strong>
+        <div style="font-size:13px;color:var(--muted);margin:8px 0">联系方式：${esc(item.contact)} · 微信核对码：${esc(item.fingerprint)} · ${esc(item.createdAt)}</div>
+        ${state.users.some(user => user.applicationContact && user.applicationContact === item.contact)
+          ? `<div style="color:#a74724;font-size:13px;margin-bottom:8px">发现同联系方式的 H5 申请或账号，请人工核实并优先绑定原账号；不能仅凭号码自动合并。</div>` : ""}
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+          <select class="select" data-wx-target style="min-width:220px;max-width:100%">
+            <option value="">请选择绑定方式</option><option value="__new__">核实后新建平台账号</option>${userOptions}
+          </select>
+          <select class="select" data-wx-role><option value="viewer">新账号：只读</option><option value="member">新账号：学习用户</option><option value="operator">新账号：城市主理人</option></select>
+          <label class="checkline"><input type="checkbox" data-wx-download> 新账号允许下载 SOP</label>
+          <label class="checkline"><input type="checkbox" data-wx-confirm> 已核对不存在原账号</label>
+          <button class="btn small" data-wx-approve="${esc(item.id)}">核实并通过</button>
+          <button class="btn danger small" data-wx-reject="${esc(item.id)}">拒绝</button>
+        </div>
+        <small style="color:var(--muted)">绑定已有账号时保留原角色与相册归属；新建账号只允许总部指定角色，不能由申请人自授。</small>
+      </div>`).join("") : `<p style="color:var(--muted)">暂无待核实的微信申请。</p>`}
+      ${decided.length ? `<details><summary>查看已处理的微信身份（最近 ${decided.length} 条）</summary>
+        ${decided.map(item => `<div style="padding:9px 0;border-top:1px solid var(--line)">
+          ${esc(item.name)} · ${esc(item.fingerprint)} · ${esc(item.status)}
+          ${item.user ? `→ ${esc(item.user.name || item.user.username)} (${esc(item.user.username)})` : ""}
+          ${item.status === "approved" ? `<button class="btn secondary small" data-wx-revoke="${esc(item.id)}">解除绑定</button>` : ""}
+          ${["rejected", "revoked"].includes(item.status) ? `<button class="btn secondary small" data-wx-reopen="${esc(item.id)}">重新开放申请</button>` : ""}
+        </div>`).join("")}</details>` : ""}
+    </div>
+  </div>`;
+}
+
 function renderUsers() {
   const content = document.querySelector("#content");
   content.innerHTML = `
@@ -1962,13 +2003,13 @@ function renderUsers() {
     <div class="content-area">
       ${state.message}
       ${(() => {
-        const pend = state.users.filter(u => u.status === "disabled");
+        const pend = state.users.filter(u => u.status === "pending");
         if (!pend.length) return "";
         return `
         <div class="panel" style="margin-bottom:16px;border:1px solid #f0c9a8">
           <div class="panel-header" style="background:#fdf3ea">
             <h2>🔔 待审核账号 <span style="color:#e8462c">(${pend.length})</span></h2>
-            <button class="btn small" id="batchApproveUsers" style="background:#2e7d32;color:#fff">✅ 全部通过</button>
+            <span style="font-size:12px;color:var(--muted)">须逐人核实；已停用账号不在此列</span>
           </div>
           <div style="padding:12px;display:flex;flex-direction:column;gap:8px">
             ${pend.map(u => `
@@ -1976,15 +2017,21 @@ function renderUsers() {
                 <div class="user-avatar">${esc((u.name||u.username).slice(0,1))}</div>
                 <div style="flex:1;min-width:140px">
                   <strong>${esc(u.name||u.username)} <span style="font-weight:400;color:var(--muted)">@${esc(u.username)}</span></strong>
-                  <div style="font-size:12px;color:var(--muted)">申请角色：${roleLabel(u.role)}</div>
+                  <div style="font-size:12px;color:var(--muted)">H5 申请 · ${esc(u.applicationContact || "联系方式未留")}${u.applicationCity ? ` · ${esc(u.applicationCity)}` : ""}${u.applicationOrganization ? ` · ${esc(u.applicationOrganization)}` : ""}</div>
+                  ${u.applicationContact && state.users.some(other => other.id !== u.id && other.status === "active" && other.applicationContact === u.applicationContact)
+                    ? `<div style="font-size:12px;color:#a74724">存在同联系方式的已启用账号，请先核实是否应沿用该 userId。</div>` : ""}
                 </div>
-                <label class="checkline" style="margin:0;font-size:13px"><input type="checkbox" data-uapprove-dl="${esc(u.id)}" checked> 允许下载SOP</label>
+                <select class="select" data-uapprove-role="${esc(u.id)}" style="width:136px">
+                  <option value="viewer">只读账号</option><option value="member">学习用户</option><option value="operator">城市主理人</option>
+                </select>
+                <label class="checkline" style="margin:0;font-size:13px"><input type="checkbox" data-uapprove-dl="${esc(u.id)}"> 允许下载SOP</label>
                 <button class="btn small" data-approve-user="${esc(u.id)}" style="background:#2e7d32;color:#fff">✅ 通过</button>
                 <button class="btn danger small" data-reject-user="${esc(u.id)}">❌ 拒绝</button>
               </div>`).join("")}
           </div>
         </div>`;
       })()}
+      ${wechatApplicationsHtml()}
       <div style="display:grid;grid-template-columns:360px 1fr;gap:16px;align-items:start">
 
         <!-- 创建账号 -->
@@ -2052,7 +2099,7 @@ function userCardHtml(u) {
                 <div class="user-avatar">${esc((u.name||u.username).slice(0,1))}</div>
                 <div class="user-card-info">
                   <strong>${esc(u.name||u.username)} <span style="font-weight:400;color:var(--muted)">@${esc(u.username)}</span></strong>
-                  <span>${roleLabel(u.role)} · ${u.status==="active"?"✅ 启用":"⛔ 停用"} · SOP下载：${u.canDownload?"允许":"禁止"}</span>
+                  <span>${roleLabel(u.role)} · ${{ active:"✅ 启用", pending:"⏳ 待审核", disabled:"⛔ 停用", rejected:"❌ 已拒绝" }[u.status] || esc(u.status)} · SOP下载：${u.canDownload?"允许":"禁止"}</span>
                 </div>
                 <div class="user-card-actions">
                   <button class="btn secondary small" data-toggle-edit="${esc(u.id)}">编辑</button>
@@ -2060,6 +2107,7 @@ function userCardHtml(u) {
                 </div>
               </div>
               <div class="user-detail-panel" id="udp-${esc(u.id)}">
+                ${u.authSource === "wechat-miniapp" ? `<div class="field"><label>H5 登录账号</label><input class="input" data-u-username value="${esc(u.username)}"><small>此账号由微信申请创建；如需在 H5 登录，请设置账号和下方新密码，业务 userId 不会改变。</small></div>` : ""}
                 <div class="row">
                   <div class="field"><label>姓名</label><input class="input" data-u-name value="${esc(u.name)}"></div>
                   <div class="field">
@@ -2077,7 +2125,9 @@ function userCardHtml(u) {
                     <label>账号状态</label>
                     <select class="select" data-u-status>
                       <option value="active" ${u.status==="active"?"selected":""}>✅ 启用</option>
+                      <option value="pending" ${u.status==="pending"?"selected":""}>⏳ 待审核</option>
                       <option value="disabled" ${u.status==="disabled"?"selected":""}>⛔ 停用</option>
+                      <option value="rejected" ${u.status==="rejected"?"selected":""}>❌ 已拒绝</option>
                     </select>
                   </div>
                   <div class="field">
@@ -2097,16 +2147,17 @@ function userCardHtml(u) {
 }
 
 function bindUserEvents() {
-  // ---- 待审核账号：逐个通过 / 拒绝 / 全部通过 ----
+  // ---- H5 待审核账号：逐个核实，停用账号绝不进入审核队列 ----
   document.querySelectorAll("[data-approve-user]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.approveUser;
       const u = state.users.find(x => x.id === id) || {};
       const dlBox = document.querySelector(`[data-uapprove-dl="${id}"]`);
-      const canDownload = dlBox ? dlBox.checked : true;
+      const roleBox = document.querySelector(`[data-uapprove-role="${id}"]`);
+      const canDownload = dlBox ? dlBox.checked : false;
       try {
         await api(`/api/admin/users/${encodeURIComponent(id)}`, { method:"PUT", body:{
-          name: u.name, role: u.role, status:"active", canDownload
+          name: u.name, role: roleBox ? roleBox.value : "viewer", status:"active", canDownload
         }});
         await refreshData(); flash("✅ 账号已通过并启用"); renderUsers();
       } catch (err) { flash(err.message, "error"); renderUsers(); }
@@ -2114,26 +2165,48 @@ function bindUserEvents() {
   });
   document.querySelectorAll("[data-reject-user]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!confirm("确认拒绝并删除该申请账号？")) return;
+      if (!confirm("确认拒绝该账号申请？记录会保留，不能登录。")) return;
       try {
-        await api(`/api/admin/users/${encodeURIComponent(btn.dataset.rejectUser)}`, { method:"DELETE" });
-        await refreshData(); flash("已拒绝并删除"); renderUsers();
+        const id = btn.dataset.rejectUser;
+        const u = state.users.find(x => x.id === id);
+        await api(`/api/admin/users/${encodeURIComponent(id)}`, { method:"PUT", body:{
+          name: u.name, role: u.role, status:"rejected", canDownload:false
+        }});
+        await refreshData(); flash("已拒绝并保留审核记录"); renderUsers();
       } catch (err) { flash(err.message, "error"); renderUsers(); }
     });
   });
-  const batchU = document.querySelector("#batchApproveUsers");
-  if (batchU) batchU.addEventListener("click", async () => {
-    const pend = state.users.filter(u => u.status === "disabled");
-    if (!pend.length) return;
-    if (!confirm(`确定将这 ${pend.length} 个待审账号全部通过启用？（默认允许下载SOP）`)) return;
-    batchU.disabled = true; batchU.textContent = "处理中...";
-    let ok = 0, fail = 0;
-    for (const u of pend) {
-      try { await api(`/api/admin/users/${encodeURIComponent(u.id)}`, { method:"PUT", body:{ name:u.name, role:u.role, status:"active", canDownload:true }}); ok++; }
-      catch (e) { fail++; }
-    }
-    await refreshData(); flash(`批量通过完成：成功 ${ok} 个${fail ? `，失败 ${fail} 个` : ""}`); renderUsers();
-  });
+  document.querySelectorAll("[data-wx-approve]").forEach(btn => btn.addEventListener("click", async () => {
+    const card = btn.closest("[data-wx-id]");
+    const id = btn.dataset.wxApprove;
+    const target = card.querySelector("[data-wx-target]").value;
+    if (!target) return flash("请先选择绑定原账号或核实后新建", "error");
+    const isNew = target === "__new__";
+    if (isNew && !card.querySelector("[data-wx-confirm]").checked) return flash("新建前必须确认不存在原账号", "error");
+    if (!confirm(isNew ? "确认已核实身份且不存在原账号，并创建新平台账号？" : "确认将此微信身份绑定到选中的原账号？")) return;
+    btn.disabled = true;
+    try {
+      await api(`/api/admin/wechat/applications/${encodeURIComponent(id)}/approve`, { method:"POST", body:{
+        userId: isNew ? "" : target,
+        confirmNoExistingAccount: isNew,
+        role: card.querySelector("[data-wx-role]").value,
+        canDownload: card.querySelector("[data-wx-download]").checked
+      }});
+      await refreshData(); flash("微信身份已通过；平台账号和相册归属保持统一"); renderUsers();
+    } catch (err) { flash(err.message, "error"); renderUsers(); }
+  }));
+  for (const action of ["reject", "reopen", "revoke"]) {
+    document.querySelectorAll(`[data-wx-${action}]`).forEach(btn => btn.addEventListener("click", async () => {
+      const id = btn.dataset[`wx${action[0].toUpperCase()}${action.slice(1)}`];
+      const message = action === "revoke" ? "解除绑定会让该账号的现有登录态失效，确认继续？"
+        : action === "reject" ? "确认拒绝此微信申请？" : "确认重新开放此微信的申请入口？";
+      if (!confirm(message)) return;
+      try {
+        await api(`/api/admin/wechat/applications/${encodeURIComponent(id)}/${action}`, { method:"POST", body:{} });
+        await refreshData(); flash("微信身份状态已更新"); renderUsers();
+      } catch (err) { flash(err.message, "error"); renderUsers(); }
+    }));
+  }
   document.querySelector("#createUserForm").addEventListener("submit", async e => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -2161,6 +2234,7 @@ function bindUserEvents() {
           role: panel.querySelector("[data-u-role]").value,
           status: panel.querySelector("[data-u-status]").value,
           canDownload: panel.querySelector("[data-u-dl]").value === "true",
+          ...(panel.querySelector("[data-u-username]") ? { username: panel.querySelector("[data-u-username]").value } : {}),
           password: panel.querySelector("[data-u-pw]").value
         }});
         await refreshData(); flash("账号已更新"); renderUsers();

@@ -4,6 +4,21 @@ const Module = require("module");
 const fs = require("fs");
 const fakeMysql = require("./fake-mysql");
 
+if (process.env.FAKE_WECHAT_CODES) {
+  const codes = JSON.parse(process.env.FAKE_WECHAT_CODES);
+  const originalFetch = global.fetch;
+  global.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    if (url.hostname === "api.weixin.qq.com" && url.pathname === "/sns/jscode2session") {
+      const openid = codes[url.searchParams.get("js_code")];
+      return new Response(JSON.stringify(openid ? { openid, session_key: "server-only-test" } : { errcode: 40029 }), {
+        status: 200, headers: { "Content-Type": "application/json" }
+      });
+    }
+    return originalFetch(input, options);
+  };
+}
+
 const originalLoad = Module._load;
 Module._load = function load(request, parent, isMain) {
   if (request === "mysql2/promise") return fakeMysql;

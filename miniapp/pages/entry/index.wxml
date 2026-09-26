@@ -1,16 +1,36 @@
 <view class="page entry-page">
   <view class="eyebrow">开开华彩 · 活动工作台</view>
-  <view class="title">账号登录</view>
-  <view class="muted entry-lead">使用原 H5 账号登录，系统会按账号权限展示可用内容。</view>
+  <view class="title">活动工作台登录</view>
+  <view class="muted entry-lead">微信身份与原工作台账号共用一套权限和相册数据。</view>
   <view wx:if="{{loading}}" class="state">正在检查登录状态…</view>
   <view wx:else class="card entry-card">
-    <view class="entry-card-title">进入活动工作台</view>
+    <view wx:if="{{wechatStatus === 'pending'}}" class="entry-state">微信申请待总部审核。审核通过后，重新打开小程序即可进入。</view>
+    <view wx:if="{{wechatStatus === 'rejected' || wechatStatus === 'revoked' || wechatStatus === 'disabled'}}" class="entry-state">此微信身份暂不能进入工作台，请联系总部核实。</view>
+    <view wx:if="{{wechatStatus === 'unavailable' && wechatMessage}}" class="entry-state">{{wechatMessage}}</view>
+    <view class="entry-card-title">已有工作台账号</view>
+    <view class="muted">首次输入原账号密码完成微信绑定；之后可用微信直接进入。微信登录尚未配置时仍可用原账号登录。</view>
     <view class="entry-label">账号</view>
     <input class="entry-field" value="{{username}}" bindinput="onUser" placeholder="请输入账号" maxlength="80"/>
     <view class="entry-label">密码</view>
     <input class="entry-field" value="{{password}}" bindinput="onPassword" placeholder="请输入密码" password="true"/>
     <view wx:if="{{error}}" class="entry-error">{{error}}</view>
-    <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">登录并进入</button>
+    <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">{{wechatStatus === 'unbound' || wechatStatus === 'pending' ? '绑定原账号并进入' : '账号登录并进入'}}</button>
+    <button class="entry-secondary" disabled="{{busy}}" bindtap="onWechatRetry">使用微信登录</button>
+  </view>
+  <view wx:if="{{!loading && wechatStatus === 'unbound'}}" class="card entry-card entry-apply">
+    <view class="entry-card-title">还没有工作台账号？</view>
+    <view class="muted">提交申请后由总部核实、指定权限；审核前不能上传或管理相册。</view>
+    <button class="entry-secondary" bindtap="onApplyToggle">{{showApply ? '收起申请' : '申请开通'}}</button>
+    <view wx:if="{{showApply}}">
+      <view class="entry-label">真实姓名</view><input class="entry-field" data-field="applicantName" value="{{applicantName}}" bindinput="onApplicantField" maxlength="60"/>
+      <view class="entry-label">联系方式</view><input class="entry-field" data-field="applicantContact" value="{{applicantContact}}" bindinput="onApplicantField" maxlength="80"/>
+      <view class="entry-label">城市</view><input class="entry-field" data-field="applicantCity" value="{{applicantCity}}" bindinput="onApplicantField" maxlength="80"/>
+      <view class="entry-label">所属机构</view><input class="entry-field" data-field="applicantOrganization" value="{{applicantOrganization}}" bindinput="onApplicantField" maxlength="120"/>
+      <view class="muted entry-privacy">申请资料仅供总部核实账号，不会作为公开相册内容。</view>
+      <checkbox-group bindchange="onApplicantAgree" class="entry-consent"><label><checkbox value="agree" checked="{{applicantAgreed}}"/>我同意按隐私保护指引用于账号申请核实</label></checkbox-group>
+      <button class="entry-privacy-link" bindtap="onPrivacy">查看用户隐私保护指引</button>
+      <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onApply">提交申请</button>
+    </view>
   </view>
   <view class="notice entry-notice">客户从分享卡片直接进入对应相册，不经过本登录页；符合交付格式的照片和视频可免登录保存。</view>
 </view>

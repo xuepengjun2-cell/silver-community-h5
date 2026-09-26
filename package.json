@@ -5,10 +5,11 @@
   "description": "同城银发社群主理人活动展示 H5 与后台管理原型",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check server/activity-hub-sso.js && node --check server/miniapp-media.js && node --check server/video-delivery-io.js && node --check server/sop-pdf.js && node --check public/app.js && node --check public/admin.js",
+    "check": "node --check server.js && node --check server/activity-hub-sso.js && node --check server/wechat-identity.js && node --check server/miniapp-media.js && node --check server/video-delivery-io.js && node --check server/sop-pdf.js && node --check public/app.js && node --check public/admin.js && node --check miniapp/pages/entry/index.js && node --check miniapp/utils/auth.js",
     "test:sso": "node tests/activity-hub-sso.js",
     "test:media": "node --test tests/miniapp-media.js tests/video-delivery-io.js tests/sop-pdf.js tests/project-upload-panel.test.js miniapp/test/*.test.js",
-    "test:concurrency": "node --test tests/concurrency/concurrent-writes.test.js"
+    "test:concurrency": "node --test tests/concurrency/concurrent-writes.test.js",
+    "test:identity": "node --test tests/wechat-identity.test.js tests/wechat-identity-api.test.js miniapp/test/wechat-auth.test.js"
   },
   "engines": {
     "node": ">=18"

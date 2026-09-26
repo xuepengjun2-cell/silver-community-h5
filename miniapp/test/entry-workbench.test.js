@@ -24,6 +24,40 @@ test("普通启动直接显示登录表单，旧分享编号仍直接进匿名�
   delete global.wx;
 });
 
+test("微信新用户申请须先确认隐私指引，不会提前发起申请请求", async () => {
+  let requests = 0;
+  global.wx = { request() { requests++; } };
+  const entry = pageAt("../pages/entry/index.js");
+  await entry.onApply();
+  assert.match(entry.data.error, /隐私保护指引/);
+  assert.equal(requests, 0);
+  delete global.wx;
+});
+
+test("旧会话过期后自动尝试微信登录", async () => {
+  const redirects = [];
+  const storage = new Map([[SESSION_KEY, { token: "expired", user: { role: "viewer" } }]]);
+  global.wx = {
+    getStorageSync: key => storage.get(key),
+    setStorageSync: (key, value) => storage.set(key, value),
+    removeStorageSync: key => storage.delete(key),
+    login: options => options.success({ code: "fresh-code" }),
+    redirectTo: value => redirects.push(value.url),
+    request(options) {
+      if (options.url.endsWith("/me")) return options.success({ statusCode: 401, data: { error: "登录已过期" } });
+      if (options.url.endsWith("/auth/wechat/session")) return options.success({
+        statusCode: 200, data: { token: "fresh-token", user: { role: "viewer" } }
+      });
+      throw new Error(`unexpected request: ${options.url}`);
+    }
+  };
+  const entry = pageAt("../pages/entry/index.js");
+  await entry.onLoad({});
+  assert.equal(storage.get(SESSION_KEY).token, "fresh-token");
+  assert.deepEqual(redirects, ["/pages/workbench/index"]);
+  delete global.wx;
+});
+
 test("只读账号可以看到全部活动相册，但没有新建和管理入口", async () => {
   const calls = [];
   const storage = new Map([[SESSION_KEY, { token: "test-token", user: { role: "viewer" } }]]);

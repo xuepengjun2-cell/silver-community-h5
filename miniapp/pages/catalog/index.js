@@ -43,7 +43,7 @@ Page({
     loading: true, error: "", item: null, type: "", cover: "", media: [],
     mediaTabs: [], activeTab: "", shownMedia: [], hasMore: false, playingIndex: -1,
     highlights: [], schedule: [], planSections: [], facts: [], activityImages: [], activityVideos: [],
-    loggedIn: false, pdfBusy: false, savingIndex: -1, downloadProgress: 0
+    loggedIn: false, canDownloadSop: false, pdfBusy: false, savingIndex: -1, downloadProgress: 0
   },
   onLoad(options) {
     try { catalogPath(options.type, options.id); }
@@ -52,7 +52,10 @@ Page({
     this.id = options.id;
     this.load();
   },
-  onShow() { this.setData({ loggedIn: Boolean(getSession(wx)) }); },
+  onShow() {
+    const session = getSession(wx);
+    this.setData({ loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false) });
+  },
   async load() {
     this.setData({ loading: true, error: "" });
     try {
@@ -82,7 +85,7 @@ Page({
         ],
         activityImages: media.filter(entry => entry.type === "image"),
         activityVideos: media.filter(entry => entry.type === "video"),
-        playingIndex: -1, loggedIn: Boolean(session)
+        playingIndex: -1, loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false)
       });
     } catch (error) { this.setData({ loading: false, error: error.message || "加载失败" }); }
   },
@@ -129,6 +132,9 @@ Page({
   },
   async onSopPdf() {
     if (this.data.pdfBusy || !this.data.item) return;
+    if (this.data.loggedIn && !this.data.canDownloadSop) {
+      return wx.showModal({ title: "无下载权限", content: "请联系总部开通 SOP 下载权限。", showCancel: false });
+    }
     this.setData({ pdfBusy: true, downloadProgress: 0 });
     try {
       await openSopPdf(wx, this.id, progress => this.setData({ downloadProgress: progress }));

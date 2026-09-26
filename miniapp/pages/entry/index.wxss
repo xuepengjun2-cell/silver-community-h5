@@ -7,3 +7,9 @@
 .entry-open { margin-top: 36rpx; }
 .entry-error { color: #b42318; font-size: 28rpx; margin-top: 18rpx; }
 .entry-notice { margin-top: 36rpx; }
+.entry-state { padding: 22rpx; margin-bottom: 26rpx; border-radius: 14rpx; background: #fff3e8; color: #7b3e28; font-size: 28rpx; line-height: 1.5; }
+.entry-secondary { width: 100%; margin-top: 20rpx; padding: 12rpx; background: #fff; color: #b94f28; border: 1rpx solid #d8b6a5; border-radius: 14rpx; font-size: 29rpx; }
+.entry-apply { margin-top: 22rpx; }
+.entry-privacy { margin-top: 20rpx; font-size: 25rpx; }
+.entry-consent { display: block; margin-top: 18rpx; font-size: 26rpx; line-height: 1.5; }
+.entry-privacy-link { margin: 8rpx 0 0; padding: 0; text-align: left; color: #a54824; background: none; font-size: 25rpx; }
