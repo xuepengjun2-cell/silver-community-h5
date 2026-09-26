@@ -24,7 +24,7 @@ AppID：`wx58bef83060b92027`。这是与银发社群 H5 共用数据和主办方
 ## 导入与联调
 
 1. 用微信开发者工具打开目录 `miniapp`，或同步到已经导入的“银发活动相册小程序”目录。同步时保留开发者工具生成的 `project.private.config.json`；`project.config.json` 需带上本仓库的 `enhance`、`minified` 和 `packOptions.ignore`（不把 `test/` 与说明文档打进代码包）。
-2. AppID 后台配置：`request` 和 `uploadFile` 合法域名 `https://apip2.kkhuacai08.cn`；`downloadFile` 同时配置 `https://apip2.kkhuacai08.cn`（鉴权 PDF 文件）和 `https://proj2.likeduoduiyi.cn`（案例/相册素材）。媒体图片/视频域名继续使用 `https://proj2.likeduoduiyi.cn`；按后台实际分类核验，不长期关闭域名校验。
+2. AppID 后台配置：`request` 和 `uploadFile` 合法域名 `https://apip2.kkhuacai08.cn`；`downloadFile` 域名 `https://proj2.likeduoduiyi.cn`（案例/相册素材）。小体积鉴权 PDF 由现有 `request` 域名获取二进制并写入小程序本地，不需额外将 API 域名加入 `downloadFile`。媒体图片/视频域名继续使用 `https://proj2.likeduoduiyi.cn`；按后台实际分类核验，不长期关闭域名校验。
 3. 后端须按 GitHub 版本化发布到已核对的 `silver-new` PM2 `silver`，只替换明确的代码清单，保留数据、TOS、运行配置及可回滚版本。小程序界面先运行、但后端未更新时，新上传会提示“上传服务尚未上线”；不应把编译通过误认为上传能力已经上线。
 4. 联调：H5 账号登录 → 新建相册 → 各选一张 iPhone 照片、一个 MOV 和一个大 MP4 → 等转码任务为 `ready` → 分享卡片 → iPhone 微信保存照片/视频 → 安卓/鸿蒙回归。再测活动库允许/禁止下载的活动 PDF、案例照片/MP4/文档的登录鉴权和保存、竖屏视频全屏、游客登录提示，并检查下载审计。用真机确认肖像、音画同步、清晰度；超长视频走分段策略。
 5. 正式版还需要账号持有人核对个人主体服务类目、备案、隐私保护指引、审核要求及上传域名。个人认证不能保证这类业务自动过审，不能用不相符类目试审。

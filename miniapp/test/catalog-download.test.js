@@ -12,21 +12,29 @@ function fakeWx(options = {}) {
   const calls = [];
   const wxApi = {
     calls,
+    env: { USER_DATA_PATH: "wxfile://user" },
     getStorageSync() { return options.guest ? null : { token: "test-token", user: { role: "member" } }; },
     request(request) {
-      calls.push(["authorize", request.url, request.header]);
+      calls.push(["authorize", request.url, request.header, request.responseType]);
+      if (request.url.endsWith(".pdf")) {
+        const data = Uint8Array.from(Buffer.from("%PDF-1.3\nexample")).buffer;
+        return request.success({ statusCode: options.pdfDenied ? 403 : 200, data });
+      }
       request.success({ statusCode: options.denied ? 401 : 200, data: options.denied ? { error: "请先登录" } : { url: options.resultUrl || image.url } });
     },
     downloadFile(request) {
       calls.push(["download", request.url, request.header]);
-      process.nextTick(() => request.success({ statusCode: options.pdfDenied ? 403 : 200, tempFilePath: "wxfile://temporary" }));
+      process.nextTick(() => request.success({ statusCode: 200, tempFilePath: "wxfile://temporary" }));
       return { onProgressUpdate(callback) { callback({ progress: 45 }); } };
     },
     saveFile(request) { calls.push(["save-file", request.tempFilePath]); request.success({ savedFilePath: "wxfile://saved" }); },
     openDocument(request) { calls.push(["open-document", request.filePath, request.fileType, request.showMenu]); request.success({}); },
     saveImageToPhotosAlbum(request) { calls.push(["save-image", request.filePath]); request.success({}); },
     saveVideoToPhotosAlbum(request) { calls.push(["save-video", request.filePath]); request.success({}); },
-    getFileSystemManager() { return { unlink(request) { calls.push(["unlink", request.filePath]); } }; }
+    getFileSystemManager() { return {
+      unlink(request) { calls.push(["unlink", request.filePath]); },
+      writeFile(request) { calls.push(["write-pdf", request.filePath, request.data.byteLength]); request.success({}); }
+    }; }
   };
   return wxApi;
 }
@@ -35,12 +43,13 @@ test("SOP 通过登录态下载真正 PDF，保存后打开带菜单的文档", 
   const wxApi = fakeWx();
   let progress = 0;
   await openSopPdf(wxApi, "act_001", value => { progress = value; });
-  assert.equal(progress, 45);
+  assert.equal(progress, 100);
   assert.match(wxApi.calls[0][1], /\/activities\/act_001\/download\.pdf$/);
   assert.equal(wxApi.calls[0][2].Authorization, "Bearer test-token");
+  assert.equal(wxApi.calls[0][3], "arraybuffer");
   assert.deepEqual(wxApi.calls.slice(1), [
-    ["save-file", "wxfile://temporary"],
-    ["open-document", "wxfile://saved", "pdf", true]
+    ["write-pdf", "wxfile://user/sop-act_001.pdf", 16],
+    ["open-document", "wxfile://user/sop-act_001.pdf", "pdf", true]
   ]);
 });
 
@@ -50,7 +59,7 @@ test("未登录和未开放 SOP 下载时均不保存文件", async () => {
   assert.equal(guest.calls.length, 0);
   const denied = fakeWx({ pdfDenied: true });
   await assert.rejects(openSopPdf(denied, "act_001"), /暂未开放/);
-  assert.equal(denied.calls.some(call => call[0] === "save-file"), false);
+  assert.equal(denied.calls.some(call => call[0] === "write-pdf"), false);
 });
 
 test("精彩案例照片和视频先鉴权记账，再保存到系统相册", async () => {
