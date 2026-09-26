@@ -17,3 +17,4 @@
 .tile-details { padding: 22rpx; min-width: 0; }
 .tile-name { font-size: 30rpx; overflow-wrap: anywhere; }
 .remove { color: #ad321d; background: transparent; font-size: 27rpx; margin: 18rpx 0 0; padding: 0; text-align: left; }
+.delete-project { margin: 40rpx 0 20rpx; border-color: #c83e31; color: #b23226; }

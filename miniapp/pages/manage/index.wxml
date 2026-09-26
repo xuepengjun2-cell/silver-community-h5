@@ -2,20 +2,22 @@
   <view wx:if="{{loading}}" class="state">正在读取活动…</view>
   <view wx:elif="{{error}}" class="state">{{error}}<button class="button button-secondary" bindtap="load">重试</button></view>
   <block wx:else>
-    <view class="eyebrow">活动相册 · 主办方管理</view>
+    <view class="eyebrow">活动相册 · {{project.canManage ? '可管理' : '只读查看'}}</view>
     <view class="title">{{project.title}}</view>
     <view class="muted meta">{{project.dateLabel || '日期待填'}} · {{project.city || '地区待填'}}</view>
     <view class="card summary"><view>照片 <strong>{{photos}}</strong></view><view>视频 <strong>{{videos}}</strong></view><view>状态 <strong>{{project.status === 'published' && project.shareEnabled ? '可分享' : '未开放'}}</strong></view></view>
-    <view class="actions">
+    <view wx:if="{{project.canManage}}" class="actions">
       <button class="button button-primary" bindtap="onPhoto" disabled="{{busy}}">＋ 上传照片</button>
       <button class="button button-secondary" bindtap="onVideo" disabled="{{busy}}">＋ 上传视频</button>
     </view>
     <view wx:if="{{progress}}" class="notice progress">{{progress}}</view>
-    <view class="muted hint">上传时自动压缩；视频须等后台生成合规 MP4 后才进入客户相册。新上传的视频不留云端原片。历史素材不受影响。</view>
+    <view wx:if="{{project.canManage}}" class="muted hint">上传时自动压缩；视频须等后台生成合规 MP4 后才进入客户相册。新上传的视频不留云端原片。历史素材不受影响。</view>
+    <view wx:else class="notice">当前账号只能查看。只有相册创建者和总部管理员可上传、修改或删除。</view>
     <button wx:if="{{project.status === 'published' && project.shareEnabled}}" class="button button-primary share" open-type="share">分享相册给客户</button>
     <button wx:if="{{project.status === 'published' && project.shareEnabled}}" class="button button-secondary view" bindtap="onView">预览客户相册</button>
-    <view class="section-title" bindtap="onEdit">活动资料 {{editing ? '收起' : '· 编辑 ›'}}</view>
-    <view wx:if="{{editing}}" class="card edit">
+    <view class="section-title" bindtap="onEdit">活动资料 <text wx:if="{{project.canManage}}">{{editing ? '收起' : '· 编辑 ›'}}</text></view>
+    <view wx:if="{{!project.canManage && project.description}}" class="card edit">{{project.description}}</view>
+    <view wx:if="{{editing && project.canManage}}" class="card edit">
       <input class="field" data-field="title" value="{{title}}" bindinput="onField" placeholder="活动名称"/>
       <picker mode="date" bindchange="onDate"><view class="field picker">{{dateLabel || '选择日期'}}</view></picker>
       <input class="field" data-field="city" value="{{city}}" bindinput="onField" placeholder="城市/地区"/>
@@ -25,9 +27,12 @@
     <view class="section-title">现场素材 · {{tiles.length}}</view>
     <view wx:if="{{!tiles.length}}" class="state">还没有素材，选择照片或视频上传。</view>
     <view wx:for="{{tiles}}" wx:key="index" class="card tile">
-      <image wx:if="{{item.type === 'image' || item.poster}}" class="tile-cover" src="{{item.poster || item.url}}" mode="aspectFill" data-index="{{item.index}}" bindtap="onPreview"/>
+      <image wx:if="{{item.type === 'image'}}" class="tile-cover" src="{{item.url}}" mode="aspectFill" data-index="{{item.index}}" bindtap="onPreview"/>
+      <video wx:elif="{{playingIndex === item.index}}" class="tile-cover" src="{{item.url}}" poster="{{item.poster}}" controls="true" autoplay="true" direction="0" object-fit="contain"/>
+      <image wx:elif="{{item.poster}}" class="tile-cover" src="{{item.poster}}" mode="aspectFill" data-index="{{item.index}}" bindtap="onPreview"/>
       <view wx:else class="tile-video" data-index="{{item.index}}" bindtap="onPreview">▶ 视频</view>
-      <view class="tile-details"><view class="tile-name">{{item.label}}</view><view class="muted">{{item.ready ? '可保存' : '需处理后才能保存'}}</view><button class="remove" data-index="{{item.index}}" bindtap="onDelete">从相册移除</button></view>
+      <view class="tile-details"><view class="tile-name">{{item.label}}</view><view class="muted">{{item.ready ? '可保存' : '需处理后才能保存'}}</view><button wx:if="{{project.canManage}}" class="remove" data-index="{{item.index}}" bindtap="onDelete">从相册移除</button></view>
     </view>
+    <button wx:if="{{project.canManage}}" class="button button-secondary delete-project" disabled="{{busy}}" bindtap="onProjectDelete">删除整个活动相册</button>
   </block>
 </view>

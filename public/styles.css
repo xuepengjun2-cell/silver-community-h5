@@ -2588,6 +2588,7 @@ img { display: block; }
 .project-list-actions .btn,
 .project-list-actions a { width: 100%; min-width: 0; justify-content: center; text-align: center; white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
 .project-list-actions [data-project-share] { grid-column: 1 / -1; }
+.project-list-actions [data-project-delete] { grid-column: 1 / -1; }
 .project-empty-state { border: 1px dashed var(--line); border-radius: 10px; padding: 40px 20px; color: var(--muted); text-align: center; }
 .project-login-empty { min-height: 58vh; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; }
 .project-login-empty h1 { margin: 0; color: var(--ink); }

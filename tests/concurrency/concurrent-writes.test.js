@@ -184,6 +184,79 @@ test("相册在上传期间被删除：返回 404 并清掉刚上传的对象", 
   assert.deepEqual(fs.existsSync(tosDir) ? fs.readdirSync(tosDir) : [], []);
 }));
 
+test("相册全员可查看，只有创建者与总部管理员可修改、上传及删除", () => withServer({}, async ctx => {
+  const admin = await ctx.login();
+  const createUser = async (username, role) => {
+    const created = await ctx.api("/admin/users", { method: "POST", token: admin,
+      body: { username, name: username, password: "local-test-password", role, canDownload: true } });
+    assert.equal(created.status, 201);
+    const loggedIn = await ctx.api("/login", { method: "POST", body: { username, password: "local-test-password" } });
+    assert.equal(loggedIn.status, 200);
+    return { id: created.data.user.id, token: loggedIn.data.token };
+  };
+  const owner = await createUser("album-owner", "operator");
+  const colleague = await createUser("album-colleague", "operator");
+  const viewer = await createUser("album-viewer", "viewer");
+  const ownerAlbum = await createAlbum(ctx, owner.token, "创建者相册");
+  await createAlbum(ctx, colleague.token, "同事相册");
+  await createAlbum(ctx, admin, "总部相册");
+
+  const colleagueList = await ctx.api("/my/activity-projects", { token: colleague.token });
+  assert.equal(colleagueList.status, 200);
+  assert.equal(colleagueList.data.projects.length, 3);
+  assert.equal(colleagueList.data.projects.find(p => p.id === ownerAlbum).canManage, false);
+  assert.equal(colleagueList.data.projects.some(p => "ownerId" in p), false);
+  assert.equal(colleagueList.data.canCreate, true);
+  const viewerList = await ctx.api("/my/activity-projects", { token: viewer.token });
+  assert.equal(viewerList.status, 200);
+  assert.equal(viewerList.data.projects.length, 3);
+  assert.equal(viewerList.data.projects.every(p => !p.canManage && !("ownerName" in p)), true);
+  assert.equal(viewerList.data.canCreate, false);
+  const viewerDetail = await ctx.api(`/my/activity-projects/${ownerAlbum}`, { token: viewer.token });
+  assert.equal(viewerDetail.status, 200);
+  assert.equal(viewerDetail.data.project.canManage, false);
+  assert.equal("auditSummary" in viewerDetail.data.project, false);
+  assert.equal((await ctx.api("/my/activity-projects", { method: "POST", token: viewer.token, body: { title: "越权新建" } })).status, 403);
+
+  const denied = [
+    ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "PATCH", token: colleague.token, body: { title: "越权修改" } }),
+    ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "DELETE", token: colleague.token }),
+    ctx.api(`/my/activity-projects/${ownerAlbum}/media/init`, { method: "POST", token: colleague.token, body: { type: "video", ext: "mp4", size: 100 } }),
+    ctx.api(`/my/activity-projects/${ownerAlbum}/miniapp-media?type=image`, { method: "POST", token: colleague.token }),
+    ctx.api(`/my/activity-projects/${ownerAlbum}/media/0`, { method: "DELETE", token: colleague.token }),
+    ctx.api(`/my/activity-projects/${ownerAlbum}/promote-case`, { method: "POST", token: colleague.token })
+  ];
+  assert.deepEqual((await Promise.all(denied)).map(result => result.status), Array(denied.length).fill(403));
+  assert.equal((await ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "PATCH", token: owner.token, body: { title: "创建者修改" } })).status, 200);
+  const adminDetail = await ctx.api(`/my/activity-projects/${ownerAlbum}`, { token: admin });
+  assert.equal(adminDetail.data.project.canManage, true);
+  assert.equal(adminDetail.data.project.ownerName, "album-owner");
+  assert.equal((await ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "PATCH", token: admin, body: { title: "总部修改" } })).status, 200);
+  assert.equal((await ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "DELETE", token: owner.token })).status, 200);
+  assert.equal((await ctx.api(`/my/activity-projects/${ownerAlbum}`, { token: viewer.token })).status, 404);
+}));
+
+test("上传过程中撤销创建者管理角色，不发布照片并清理刚上传的对象", () => withServer({ tosDelay: 800 }, async ctx => {
+  const admin = await ctx.login();
+  const created = await ctx.api("/admin/users", { method: "POST", token: admin,
+    body: { username: "upload-revoked", name: "upload-revoked", password: "local-test-password", role: "operator" } });
+  assert.equal(created.status, 201);
+  const token = (await ctx.api("/login", { method: "POST",
+    body: { username: "upload-revoked", password: "local-test-password" } })).data.token;
+  const album = await createAlbum(ctx, token, "待撤权相册");
+  const upload = ctx.api(`/my/activity-projects/${album}/media?type=image&ext=jpg`, {
+    method: "POST", token, raw: crypto.randomBytes(4096)
+  });
+  await sleep(250);
+  const demoted = await ctx.api(`/admin/users/${created.data.user.id}`, { method: "PUT", token: admin,
+    body: { role: "viewer", status: "active" } });
+  assert.equal(demoted.status, 200);
+  assert.equal((await upload).status, 403);
+  assert.equal((await ctx.api(`/my/activity-projects/${album}`, { token })).data.project.media.length, 0);
+  const tosDir = path.join(ctx.dir, "tos");
+  assert.deepEqual(fs.existsSync(tosDir) ? fs.readdirSync(tosDir) : [], []);
+}));
+
 test("视频号采集器直传登记期间删除其他案例，不覆盖相邻案例", async () => {
   const doc = (id, title) => ({ id, status: "published", category: "", sort_order: 1, created_at: "2026-09-01T00:00:00.000Z",
     doc: JSON.stringify({ id, title, status: "published", media: [], createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z" }) });

@@ -7,7 +7,7 @@ Page({
   data: {
     loading: true, error: "", project: null, photos: 0, videos: 0, tiles: [],
     editing: false, title: "", dateLabel: "", city: "", description: "",
-    busy: false, progress: "", jobId: ""
+    busy: false, progress: "", jobId: "", playingIndex: -1
   },
   onLoad(options) {
     const parsed = parseAlbumOptions(options);
@@ -34,6 +34,7 @@ Page({
     this.setData({
       project, loading: false, title: project.title, city: project.city || "",
       dateLabel: project.dateLabel || "", description: project.description || "",
+      playingIndex: -1,
       photos: media.filter(m => m.type === "image").length,
       videos: media.filter(m => m.type === "video").length,
       tiles: media.map((m, index) => ({
@@ -43,10 +44,11 @@ Page({
       }))
     });
   },
-  onEdit() { this.setData({ editing: !this.data.editing }); },
+  onEdit() { if (this.data.project && this.data.project.canManage) this.setData({ editing: !this.data.editing }); },
   onField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
   onDate(event) { this.setData({ dateLabel: event.detail.value }); },
   async onSave() {
+    if (!this.data.project || !this.data.project.canManage) return;
     const session = getSession(wx);
     if (!session) return wx.redirectTo({ url: "/pages/login/index" });
     this.setData({ busy: true });
@@ -61,7 +63,7 @@ Page({
     finally { this.setData({ busy: false }); }
   },
   async choose(type) {
-    if (this.data.busy) return;
+    if (this.data.busy || !this.data.project || !this.data.project.canManage) return;
     try {
       const result = await new Promise((resolve, reject) => wx.chooseMedia({
         count: type === "image" ? 9 : 1,
@@ -113,11 +115,16 @@ Page({
   },
   onView() { wx.navigateTo({ url: albumPath(this.projectId) }); },
   onPreview(event) {
-    if (this.data.project.shareEnabled && this.data.project.status === "published") {
-      wx.navigateTo({ url: albumPath(this.projectId, Number(event.currentTarget.dataset.index)) });
-    }
+    const index = Number(event.currentTarget.dataset.index);
+    const media = (this.data.project.media || [])[index];
+    if (!media) return;
+    if (media.type === "image") {
+      const urls = this.data.project.media.filter(item => item.type === "image").map(item => item.url);
+      wx.previewImage({ current: media.url, urls });
+    } else if (media.type === "video") this.setData({ playingIndex: index });
   },
   onDelete(event) {
+    if (!this.data.project || !this.data.project.canManage) return;
     const index = Number(event.currentTarget.dataset.index);
     wx.showModal({ title: "从相册移除素材？", content: "移除后客户将看不到它；不会删除云端历史原件。", success: async result => {
       if (!result.confirm) return;
@@ -126,6 +133,20 @@ Page({
         const { project } = await api(wx, `/my/activity-projects/${this.projectId}/media/${index}`, { method: "DELETE", token: session.token });
         this.showProject(project);
       } catch (error) { wx.showModal({ title: "移除失败", content: error.message, showCancel: false }); }
+    } });
+  },
+  onProjectDelete() {
+    if (!this.data.project || !this.data.project.canManage || this.data.busy) return;
+    wx.showModal({ title: "删除整个活动相册？", content: "确认后相册分享链接将失效；云端历史文件暂不删除。", confirmText: "删除相册", confirmColor: "#c83e31", success: async result => {
+      if (!result.confirm) return;
+      const session = getSession(wx);
+      if (!session) return wx.redirectTo({ url: "/pages/login/index" });
+      this.setData({ busy: true });
+      try {
+        await api(wx, `/my/activity-projects/${this.projectId}`, { method: "DELETE", token: session.token });
+        wx.redirectTo({ url: "/pages/workbench/index" });
+      } catch (error) { wx.showModal({ title: "删除失败", content: error.message, showCancel: false }); }
+      finally { this.setData({ busy: false }); }
     } });
   },
   onShareAppMessage() {

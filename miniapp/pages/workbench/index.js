@@ -1,10 +1,10 @@
-const { api, getSession, validateSession, canManageProjects, logout, clearSession } = require("../../utils/auth");
+const { api, getSession, validateSession, logout, clearSession } = require("../../utils/auth");
 const { albumPath } = require("../../utils/album");
 const { cardView, catalogPath, sharePayload, filterCatalogCards } = require("../../utils/catalog");
 
 Page({
   data: {
-    loading: true, busy: false, error: "", user: null, tab: "projects", canManageProjects: false,
+    loading: true, busy: false, error: "", user: null, tab: "projects", canCreateProjects: false,
     projects: [], activities: [], visibleActivities: [], activityQuery: "", cases: [], creating: false,
     title: "", dateLabel: "", city: "", description: ""
   },
@@ -14,17 +14,16 @@ Page({
     try {
       const session = await validateSession(wx);
       if (!session) return wx.redirectTo({ url: "/pages/entry/index" });
-      const canManage = canManageProjects(session.user);
-      this.setData({ user: session.user, canManageProjects: canManage,
-        tab: canManage || this.data.tab !== "projects" ? this.data.tab : "activities" });
+      this.setData({ user: session.user });
       const [mine, activities, cases] = await Promise.all([
-        canManage ? api(wx, "/my/activity-projects", { token: session.token }) : Promise.resolve({ projects: [] }),
+        api(wx, "/my/activity-projects", { token: session.token }),
         api(wx, "/public/activities", { token: session.token }),
         api(wx, "/public/cases", { token: session.token })
       ]);
       const activityCards = (activities.activities || []).map(item => cardView(item, "activities"));
       this.setData({
         projects: mine.projects || [],
+        canCreateProjects: mine.canCreate === true,
         activities: activityCards,
         visibleActivities: filterCatalogCards(activityCards, this.data.activityQuery),
         cases: (cases.cases || []).map(item => cardView(item, "cases")),
@@ -41,7 +40,6 @@ Page({
   onPullDownRefresh() { this.load().finally(() => wx.stopPullDownRefresh()); },
   onTab(event) {
     const tab = event.currentTarget.dataset.tab;
-    if (tab === "projects" && !this.data.canManageProjects) return;
     this.setData({ tab });
   },
   onActivitySearch(event) {
@@ -51,12 +49,12 @@ Page({
   onActivityClear() {
     this.setData({ activityQuery: "", visibleActivities: this.data.activities });
   },
-  onCreateOpen() { this.setData({ creating: true }); },
+  onCreateOpen() { if (this.data.canCreateProjects) this.setData({ creating: true }); },
   onCreateClose() { this.setData({ creating: false }); },
   onField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
   onDate(event) { this.setData({ dateLabel: event.detail.value }); },
   async onCreate() {
-    if (!this.data.canManageProjects) return;
+    if (!this.data.canCreateProjects) return;
     if (this.data.busy) return;
     const title = this.data.title.trim();
     if (!title) return wx.showToast({ title: "请填写活动名称", icon: "none" });
@@ -74,10 +72,10 @@ Page({
     finally { this.setData({ busy: false }); }
   },
   onManage(event) {
-    if (this.data.canManageProjects) wx.navigateTo({ url: `/pages/manage/index?id=${event.currentTarget.dataset.id}` });
+    wx.navigateTo({ url: `/pages/manage/index?id=${event.currentTarget.dataset.id}` });
   },
   onView(event) {
-    if (this.data.canManageProjects) wx.navigateTo({ url: albumPath(event.currentTarget.dataset.id) });
+    wx.navigateTo({ url: albumPath(event.currentTarget.dataset.id) });
   },
   onCatalog(event) {
     const type = event.currentTarget.dataset.type;

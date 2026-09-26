@@ -30,6 +30,7 @@ const state = {
   activeTab: "intro",
   selectedActivityMedia: null,
   projects: [],
+  canCreateProjects: false,
   currentProject: null,
   projectView: "",
   projectCreateOpen: false,
@@ -1683,10 +1684,12 @@ async function uploadProjectMediaFile(projectId, file, onProgress) {
 }
 
 function projectShareButton(project, mediaIndex, className = "btn secondary small") {
+  if (project.status !== "published" || project.shareEnabled === false) return "";
   return `<button class="${className}" type="button" data-project-share="${esc(project.id)}" ${mediaIndex === undefined ? "" : `data-project-media-share="${mediaIndex}"`}>📤 分享</button>`;
 }
 
 function projectDownloadButton(project, index) {
+  if (project.status !== "published" || project.shareEnabled === false) return "";
   const type = project.media[index]?.type;
   if (type === "image" && isMobileProjectDownload()) {
     return "";
@@ -1814,7 +1817,7 @@ function bindProjectDownloadEvents(project) {
   }));
 }
 
-function projectMediaCardHtml(project, m, manager = false) {
+function projectMediaCardHtml(project, m, manager = false, canDelete = manager) {
   if (!["image", "video"].includes(m.type)) return "";
   const mediaName = projectMediaDisplayName(m, m.index);
   if (!manager) {
@@ -1840,11 +1843,11 @@ function projectMediaCardHtml(project, m, manager = false) {
       <div class="project-media-head"><strong>${esc(projectMediaLabel(m.type))}</strong><span>#${m.index + 1}</span></div>
       <p class="project-media-filename" title="${esc(mediaName)}">${esc(mediaName)}</p>
       ${m.caption ? `<p class="project-media-caption">备注：${esc(m.caption)}</p>` : ""}
-      ${manager ? `<div class="project-media-audit-counts"><span>查看 ${projectMediaAuditCount(project, m.index, "view")}</span><span>下载 ${projectMediaAuditCount(project, m.index, "download")}</span></div>` : ""}
+      ${canDelete ? `<div class="project-media-audit-counts"><span>查看 ${projectMediaAuditCount(project, m.index, "view")}</span><span>下载 ${projectMediaAuditCount(project, m.index, "download")}</span></div>` : ""}
       <div class="project-media-actions">
         ${projectShareButton(project, m.index)}
         ${projectDownloadButton(project, m.index)}
-        ${manager ? `<button class="btn ghost small danger" type="button" data-project-delete-media="${m.index}">删除</button>` : ""}
+        ${canDelete ? `<button class="btn ghost small danger" type="button" data-project-delete-media="${m.index}">删除</button>` : ""}
       </div>
     </div>
   </article>`;
@@ -1910,6 +1913,7 @@ async function loadProjectsView() {
   try {
     const data = await api("/api/my/activity-projects");
     state.projects = data.projects || [];
+    state.canCreateProjects = data.canCreate === true;
     renderProjectsView();
   } catch (err) {
     app.innerHTML = `<div class="error">${esc(err.message)}</div>`;
@@ -1922,17 +1926,17 @@ function renderProjectsView() {
   state.projectMetaEditOpen = false;
   const projects = state.projects || [];
   app.className = `app-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
-  app.innerHTML = `${projectHeader("我的活动")}
+  app.innerHTML = `${projectHeader("活动相册")}
     <section class="project-hub-head">
-      <div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付工作台</div><h1>我的活动相册</h1><p>每场活动单独建一个相册，上传现场照片和视频后直接发给客户。</p></div>
-      <button class="btn" id="openProjectCreateBtn" type="button">＋ 新建活动项目</button>
+      <div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付工作台</div><h1>活动相册</h1><p>所有登录账号可查看；只有创建者和总部管理员能修改、上传或删除相册。</p></div>
+      ${state.canCreateProjects ? `<button class="btn" id="openProjectCreateBtn" type="button">＋ 新建活动项目</button>` : ""}
     </section>
-    <section class="project-list-section"><div class="section-label"><div class="label-bar"></div><div><h2>活动项目</h2><p>${projects.length ? `已创建 ${projects.length} 场活动` : "还没有活动项目"}</p></div></div>
+    <section class="project-list-section"><div class="section-label"><div class="label-bar"></div><div><h2>活动项目</h2><p>${projects.length ? `共 ${projects.length} 场活动` : "还没有活动项目"}</p></div></div>
       ${projects.length ? `<div class="project-list-grid">${projects.map(p => {
         const g = projectMediaGroups(p);
-        return `<article class="project-list-card"><div class="project-list-cover">${p.cover ? `<img src="${esc(p.cover)}" alt="${esc(p.title)}">` : `<div class="project-cover-empty">▣</div>`}<span>${p.status === "published" ? "可分享" : "已归档"}</span></div><div class="project-list-body"><h3>${esc(p.title)}</h3><p>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写时间地点")}</p><div class="project-list-stats">${g.images.length} 图片 · ${g.videos.length} 视频</div><div class="project-list-actions"><button class="btn small" type="button" data-project-open="${esc(p.id)}">管理素材</button>${p.status === "published" ? `<a class="btn secondary small" href="${esc(projectShareHref(p.id))}" target="_blank" rel="noreferrer">打开客户相册</a>${projectShareButton(p)}` : ""}</div></div></article>`;
-      }).join("")}</div>` : `<div class="project-empty-state">创建第一场活动，把微信群里的素材迁移到平台。</div>`}
-    </section>${state.projectCreateOpen ? `<div class="project-create-modal-mask" data-project-create-overlay><section class="project-create-modal" role="dialog" aria-modal="true" aria-labelledby="projectCreateTitle"><button class="project-create-close" type="button" data-close-project-create aria-label="关闭">×</button><div class="eyebrow"><span class="eyebrow-dot"></span>新建活动项目</div><h2 id="projectCreateTitle">创建活动相册</h2><p>先填写活动信息，创建后进入相册页面上传照片和视频。</p><form id="projectCreateForm" class="project-create-form"><label><span>活动名称</span><input class="input" name="title" required placeholder="例如：8月9日山西社群旗袍美拍"></label><label><span>关联 SOP</span><select class="select" name="activityId"><option value="">暂不关联</option>${(state.activities || []).map(a => `<option value="${esc(a.id)}">${esc(a.title)}</option>`).join("")}</select></label><label><span>活动日期</span><input class="input" name="dateLabel" type="date"></label><label><span>城市/地区</span><input class="input" name="city" placeholder="例如：太原"></label><label class="project-create-wide"><span>给客户看的活动说明</span><textarea class="input" name="description" rows="3" placeholder="活动回顾、感谢语或交付提示"></textarea></label><div class="project-create-modal-actions"><button class="btn secondary" type="button" data-close-project-create>取消</button><button class="btn" type="submit">创建并进入上传</button></div></form></section></div>` : ""}${loginModal()}`;
+        return `<article class="project-list-card"><div class="project-list-cover">${p.cover ? `<img src="${esc(p.cover)}" alt="${esc(p.title)}">` : `<div class="project-cover-empty">▣</div>`}<span>${p.status === "published" && p.shareEnabled ? "可分享" : "未开放分享"}</span></div><div class="project-list-body"><h3>${esc(p.title)}</h3><p>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写时间地点")}${p.ownerName ? ` · 创建者：${esc(p.ownerName)}` : ""}</p><div class="project-list-stats">${g.images.length} 图片 · ${g.videos.length} 视频 · ${p.canManage ? "可管理" : "只读"}</div><div class="project-list-actions"><button class="btn small" type="button" data-project-open="${esc(p.id)}">${p.canManage ? "管理素材" : "查看相册"}</button>${p.status === "published" && p.shareEnabled ? `<a class="btn secondary small" href="${esc(projectShareHref(p.id))}" target="_blank" rel="noreferrer">打开客户相册</a>${projectShareButton(p)}` : ""}${p.canManage ? `<button class="btn ghost small danger" type="button" data-project-delete="${esc(p.id)}">删除相册</button>` : ""}</div></div></article>`;
+      }).join("")}</div>` : `<div class="project-empty-state">${state.canCreateProjects ? "创建第一场活动，把微信群里的素材迁移到平台。" : "还没有可查看的活动相册。"}</div>`}
+    </section>${state.canCreateProjects && state.projectCreateOpen ? `<div class="project-create-modal-mask" data-project-create-overlay><section class="project-create-modal" role="dialog" aria-modal="true" aria-labelledby="projectCreateTitle"><button class="project-create-close" type="button" data-close-project-create aria-label="关闭">×</button><div class="eyebrow"><span class="eyebrow-dot"></span>新建活动项目</div><h2 id="projectCreateTitle">创建活动相册</h2><p>先填写活动信息，创建后进入相册页面上传照片和视频。</p><form id="projectCreateForm" class="project-create-form"><label><span>活动名称</span><input class="input" name="title" required placeholder="例如：8月9日山西社群旗袍美拍"></label><label><span>关联 SOP</span><select class="select" name="activityId"><option value="">暂不关联</option>${(state.activities || []).map(a => `<option value="${esc(a.id)}">${esc(a.title)}</option>`).join("")}</select></label><label><span>活动日期</span><input class="input" name="dateLabel" type="date"></label><label><span>城市/地区</span><input class="input" name="city" placeholder="例如：太原"></label><label class="project-create-wide"><span>给客户看的活动说明</span><textarea class="input" name="description" rows="3" placeholder="活动回顾、感谢语或交付提示"></textarea></label><div class="project-create-modal-actions"><button class="btn secondary" type="button" data-close-project-create>取消</button><button class="btn" type="submit">创建并进入上传</button></div></form></section></div>` : ""}${loginModal()}`;
 
   document.querySelector("#openProjectCreateBtn")?.addEventListener("click", () => { state.projectCreateOpen = true; renderProjectsView(); });
   document.querySelectorAll("[data-close-project-create]").forEach(btn => btn.addEventListener("click", () => { state.projectCreateOpen = false; renderProjectsView(); }));
@@ -1953,6 +1957,14 @@ function renderProjectsView() {
     state.projectCreateOpen = false;
     history.pushState(null, "", `?view=project-manage&project=${encodeURIComponent(btn.dataset.projectOpen)}`);
     loadProjectManager(btn.dataset.projectOpen);
+  }));
+  document.querySelectorAll("[data-project-delete]").forEach(btn => btn.addEventListener("click", async () => {
+    if (!confirm("确定删除这个活动相册吗？分享链接将失效；云端历史文件暂不删除。")) return;
+    try {
+      await api(`/api/my/activity-projects/${encodeURIComponent(btn.dataset.projectDelete)}`, { method: "DELETE" });
+      state.projects = state.projects.filter(project => project.id !== btn.dataset.projectDelete);
+      renderProjectsView();
+    } catch (err) { alert(err.message); }
   }));
   bindProjectShareEvents();
   bindAuthEvents();
@@ -1988,21 +2000,23 @@ function renderProjectManager(project) {
   const managerMedia = (project.media || []).map((m, i) => ({ ...m, index: i })).filter(m => !managerType || m.type === managerType);
   const activity = (state.activities || []).find(a => a.id === project.activityId);
   const mobileMode = isMobileProjectDownload();
+  const canManage = project.canManage === true;
   const metaFormHtml = `<form id="projectMetaForm"><label><span>活动名称</span><input class="input" name="title" value="${esc(project.title)}"></label><label><span>日期</span><input class="input" name="dateLabel" value="${esc(project.dateLabel)}"></label><label><span>城市/地区</span><input class="input" name="city" value="${esc(project.city)}"></label><label><span>客户说明</span><textarea class="input" name="description" rows="5">${esc(project.description)}</textarea></label><button class="btn small" type="submit">保存活动信息</button></form>`;
-  const projectMetaSummary = `<div class="project-mobile-meta-summary"><div><span class="project-mobile-meta-label">活动信息</span><strong>${esc(project.title)}</strong><small>${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "未填写时间地点")}</small></div><button class="btn secondary small" type="button" data-open-project-meta>编辑信息</button></div>`;
+  const projectMetaSummary = `<div class="project-mobile-meta-summary"><div><span class="project-mobile-meta-label">活动信息</span><strong>${esc(project.title)}</strong><small>${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "未填写时间地点")}</small></div>${canManage ? `<button class="btn secondary small" type="button" data-open-project-meta>编辑信息</button>` : ""}</div>`;
+  const projectReadOnlyNote = `<p class="project-promoted-note">当前账号可查看相册；仅创建者或总部管理员可上传、修改和删除。</p>`;
   const metaPanelHtml = mobileMode
-    ? `<div class="project-meta-panel project-meta-panel-mobile">${projectMetaSummary}</div>`
-    : `<div class="project-meta-panel"><div class="panel-title"><span class="title-bar"></span>活动信息</div>${metaFormHtml}<div class="project-share-box"><strong>合作伙伴客户分享链接</strong><input class="input" readonly value="${esc(projectShareHref(project.id))}"><small>客户打开链接即可查看和下载本相册；精彩案例素材下载仍需登录或申请账号。</small></div>${state.user && ["admin", "operator"].includes(state.user.role) && !project.sourceCaseId ? `<button class="btn secondary project-promote-btn" id="projectPromoteBtn" type="button">沉淀为精彩案例草稿</button>` : project.sourceCaseId ? `<p class="project-promoted-note">已沉淀为案例：${esc(project.sourceCaseId)}</p>` : ""}</div>`;
-  const metaModalHtml = mobileMode && state.projectMetaEditOpen
+    ? `<div class="project-meta-panel project-meta-panel-mobile">${projectMetaSummary}${canManage ? "" : projectReadOnlyNote}</div>`
+    : `<div class="project-meta-panel"><div class="panel-title"><span class="title-bar"></span>活动信息</div>${canManage ? metaFormHtml : `<p>${esc(project.description || "暂无活动说明")}</p>${projectReadOnlyNote}`}<div class="project-share-box"><strong>合作伙伴客户分享链接</strong><input class="input" readonly value="${project.status === "published" && project.shareEnabled ? esc(projectShareHref(project.id)) : "当前未开放分享"}"><small>客户打开已开放的分享链接即可查看和下载本相册；精彩案例素材下载仍需登录或申请账号。</small></div>${canManage && state.user && ["admin", "operator"].includes(state.user.role) && !project.sourceCaseId ? `<button class="btn secondary project-promote-btn" id="projectPromoteBtn" type="button">沉淀为精彩案例草稿</button>` : project.sourceCaseId ? `<p class="project-promoted-note">已沉淀为案例：${esc(project.sourceCaseId)}</p>` : ""}</div>`;
+  const metaModalHtml = canManage && mobileMode && state.projectMetaEditOpen
     ? `<div class="project-create-modal-mask project-meta-edit-mask" data-project-meta-overlay><section class="project-create-modal project-meta-edit-modal" role="dialog" aria-modal="true" aria-labelledby="projectMetaEditTitle"><button class="project-create-close" type="button" data-close-project-meta aria-label="关闭">×</button><div class="eyebrow"><span class="eyebrow-dot"></span>活动信息</div><h2 id="projectMetaEditTitle">编辑活动信息</h2><p>保存后返回素材上传界面。</p>${metaFormHtml}</section></div>`
     : "";
   app.className = `app-shell${mobileMode ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
-    <div class="project-manager-nav"><button class="btn secondary" id="projectBackBtn">← 返回我的活动</button><div>${projectShareButton(project)}<a class="btn secondary small" href="${projectShareHref(project.id)}" target="_blank" rel="noreferrer">打开客户相册</a></div></div>
-    <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span><strong>${projectAuditTotal(project, "view")}</strong><span>次查看</span><strong>${projectAuditTotal(project, "download")}</strong><span>次下载</span></div></section>
+    <div class="project-manager-nav"><button class="btn secondary" id="projectBackBtn">← 返回活动相册</button><div>${project.status === "published" && project.shareEnabled ? `${projectShareButton(project)}<a class="btn secondary small" href="${projectShareHref(project.id)}" target="_blank" rel="noreferrer">打开客户相册</a>` : ""}</div></div>
+    <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span>${canManage ? `<strong>${projectAuditTotal(project, "view")}</strong><span>次查看</span><strong>${projectAuditTotal(project, "download")}</strong><span>次下载</span>` : ""}</div></section>
     <section class="project-manager-layout">
       ${metaPanelHtml}
-      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 <span class="project-upload-hint">图片 ≤50MB · 视频 ≤2GB</span></div><label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>鸿蒙微信/部分安卓微信相册单次最多 9 张；上传完成后再次点击此处即可继续，不限总数</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress"></div><div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
+      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 ${canManage ? `<span class="project-upload-hint">图片 ≤50MB · 视频 ≤2GB</span>` : ""}</div>${canManage ? `<label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>鸿蒙微信/部分安卓微信相册单次最多 9 张；上传完成后再次点击此处即可继续，不限总数</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress"></div>` : projectReadOnlyNote}<div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true, canManage)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
     </section>${metaModalHtml}${projectLightboxHtml(project)}${loginModal()}`;
 
   document.querySelector("#projectBackBtn")?.addEventListener("click", () => { history.pushState(null, "", "?view=projects"); loadProjectsView(); });
@@ -2096,7 +2110,7 @@ function renderProjectPreview(project, index, manager = false) {
   app.className = `app-shell project-preview-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
     <div class="project-preview-nav"><button class="btn secondary" id="projectPreviewBack" type="button">← 返回相册</button><a class="btn secondary" href="${esc(backHref)}">相册首页</a></div>${projectWeChatTip()}
-    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar${current.type === "video" && isIOSProjectDownload() && isWeChatBrowser() ? " project-preview-toolbar-ios-wechat" : ""}">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
+    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar${current.type === "video" && isIOSProjectDownload() && isWeChatBrowser() ? " project-preview-toolbar-ios-wechat" : ""}">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager && project.canManage ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
 
   const previewVideo = document.querySelector(".project-preview-video");
   if (previewVideo) {

@@ -1,9 +1,9 @@
 <view class="page workbench">
   <view class="eyebrow">开开华彩 · 主办方工作台</view>
   <view class="title">你好，{{user.name || user.username || '主办方'}}</view>
-  <view class="muted subtitle">{{canManageProjects ? '主办方账号' : '资料查看账号'}} · 按现有账号权限展示</view>
+  <view class="muted subtitle">{{canCreateProjects ? '主办方账号' : '资料查看账号'}} · 按现有账号权限展示</view>
   <view class="tabs">
-    <view wx:if="{{canManageProjects}}" data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
+    <view data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
     <view data-tab="activities" bindtap="onTab" class="tab {{tab === 'activities' ? 'active' : ''}}">活动库</view>
     <view data-tab="cases" bindtap="onTab" class="tab {{tab === 'cases' ? 'active' : ''}}">精彩案例</view>
   </view>
@@ -11,8 +11,8 @@
   <view wx:elif="{{error}}" class="state"><view>{{error}}</view><button class="button button-secondary" bindtap="load">重试</button></view>
   <block wx:else>
     <block wx:if="{{tab === 'projects'}}">
-      <view class="section-header"><view class="section-title">我的活动相册 · {{projects.length}}</view><button class="button button-primary add" bindtap="onCreateOpen">＋ 新建活动</button></view>
-      <view wx:if="{{creating}}" class="card create">
+      <view class="section-header"><view class="section-title">活动相册 · {{projects.length}}</view><button wx:if="{{canCreateProjects}}" class="button button-primary add" bindtap="onCreateOpen">＋ 新建活动</button></view>
+      <view wx:if="{{creating && canCreateProjects}}" class="card create">
         <view class="section-title">创建活动相册</view>
         <input class="field" data-field="title" value="{{title}}" bindinput="onField" placeholder="活动名称（必填）"/>
         <picker mode="date" bindchange="onDate"><view class="field picker">{{dateLabel || '选择活动日期'}}</view></picker>
@@ -20,11 +20,11 @@
         <textarea class="field description" data-field="description" value="{{description}}" bindinput="onField" placeholder="给客户看的活动说明" maxlength="500"/>
         <view class="create-actions"><button class="button button-secondary" bindtap="onCreateClose">取消</button><button class="button button-primary" loading="{{busy}}" disabled="{{busy}}" bindtap="onCreate">创建并上传</button></view>
       </view>
-      <view wx:if="{{!projects.length}}" class="state">暂无活动相册。点击“新建活动”开始上传。</view>
+      <view wx:if="{{!projects.length}}" class="state">{{canCreateProjects ? '暂无活动相册。点击“新建活动”开始上传。' : '还没有可查看的活动相册。'}}</view>
       <view wx:for="{{projects}}" wx:key="id" class="card item">
         <image wx:if="{{item.cover}}" class="thumb" src="{{item.cover}}" mode="aspectFill"/>
-        <view class="item-main"><view class="item-title">{{item.title}}</view><view class="muted">{{item.dateLabel || '日期待填写'}} · {{item.city || '地区待填写'}}</view><view class="muted">{{item.media.length}} 个素材 · {{item.shareEnabled && item.status === 'published' ? '可分享' : '未开放分享'}}</view></view>
-        <view class="item-actions"><button class="button button-primary" data-id="{{item.id}}" bindtap="onManage">管理 / 上传</button><button wx:if="{{item.shareEnabled && item.status === 'published'}}" class="button button-secondary" data-id="{{item.id}}" bindtap="onView">客户相册</button></view>
+        <view class="item-main"><view class="item-title">{{item.title}}</view><view class="muted">{{item.dateLabel || '日期待填写'}} · {{item.city || '地区待填写'}}</view><view class="muted">{{item.media.length}} 个素材 · {{item.canManage ? '可管理' : '只读'}} · {{item.shareEnabled && item.status === 'published' ? '可分享' : '未开放分享'}}</view><view wx:if="{{item.ownerName}}" class="muted">创建者：{{item.ownerName}}</view></view>
+        <view class="item-actions"><button class="button button-primary" data-id="{{item.id}}" bindtap="onManage">{{item.canManage ? '管理 / 上传' : '查看相册'}}</button><button wx:if="{{item.shareEnabled && item.status === 'published'}}" class="button button-secondary" data-id="{{item.id}}" bindtap="onView">客户相册</button></view>
       </view>
     </block>
     <block wx:elif="{{tab === 'activities'}}">

@@ -1033,6 +1033,8 @@ function enqueueMiniappVideo(job) {
       // 上传 TOS 期间相册可能被新建、删除、编辑或关闭分享，写回时按 id 取最新相册。
       const sameOwner = current => {
         if (current.ownerId !== job.ownerId) throw new Error("相册所属账号已变更，停止发布。 ");
+        const uploader = (readDb().users || []).find(item => item.id === job.uploadedBy && item.status === "active");
+        if (!projectCanManage(uploader, current)) throw new Error("上传账号权限已变更，视频不再发布。 ");
         return current;
       };
       if (!existing) {
@@ -1742,7 +1744,16 @@ function projectMediaDuplicate(media, fingerprint, size) {
 }
 
 function projectCanManage(user, project) {
-  return Boolean(user && project && (user.role === "admin" || user.role === "operator" || project.ownerId === user.id));
+  return Boolean(user && project && (user.role === "admin" ||
+    (["operator", "member"].includes(user.role) && project.ownerId && project.ownerId === user.id)));
+}
+
+function projectCanCreate(user) {
+  return Boolean(user && ["admin", "operator", "member"].includes(user.role));
+}
+
+function projectForAccount(project, db, user) {
+  return { ...publicProject(project, db, { includeOwner: user.role === "admin" }), canManage: projectCanManage(user, project) };
 }
 
 // 相册缓存数组会被新建(unshift)、删除(splice)、PATCH 整体替换改变；跨过 await（上传 TOS、转码、
@@ -2645,14 +2656,13 @@ async function handleApi(req, res, pathname) {
   const projectId = projectPath && projectPath[2] ? decodeURIComponent(projectPath[2]) : "";
 
   if (req.method === "GET" && pathname === "/api/my/activity-projects") {
-    const user = requireRole(req, res, ["admin", "operator", "member"]);
+    const user = requireRole(req, res, VALID_ROLES);
     if (!user) return;
     const db = readDb();
-    const list = (db.activityProjects || [])
-      .filter(p => user.role === "admin" || p.ownerId === user.id)
+    const list = [...(db.activityProjects || [])]
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
-      .map(p => publicProject(p, db));
-    return sendJson(res, 200, { projects: list, count: list.length });
+      .map(p => projectForAccount(p, db, user));
+    return sendJson(res, 200, { projects: list, count: list.length, canCreate: projectCanCreate(user) });
   }
 
   if (req.method === "POST" && pathname === "/api/my/activity-projects") {
@@ -2674,7 +2684,7 @@ async function handleApi(req, res, pathname) {
     if (!item.title || item.title === "未命名活动相册") return sendJson(res, 400, { error: "请填写活动名称" });
     db.activityProjects.unshift(item);
     await writeDb(db);
-    return sendJson(res, 201, { ok: true, project: publicProject(item, db) });
+    return sendJson(res, 201, { ok: true, project: projectForAccount(item, db, user) });
   }
 
   const publicProjectDetail = pathname.match(/^\/api\/public\/activity-projects\/([^/]+)$/);
@@ -2746,18 +2756,18 @@ async function handleApi(req, res, pathname) {
 
   const myProjectId = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)$/);
   if (myProjectId && (req.method === "GET" || req.method === "PATCH" || req.method === "DELETE")) {
-    const user = requireRole(req, res, ["admin", "operator", "member"]);
+    const user = requireRole(req, res, VALID_ROLES);
     if (!user) return;
     const db = readDb();
     const idx = (db.activityProjects || []).findIndex(p => p.id === decodeURIComponent(myProjectId[1]));
     if (idx < 0) return sendJson(res, 404, { error: "活动相册不存在" });
     const item = db.activityProjects[idx];
-    if (!projectCanManage(user, item)) return sendJson(res, 403, { error: "当前账号不能管理这个活动相册" });
     if (req.method === "GET") {
-      const project = publicProject(item, db);
-      project.auditSummary = await loadProjectAuditSummary(item.id);
+      const project = projectForAccount(item, db, user);
+      if (project.canManage) project.auditSummary = await loadProjectAuditSummary(item.id);
       return sendJson(res, 200, { project });
     }
+    if (!projectCanManage(user, item)) return sendJson(res, 403, { error: "仅创建者或总部管理员可以管理这个活动相册" });
     if (req.method === "DELETE") {
       db.activityProjects.splice(idx, 1);
       await writeDb(db);
@@ -2775,7 +2785,7 @@ async function handleApi(req, res, pathname) {
     }));
     if (!result) return sendJson(res, 404, { error: "活动相册不存在" });
     await writeDb(result.db);
-    return sendJson(res, 200, { ok: true, project: publicProject(result.project, result.db) });
+    return sendJson(res, 200, { ok: true, project: projectForAccount(result.project, result.db, user) });
   }
 
   // 大视频采用 TOS Multipart：浏览器只拿短时效的单片 PUT 地址，避免维持一个几百 MB 的 API 长请求。
@@ -2944,7 +2954,7 @@ async function handleApi(req, res, pathname) {
     }
     const existing = (project.media || []).find(m => m && m.url === session.media_url);
     if (session.status === "completed" && existing) {
-      return sendJson(res, 200, { ok: true, media: existing, project: publicProject(project, db), storage: "tos-multipart", completed: true });
+      return sendJson(res, 200, { ok: true, media: existing, project: projectForAccount(project, db, user), storage: "tos-multipart", completed: true });
     }
     if (H5_AUTO_VIDEO_DELIVERY && new URL(req.url, "http://localhost").searchParams.get("delivery") !== "1") {
       return sendJson(res, 409, { error: "后台视频处理已升级，请刷新页面后重试；已上传的分片会保留。" });
@@ -3016,7 +3026,7 @@ async function handleApi(req, res, pathname) {
       databaseCommitted = true;
       if (result.changed) await writeDb(result.db);
       await updateProjectUploadSession(sessionId, { status: "completed", media_url: url, error: null });
-      return sendJson(res, duplicate ? 200 : 201, { ok: true, media, project: publicProject(result.project, result.db), storage: "tos-multipart" });
+      return sendJson(res, duplicate ? 200 : 201, { ok: true, media, project: projectForAccount(result.project, result.db, user), storage: "tos-multipart" });
     } catch (error) {
       if (objectCompleted && !databaseCommitted && !H5_AUTO_VIDEO_DELIVERY) {
         await client.deleteObject({ bucket, key: session.object_key }).catch(cleanupError => {
@@ -3099,7 +3109,7 @@ async function handleApi(req, res, pathname) {
       if (!current) return sendJson(res, 404, { error: "活动相册已删除。" });
       if (!projectCanManage(user, current)) return sendJson(res, 403, { error: "活动相册权限已变化。" });
       const duplicate = (current.media || []).find(item => item.type === "image" && item.fingerprint === fingerprint);
-      if (duplicate) return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, project: publicProject(current, readDb()) });
+      if (duplicate) return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, project: projectForAccount(current, readDb(), user) });
       const filename = `project_${projectId}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}.jpg`;
       const url = await uploadProjectFileToTos(output, filename, "image", "image/jpeg");
       uploadedKey = projectTosObjectKey(url);
@@ -3114,7 +3124,7 @@ async function handleApi(req, res, pathname) {
       if (!result) throw Object.assign(new Error("活动相册已删除。"), { httpStatus: 404 });
       committed = true;
       await writeDb(result.db);
-      return sendJson(res, 201, { ok: true, media, project: publicProject(result.project, result.db) });
+      return sendJson(res, 201, { ok: true, media, project: projectForAccount(result.project, result.db, user) });
     } catch (error) {
       console.error("[miniapp-media-upload]", error && (error.stack || error.message || error));
       if (uploadedKey && !committed) {
@@ -3190,6 +3200,8 @@ async function handleApi(req, res, pathname) {
     ws.on("finish", async () => {
       if (aborted) return;
       if (size === 0) { fs.unlink(dest, () => {}); return sendJson(res, 400, { error: "未收到素材数据" }); }
+      let uploadedUrl = "";
+      let databaseCommitted = false;
       try {
         const fingerprint = await hashFileSHA256(dest);
         // 接收文件可能耗时较长：查重和写回都以最新相册为准，不沿用请求开始时的对象或下标。
@@ -3198,12 +3210,17 @@ async function handleApi(req, res, pathname) {
           fs.unlink(dest, () => {});
           return sendJson(res, 404, { error: "活动相册不存在" });
         }
+        if (!projectCanManage(getAuthedUser(req), latest)) {
+          fs.unlink(dest, () => {});
+          return sendJson(res, 403, { error: "活动相册权限已变化" });
+        }
         const duplicate = projectMediaDuplicate(latest.media, fingerprint, size);
         if (duplicate) {
           fs.unlink(dest, () => {});
           return sendJson(res, 200, { ok: true, duplicate: true, media: duplicate, storage: "tos" });
         }
         const url = await uploadProjectFileToTos(dest, filename, type, MIME_TYPES[ext] || "application/octet-stream");
+        uploadedUrl = url;
         const media = {
           type,
           url,
@@ -3214,23 +3231,25 @@ async function handleApi(req, res, pathname) {
           createdAt: now()
         };
         const result = commitActivityProject(project.id, current => {
+          if (!projectCanManage(getAuthedUser(req), current)) throw Object.assign(new Error("活动相册权限已变化"), { httpStatus: 403 });
           const next = { ...current, media: [...(current.media || []), media], updatedAt: now() };
           if (!next.cover && type === "image") next.cover = url;
           return next;
         });
         fs.unlink(dest, () => {});
-        if (!result) {
-          // 上传期间相册已被删除：删掉刚上传的对象，避免留下无人引用的文件。
-          const { client, bucket } = getCaseVideoTosClient();
-          await client.deleteObject({ bucket, key: projectTosObjectKey(url) }).catch(error => console.error("[project-media-orphan]", error && (error.message || error)));
-          return sendJson(res, 404, { error: "活动相册已删除" });
-        }
+        if (!result) throw Object.assign(new Error("活动相册已删除"), { httpStatus: 404 });
+        // 缓存已引用上传对象；即使持久化报错，也不能将该对象按孤儿文件删除。
+        databaseCommitted = true;
         await writeDb(result.db);
-        return sendJson(res, 201, { ok: true, media, project: publicProject(result.project, result.db), storage: "tos" });
+        return sendJson(res, 201, { ok: true, media, project: projectForAccount(result.project, result.db, user), storage: "tos" });
       } catch (error) {
         fs.unlink(dest, () => {});
+        if (uploadedUrl && !databaseCommitted) {
+          const { client, bucket } = getCaseVideoTosClient();
+          await client.deleteObject({ bucket, key: projectTosObjectKey(uploadedUrl) }).catch(cleanupError => console.error("[project-media-orphan]", cleanupError && (cleanupError.message || cleanupError)));
+        }
         console.error("[project-media-tos]", error && (error.stack || error.message || error));
-        return sendJson(res, 502, { error: "素材已接收,但上传 TOS 失败：" + (error.message || "未知错误") });
+        return sendJson(res, error.httpStatus || 502, { error: error.httpStatus ? error.message : "素材已接收,但上传 TOS 失败：" + (error.message || "未知错误") });
       }
     });
     ws.on("error", error => {
@@ -3256,7 +3275,7 @@ async function handleApi(req, res, pathname) {
     project.updatedAt = now();
     db.activityProjects[idx] = normalizeActivityProject(project, project);
     await writeDb(db);
-    return sendJson(res, 200, { ok: true, project: publicProject(db.activityProjects[idx], db) });
+    return sendJson(res, 200, { ok: true, project: projectForAccount(db.activityProjects[idx], db, user) });
   }
 
   const promoteProject = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/promote-case$/);
@@ -3291,7 +3310,7 @@ async function handleApi(req, res, pathname) {
     project.sourceCaseId = item.id;
     project.updatedAt = ts;
     await writeDb(db);
-    return sendJson(res, 201, { ok: true, case: item, project: publicProject(project, db), message: "已生成草稿案例，请在案例管理中审核发布" });
+    return sendJson(res, 201, { ok: true, case: item, project: projectForAccount(project, db, user), message: "已生成草稿案例，请在案例管理中审核发布" });
   }
 
   if (req.method === "GET" && pathname === "/api/admin/activity-projects") {
