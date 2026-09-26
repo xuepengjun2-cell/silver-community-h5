@@ -65,6 +65,25 @@ function cleanTempFile(wxApi, filePath) {
   try { wxApi.getFileSystemManager().unlink({ filePath, fail() {} }); } catch (_) { /* 临时文件会由微信回收 */ }
 }
 
+async function saveDownloadedMedia(wxApi, type, url, onProgress) {
+  let tempFilePath = "";
+  try {
+    tempFilePath = await downloadFile(wxApi, url, onProgress);
+    try {
+      await saveLocalFile(wxApi, type, tempFilePath);
+    } catch (error) {
+      if (!isPermissionDenied(error)) throw error;
+      if (!await askForAlbumAccess(wxApi)) throw new Error("未取得相册权限，尚未保存。您可以稍后再试。");
+      await saveLocalFile(wxApi, type, tempFilePath);
+    }
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    throw new Error(privacyErrorMessage(error) || "保存失败，请检查相册权限和手机剩余空间后再试。");
+  } finally {
+    cleanTempFile(wxApi, tempFilePath);
+  }
+}
+
 async function saveMedia(wxApi, { projectId, index, media, onProgress }) {
   const eligibility = saveEligibility(media);
   if (!eligibility.ok) throw new Error(eligibility.reason);
@@ -76,25 +95,9 @@ async function saveMedia(wxApi, { projectId, index, media, onProgress }) {
     throw new Error("素材已更新，请返回相册重新打开。");
   }
   // 现有服务端按这个接口记录下载。不能直接用其签名 TOS 地址下载：
-  // 个人小程序只配置我们可验证的 CDN 域名，避免跨域重定向失败。
+  // 个人小程序只配置我们可验证的 CDN 域名，避免重定向到未登记的 TOS 域名。
   await recordDownloadIntent(wxApi, projectId, index, fresh.type);
-  const url = trustedMediaUrl(saveSource(fresh));
-  let tempFilePath = "";
-  try {
-    tempFilePath = await downloadFile(wxApi, url, onProgress);
-    try {
-      await saveLocalFile(wxApi, fresh.type, tempFilePath);
-    } catch (error) {
-      if (!isPermissionDenied(error)) throw error;
-      if (!await askForAlbumAccess(wxApi)) throw new Error("未取得相册权限，尚未保存。您可以稍后再试。");
-      await saveLocalFile(wxApi, fresh.type, tempFilePath);
-    }
-  } catch (error) {
-    if (error instanceof Error) throw error;
-    throw new Error(privacyErrorMessage(error) || "保存失败，请检查相册权限和手机剩余空间后再试。");
-  } finally {
-    cleanTempFile(wxApi, tempFilePath);
-  }
+  await saveDownloadedMedia(wxApi, fresh.type, trustedMediaUrl(saveSource(fresh)), onProgress);
 }
 
-module.exports = { downloadFile, isPermissionDenied, saveMedia };
+module.exports = { downloadFile, isPermissionDenied, saveDownloadedMedia, saveMedia };

@@ -6,6 +6,7 @@ const mysql = require("mysql2/promise");
 const { MAX_VIDEO_BYTES: MINIAPP_MAX_VIDEO_BYTES, receiveUpload: receiveMiniappUpload, processImage: processMiniappImage, processVideo: processMiniappVideo, processVideoPoster } = require("./server/miniapp-media");
 const { ensureWorkingSpace, receiveRawVideo, downloadVideo } = require("./server/video-delivery-io");
 const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
+const { activitySopPdf } = require("./server/sop-pdf");
 
 const PORT = Number(process.env.PORT || 5174);
 const ROOT = __dirname;
@@ -2544,6 +2545,31 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  const publicPdfDownload = pathname.match(/^\/api\/public\/activities\/([^/]+)\/download\.pdf$/);
+  if (req.method === "GET" && publicPdfDownload) {
+    const user = requireRole(req, res, VALID_ROLES);
+    if (!user) return;
+    const db = readDb();
+    const activity = db.activities.find(x => x.id === publicPdfDownload[1] && x.status === "published");
+    if (!activity) return sendJson(res, 404, { error: "活动不存在或未发布" });
+    if (activity.downloadEnabled === false) return sendJson(res, 403, { error: "该活动暂未开放SOP下载" });
+    const filename = `sop-${safeFileName(activity.id || activity.title)}.pdf`;
+    const pdf = activitySopPdf(activity);
+    await recordAuditLog(req, {
+      action: "download", resourceType: "activity_sop", resourceId: activity.id,
+      resourceTitle: activity.title, mediaType: "sop", filename, statusCode: 200
+    }, user);
+    res.writeHead(200, {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "private, no-store"
+    });
+    pdf.on("error", error => { console.error("[activity-sop-pdf]", error); res.destroy(error); });
+    pdf.pipe(res);
+    pdf.end();
+    return;
+  }
+
   // ---- 精彩案例(图片/视频展示,浏览免登录,下载需登录) ----
   if (req.method === "GET" && pathname === "/api/public/cases") {
     const db = readDb();
@@ -2602,6 +2628,9 @@ async function handleApi(req, res, pathname) {
       resourceTitle: item.title, mediaIndex: idx, mediaType: m.type,
       filename, statusCode: 200
     }, user);
+    if (new URL(req.url, "http://localhost").searchParams.get("format") === "json") {
+      return sendJson(res, 200, { url: m.url });
+    }
     res.writeHead(200, {
       "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
       "Content-Length": fs.statSync(filePath).size,

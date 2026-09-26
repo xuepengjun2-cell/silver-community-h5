@@ -1,6 +1,7 @@
 const { api, getSession } = require("../../utils/auth");
 const { mediaUrl } = require("../../utils/urls");
 const { catalogPath, catalogCover, sharePayload } = require("../../utils/catalog");
+const { openSopPdf, saveCaseMedia, openCaseDocument } = require("../../utils/catalog-download");
 
 const CASE_GROUPS = [
   { key: "image", label: "照片" },
@@ -15,6 +16,7 @@ function caseMedia(item) {
     ...entry,
     index,
     url: mediaUrl(entry.url),
+    poster: mediaUrl(entry.poster),
     title: entry.title || entry.caption || `${{ image: "照片", video: "视频", document: "文档", link: "外部素材" }[entry.type] || "素材"} ${index + 1}`
   })).filter(entry => entry.url && CASE_GROUPS.some(group => group.key === entry.type));
 }
@@ -40,7 +42,8 @@ Page({
   data: {
     loading: true, error: "", item: null, type: "", cover: "", media: [],
     mediaTabs: [], activeTab: "", shownMedia: [], hasMore: false, playingIndex: -1,
-    highlights: [], schedule: [], planSections: [], facts: [], activityImages: [], activityVideos: []
+    highlights: [], schedule: [], planSections: [], facts: [], activityImages: [], activityVideos: [],
+    loggedIn: false, pdfBusy: false, savingIndex: -1, downloadProgress: 0
   },
   onLoad(options) {
     try { catalogPath(options.type, options.id); }
@@ -49,6 +52,7 @@ Page({
     this.id = options.id;
     this.load();
   },
+  onShow() { this.setData({ loggedIn: Boolean(getSession(wx)) }); },
   async load() {
     this.setData({ loading: true, error: "" });
     try {
@@ -78,7 +82,7 @@ Page({
         ],
         activityImages: media.filter(entry => entry.type === "image"),
         activityVideos: media.filter(entry => entry.type === "video"),
-        playingIndex: -1
+        playingIndex: -1, loggedIn: Boolean(session)
       });
     } catch (error) { this.setData({ loading: false, error: error.message || "加载失败" }); }
   },
@@ -98,6 +102,47 @@ Page({
     if (images.includes(current)) wx.previewImage({ current, urls: images });
   },
   onVideo(event) { this.setData({ playingIndex: Number(event.currentTarget.dataset.index) }); },
+  onDownloadError(error) {
+    const message = error && error.message || "下载失败，请稍后重试。";
+    if (/登录/.test(message) || error && error.statusCode === 401) {
+      wx.showModal({
+        title: "需要登录",
+        content: message,
+        confirmText: "去登录",
+        success(result) { if (result.confirm) wx.navigateTo({ url: "/pages/login/index" }); }
+      });
+    } else wx.showModal({ title: "未能完成下载", content: message, showCancel: false });
+  },
+  async onSopPdf() {
+    if (this.data.pdfBusy || !this.data.item) return;
+    this.setData({ pdfBusy: true, downloadProgress: 0 });
+    try {
+      await openSopPdf(wx, this.id, progress => this.setData({ downloadProgress: progress }));
+    } catch (error) { this.onDownloadError(error); }
+    finally { this.setData({ pdfBusy: false, downloadProgress: 0 }); }
+  },
+  async onCaseSave(event) {
+    if (this.data.savingIndex !== -1) return;
+    const index = Number(event.currentTarget.dataset.index);
+    const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
+    if (!media) return;
+    this.setData({ savingIndex: index, downloadProgress: 0 });
+    try {
+      await saveCaseMedia(wx, this.id, media, progress => this.setData({ downloadProgress: progress }));
+      wx.showToast({ title: "已保存到手机相册", icon: "success", duration: 2200 });
+    } catch (error) { this.onDownloadError(error); }
+    finally { this.setData({ savingIndex: -1, downloadProgress: 0 }); }
+  },
+  async onCaseDocument(event) {
+    if (this.data.savingIndex !== -1) return;
+    const index = Number(event.currentTarget.dataset.index);
+    const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
+    if (!media) return;
+    this.setData({ savingIndex: index, downloadProgress: 0 });
+    try { await openCaseDocument(wx, this.id, media, progress => this.setData({ downloadProgress: progress })); }
+    catch (error) { this.onDownloadError(error); }
+    finally { this.setData({ savingIndex: -1, downloadProgress: 0 }); }
+  },
   onLogin() { wx.navigateTo({ url: "/pages/login/index" }); },
   onShareAppMessage() { return sharePayload(this.rawItem || this.data.item || { id: this.id }, this.type); }
 });
