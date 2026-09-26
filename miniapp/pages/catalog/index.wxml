@@ -32,7 +32,7 @@
       <view wx:else class="card pdf-card">
         <view class="pdf-card-title">📄 完整活动方案 PDF</view>
         <view class="muted pdf-card-tip">包含活动定位、时间轴、物料、人员分工、转化话术和风险预案；下载后可在文档右上角菜单转发或保存。</view>
-        <button class="button button-primary" loading="{{pdfBusy}}" disabled="{{pdfBusy}}" bindtap="onSopPdf">{{pdfBusy ? '下载中 ' + downloadProgress + '%' : loggedIn ? '下载并打开 PDF' : '登录后下载 PDF'}}</button>
+        <button class="button button-primary" loading="{{pdfBusy}}" disabled="{{pdfBusy}}" bindtap="onSopPdf">{{pdfBusy ? '生成并下载中…' : loggedIn ? '下载并打开 PDF' : '登录后下载 PDF'}}</button>
       </view>
       <block wx:if="{{activityImages.length || activityVideos.length}}">
         <view class="section-heading"><view class="section-line"></view><view>参考素材</view></view>

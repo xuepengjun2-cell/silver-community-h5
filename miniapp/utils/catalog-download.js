@@ -10,24 +10,35 @@ function loggedIn(wxApi) {
   return session;
 }
 
-function downloadPdf(wxApi, id, token, onProgress) {
+function requestPdf(wxApi, id, token) {
   return new Promise((resolve, reject) => {
-    const task = wxApi.downloadFile({
+    wxApi.request({
       url: `${config.apiBase}/public/activities/${encodeURIComponent(id)}/download.pdf`,
+      method: "GET",
       header: { Authorization: `Bearer ${token}` },
-      timeout: config.transferTimeoutMs,
+      responseType: "arraybuffer",
       success(result) {
         if (result.statusCode === 401) return reject(new Error("登录已过期，请重新登录后下载。"));
         if (result.statusCode === 403) return reject(new Error("该活动暂未开放 SOP 下载，或账号无下载权限。"));
-        if (result.statusCode !== 200 || !result.tempFilePath) return reject(new Error("PDF 生成失败，请稍后重试。"));
-        resolve(result.tempFilePath);
+        const bytes = result.data instanceof ArrayBuffer ? new Uint8Array(result.data) : null;
+        if (result.statusCode !== 200 || !bytes || bytes.length < 8 || bytes.length > 20 * 1024 * 1024 ||
+            String.fromCharCode(...bytes.slice(0, 5)) !== "%PDF-") {
+          return reject(new Error("PDF 生成失败或文件不完整，请稍后重试。"));
+        }
+        resolve(result.data);
       },
       fail(error) { reject(new Error(isTimeout(error) ? "PDF 下载超时，请连接 Wi-Fi 后重试。" : "PDF 下载失败，请检查网络后重试。")); }
     });
-    if (task && typeof task.onProgressUpdate === "function" && typeof onProgress === "function") {
-      task.onProgressUpdate(info => onProgress(Math.max(0, Math.min(100, Number(info.progress) || 0))));
-    }
   });
+}
+
+function writePdf(wxApi, id, bytes) {
+  const filePath = `${wxApi.env.USER_DATA_PATH}/sop-${String(id).replace(/[^a-zA-Z0-9_-]/g, "")}.pdf`;
+  return new Promise((resolve, reject) => wxApi.getFileSystemManager().writeFile({
+    filePath, data: bytes,
+    success() { resolve(filePath); },
+    fail() { reject(new Error("PDF 已获取，但手机空间不足，无法保存文件。")); }
+  }));
 }
 
 function saveFile(wxApi, tempFilePath) {
@@ -48,8 +59,10 @@ function openDocument(wxApi, filePath, fileType) {
 
 async function openSopPdf(wxApi, id, onProgress) {
   const { token } = loggedIn(wxApi);
-  const temp = await downloadPdf(wxApi, id, token, onProgress);
-  const saved = await saveFile(wxApi, temp);
+  // 已配置的 request 域名支持鉴权读取小体积 PDF；无需增加 downloadFile 合法域名。
+  const bytes = await requestPdf(wxApi, id, token);
+  if (typeof onProgress === "function") onProgress(100);
+  const saved = await writePdf(wxApi, id, bytes);
   await openDocument(wxApi, saved, "pdf");
   return saved;
 }
