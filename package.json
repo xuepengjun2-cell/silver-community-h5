@@ -5,9 +5,9 @@
   "description": "同城银发社群主理人活动展示 H5 与后台管理原型",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check server/activity-hub-sso.js && node --check server/miniapp-media.js && node --check server/video-delivery-io.js && node --check public/app.js && node --check public/admin.js",
+    "check": "node --check server.js && node --check server/activity-hub-sso.js && node --check server/miniapp-media.js && node --check server/video-delivery-io.js && node --check server/sop-pdf.js && node --check public/app.js && node --check public/admin.js",
     "test:sso": "node tests/activity-hub-sso.js",
-    "test:media": "node --test tests/miniapp-media.js tests/video-delivery-io.js miniapp/test/*.test.js",
+    "test:media": "node --test tests/miniapp-media.js tests/video-delivery-io.js tests/sop-pdf.js miniapp/test/*.test.js",
     "test:concurrency": "node --test tests/concurrency/concurrent-writes.test.js"
   },
   "engines": {
@@ -16,6 +16,7 @@
   "dependencies": {
     "@volcengine/tos-sdk": "^2.9.1",
     "busboy": "^1.6.0",
-    "mysql2": "^3.11.0"
+    "mysql2": "^3.11.0",
+    "pdfkit": "^0.17.2"
   }
 }

@@ -27,10 +27,17 @@
       <view wx:if="{{item.planLocked}}" class="notice locked"><view>完整执行方案需主办方账号登录后查看。</view><button class="button button-secondary" bindtap="onLogin">主办方登录</button></view>
       <view wx:elif="{{planSections.length}}" class="sop-list"><view wx:for="{{planSections}}" wx:for-item="section" wx:key="key" class="card sop-card"><view class="sop-title"><text>{{section.icon}}</text><text>{{section.title}}</text></view><view class="sop-body">{{section.content}}</view></view></view>
       <view wx:else class="notice">这场活动尚未填写执行 SOP。</view>
+      <view class="section-heading"><view class="section-line"></view><view>下载执行方案</view></view>
+      <view wx:if="{{item.downloadEnabled === false}}" class="notice">这场活动暂未开放 SOP 下载，请联系主办方。</view>
+      <view wx:else class="card pdf-card">
+        <view class="pdf-card-title">📄 完整活动方案 PDF</view>
+        <view class="muted pdf-card-tip">包含活动定位、时间轴、物料、人员分工、转化话术和风险预案；下载后可在文档右上角菜单转发或保存。</view>
+        <button class="button button-primary" loading="{{pdfBusy}}" disabled="{{pdfBusy}}" bindtap="onSopPdf">{{pdfBusy ? '下载中 ' + downloadProgress + '%' : loggedIn ? '下载并打开 PDF' : '登录后下载 PDF'}}</button>
+      </view>
       <block wx:if="{{activityImages.length || activityVideos.length}}">
         <view class="section-heading"><view class="section-line"></view><view>参考素材</view></view>
         <view wx:if="{{activityImages.length}}" class="gallery"><image wx:for="{{activityImages}}" wx:key="index" class="gallery-photo" src="{{item.url}}" mode="aspectFill" lazy-load="true" data-url="{{item.url}}" bindtap="onImage"/></view>
-        <view wx:for="{{activityVideos}}" wx:key="index" class="card video-card"><view wx:if="{{playingIndex === item.index}}"><video class="video-player" src="{{item.url}}" controls="true" autoplay="true"/></view><view wx:else class="video-placeholder" data-index="{{item.index}}" bindtap="onVideo">▶ 点开参考视频 {{index + 1}}</view></view>
+        <view wx:for="{{activityVideos}}" wx:key="index" class="card video-card"><view wx:if="{{playingIndex === item.index}}"><video class="video-player" src="{{item.url}}" controls="true" autoplay="true" direction="0" object-fit="contain" show-fullscreen-btn="true"/></view><view wx:else class="video-placeholder" data-index="{{item.index}}" bindtap="onVideo">▶ 点开参考视频 {{index + 1}}</view></view>
       </block>
       <view wx:if="{{item.contact}}" class="notice contact">报名咨询：{{item.contact}}</view>
     </block>
@@ -39,16 +46,20 @@
       <view class="section-heading"><view class="section-line"></view><view>案例素材 · {{media.length}}</view></view>
       <view wx:if="{{mediaTabs.length}}" class="media-tabs"><view wx:for="{{mediaTabs}}" wx:for-item="tab" wx:key="key" class="media-tab {{activeTab === tab.key ? 'active' : ''}}" data-tab="{{tab.key}}" bindtap="onTab">{{tab.label}} {{tab.count}}</view></view>
       <view wx:if="{{!media.length}}" class="notice">案例尚未添加素材。</view>
-      <view wx:else class="case-grid">
+      <view wx:else class="case-grid {{activeTab === 'video' ? 'case-video-grid' : ''}}">
         <view wx:for="{{shownMedia}}" wx:key="index" class="card case-media">
           <image wx:if="{{item.type === 'image'}}" class="case-image" src="{{item.url}}" mode="aspectFill" lazy-load="true" data-url="{{item.url}}" bindtap="onImage"/>
-          <block wx:elif="{{item.type === 'video'}}"><video wx:if="{{playingIndex === item.index}}" class="case-video" src="{{item.url}}" poster="{{cover}}" controls="true" autoplay="true"/><view wx:else class="case-video-poster" data-index="{{item.index}}" bindtap="onVideo"><image wx:if="{{cover}}" src="{{cover}}" mode="aspectFill"/><text class="play">▶</text></view></block>
+          <block wx:elif="{{item.type === 'video'}}"><video wx:if="{{playingIndex === item.index}}" class="case-video" src="{{item.url}}" poster="{{item.poster || cover}}" controls="true" autoplay="true" direction="0" object-fit="contain" show-fullscreen-btn="true"/><view wx:else class="case-video-poster" data-index="{{item.index}}" bindtap="onVideo"><image wx:if="{{item.poster || cover}}" src="{{item.poster || cover}}" mode="aspectFill"/><text class="play">▶</text></view></block>
           <view wx:else class="case-other">{{item.type === 'document' ? '📄 文档素材' : '🔗 外部平台素材'}}</view>
           <view class="case-media-title">{{item.title}}</view>
+          <view wx:if="{{item.type === 'image' || item.type === 'video' || item.type === 'document'}}" class="case-actions">
+            <button wx:if="{{item.type === 'document'}}" class="button button-secondary case-save" data-index="{{item.index}}" loading="{{savingIndex === item.index}}" disabled="{{savingIndex !== -1}}" bindtap="onCaseDocument">{{savingIndex === item.index ? '下载中 ' + downloadProgress + '%' : loggedIn ? '下载文档' : '登录后下载'}}</button>
+            <button wx:else class="button button-secondary case-save" data-index="{{item.index}}" loading="{{savingIndex === item.index}}" disabled="{{savingIndex !== -1}}" bindtap="onCaseSave">{{savingIndex === item.index ? '下载中 ' + downloadProgress + '%' : !loggedIn ? '登录后下载' : item.type === 'image' ? '保存照片' : '保存视频'}}</button>
+          </view>
         </view>
       </view>
       <button wx:if="{{hasMore}}" class="button button-secondary more" bindtap="onMore">继续查看</button>
-      <view class="notice case-note">案例可直接分享和预览；案例素材的下载权限仍按原 H5 规则，不因分享而变成免登录下载。</view>
+      <view class="notice case-note">案例可免登录预览；保存照片、视频和下载文档需登录主办方账号。</view>
     </block>
   </block>
 </view>
