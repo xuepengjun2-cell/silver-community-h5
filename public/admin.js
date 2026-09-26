@@ -1977,13 +1977,13 @@ function wechatApplicationsHtml() {
           <select class="select" data-wx-target style="min-width:220px;max-width:100%">
             <option value="">请选择绑定方式</option><option value="__new__">核实后新建平台账号</option>${userOptions}
           </select>
-          <select class="select" data-wx-role><option value="viewer">新账号：只读</option><option value="member">新账号：学习用户</option><option value="operator">新账号：城市主理人</option></select>
-          <label class="checkline"><input type="checkbox" data-wx-download> 新账号允许下载 SOP</label>
+          <select class="select" data-wx-role><option value="viewer">待审/新账号：只读</option><option value="member">待审/新账号：学习用户</option><option value="operator">待审/新账号：城市主理人</option></select>
+          <label class="checkline"><input type="checkbox" data-wx-download> 待审/新账号允许下载 SOP</label>
           <label class="checkline"><input type="checkbox" data-wx-confirm> 已核对不存在原账号</label>
           <button class="btn small" data-wx-approve="${esc(item.id)}">核实并通过</button>
           <button class="btn danger small" data-wx-reject="${esc(item.id)}">拒绝</button>
         </div>
-        <small style="color:var(--muted)">绑定已有账号时保留原角色与相册归属；新建账号只允许总部指定角色，不能由申请人自授。</small>
+        <small style="color:var(--muted)">绑定已启用账号会保留原角色和下载权限；绑定 H5 待审账号或新建账号时使用上方角色和下载选项。</small>
       </div>`).join("") : `<p style="color:var(--muted)">暂无待核实的微信申请。</p>`}
       ${decided.length ? `<details><summary>查看已处理的微信身份（最近 ${decided.length} 条）</summary>
         ${decided.map(item => `<div style="padding:9px 0;border-top:1px solid var(--line)">
@@ -2100,9 +2100,11 @@ function userCardHtml(u) {
                 <div class="user-card-info">
                   <strong>${esc(u.name||u.username)} <span style="font-weight:400;color:var(--muted)">@${esc(u.username)}</span></strong>
                   <span>${roleLabel(u.role)} · ${{ active:"✅ 启用", pending:"⏳ 待审核", disabled:"⛔ 停用", rejected:"❌ 已拒绝" }[u.status] || esc(u.status)} · SOP下载：${u.canDownload?"允许":"禁止"}</span>
+                  ${u.wechatBinding ? `<span>微信已绑定 · 核对码 ${esc(u.wechatBinding.fingerprint)}</span>` : `<span>微信未绑定</span>`}
                 </div>
                 <div class="user-card-actions">
                   <button class="btn secondary small" data-toggle-edit="${esc(u.id)}">编辑</button>
+                  ${u.wechatBinding ? `<button class="btn danger small" data-wx-revoke="${esc(u.wechatBinding.id)}">解除微信绑定</button>` : ""}
                   ${u.id !== state.user.id ? `<button class="btn danger small" data-delete-user="${esc(u.id)}">删除</button>` : ""}
                 </div>
               </div>

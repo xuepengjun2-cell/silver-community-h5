@@ -23,11 +23,13 @@ function fakeWx(responses) {
 
 test("微信申请待审不发平台 token，批准后复用现有会话结构", async () => {
   const wx = fakeWx({
-    "/silver-api/auth/wechat/session": { statusCode: 200, data: { status: "unbound" } },
+    "/silver-api/auth/wechat/session": { statusCode: 200, data: { status: "unbound", fingerprint: "a1b2c3d4e5f6" } },
     "/silver-api/auth/wechat/apply": { statusCode: 201, data: { status: "pending" } },
     "/silver-api/auth/wechat/bind": { statusCode: 200, data: { token: "bound-token", user: { id: "u_old", role: "operator" } } }
   });
-  assert.equal((await wechatSession(wx)).status, "unbound");
+  const first = await wechatSession(wx);
+  assert.equal(first.status, "unbound");
+  assert.equal(first.fingerprint, "a1b2c3d4e5f6");
   assert.equal(wx.storage.has(SESSION_KEY), false);
   assert.equal((await applyWechat(wx, { name: "张三", contact: "13800000000" })).status, "pending");
   assert.equal(wx.storage.has(SESSION_KEY), false);

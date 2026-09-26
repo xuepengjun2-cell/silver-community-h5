@@ -69,7 +69,7 @@ async function wechatSession(wxApi, { explicit = false } = {}) {
   const code = await wechatCode(wxApi);
   const result = await api(wxApi, "/auth/wechat/session", { method: "POST", data: { code } });
   if (result.token) return { status: "approved", session: storeSession(wxApi, result) };
-  return { status: result.status || "unbound" };
+  return { status: result.status || "unbound", fingerprint: result.fingerprint || "" };
 }
 
 async function applyWechat(wxApi, details) {

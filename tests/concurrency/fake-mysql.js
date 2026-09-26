@@ -24,6 +24,9 @@ async function query(sql, params = []) {
   if (/^SELECT \* FROM wechat_identities WHERE id = \? FOR UPDATE$/i.test(s)) {
     return [table("wechat_identities").filter(r => r.id === params[0]).map(r => ({ ...r })), []];
   }
+  if (/^SELECT \* FROM wechat_identities WHERE user_id = \? FOR UPDATE$/i.test(s)) {
+    return [table("wechat_identities").filter(r => r.user_id === params[0]).map(r => ({ ...r })), []];
+  }
   if ((m = s.match(/^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY .+?)?(?: LIMIT \d+)?$/i))) {
     const [, , name, where] = m;
     let rows = table(name);

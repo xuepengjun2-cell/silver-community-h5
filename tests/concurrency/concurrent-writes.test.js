@@ -258,7 +258,8 @@ test("上传过程中撤销创建者管理角色，不发布照片并清理刚�
     body: { role: "viewer", status: "active" } });
   assert.equal(demoted.status, 200);
   assert.equal((await upload).status, 403);
-  assert.equal((await ctx.api(`/my/activity-projects/${album}`, { token })).data.project.media.length, 0);
+  assert.equal((await ctx.api(`/my/activity-projects/${album}`, { token })).status, 401, "撤权后原登录态须失效");
+  assert.equal((await ctx.api(`/my/activity-projects/${album}`, { token: admin })).data.project.media.length, 0);
   const tosDir = path.join(ctx.dir, "tos");
   assert.deepEqual(fs.existsSync(tosDir) ? fs.readdirSync(tosDir) : [], []);
 }));

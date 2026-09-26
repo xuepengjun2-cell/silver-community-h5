@@ -4,7 +4,7 @@ const { login, validateSession, wechatSession, applyWechat, bindWechat } = requi
 Page({
   data: {
     loading: true, username: "", password: "", busy: false, error: "",
-    wechatStatus: "checking", wechatMessage: "", showApply: false,
+    wechatStatus: "checking", wechatMessage: "", wechatFingerprint: "", showApply: false,
     applicantName: "", applicantContact: "", applicantCity: "", applicantOrganization: "", applicantAgreed: false
   },
   async onLoad(options) {
@@ -23,7 +23,7 @@ Page({
       try {
         const result = await wechatSession(wx);
         if (result.session) return wx.redirectTo({ url: "/pages/workbench/index" });
-        this.setData({ wechatStatus: result.status });
+        this.setData({ wechatStatus: result.status, wechatFingerprint: result.fingerprint || "" });
       } catch (error) {
         this.setData({ wechatStatus: "unavailable", wechatMessage: error.message });
       }
@@ -47,7 +47,7 @@ Page({
     try {
       const result = await wechatSession(wx, { explicit: true });
       if (result.session) return wx.redirectTo({ url: "/pages/workbench/index" });
-      this.setData({ wechatStatus: result.status, wechatMessage: "" });
+      this.setData({ wechatStatus: result.status, wechatFingerprint: result.fingerprint || "", wechatMessage: "" });
     } catch (error) { this.setData({ wechatStatus: "unavailable", error: error.message }); }
     finally { this.setData({ busy: false }); }
   },
@@ -60,7 +60,7 @@ Page({
         name: this.data.applicantName, contact: this.data.applicantContact,
         city: this.data.applicantCity, organization: this.data.applicantOrganization
       });
-      this.setData({ wechatStatus: result.status, showApply: false, wechatMessage: "申请已提交，请等待总部核实。" });
+      this.setData({ wechatStatus: result.status, wechatFingerprint: result.fingerprint || "", showApply: false, wechatMessage: "申请已提交，请等待总部核实。" });
     } catch (error) { this.setData({ error: error.message || "申请失败" }); }
     finally { this.setData({ busy: false }); }
   },

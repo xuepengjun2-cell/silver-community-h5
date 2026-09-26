@@ -150,6 +150,11 @@ function now() {
   return new Date().toISOString();
 }
 
+function sessionCreatedAt(user) {
+  const revokedAt = new Date(user?.sessionRevokedAt || 0).getTime();
+  return new Date(Math.max(Date.now(), Number.isFinite(revokedAt) ? revokedAt + 1 : 0)).toISOString();
+}
+
 function sessionCookie(value, maxAge) {
   return `silver_session=${encodeURIComponent(value || "")}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=${maxAge}`;
 }
@@ -986,15 +991,55 @@ async function recordWechatIdentityEvent(conn, row, action, actorUserId = null, 
   );
 }
 
-async function issuePlatformSession(res, user, loginMethod) {
+async function revokeWechatBindingsForUser(userId, reviewerId, note) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [rows] = await conn.query("SELECT * FROM wechat_identities WHERE user_id = ? FOR UPDATE", [userId]);
+    for (const identity of rows) {
+      if (identity.status !== "approved") continue;
+      const changedAt = now();
+      await conn.query(
+        "UPDATE wechat_identities SET status = ?, user_id = ?, reviewer_id = ?, review_note = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+        ["revoked", null, reviewerId, note, changedAt, changedAt, identity.id]
+      );
+      await recordWechatIdentityEvent(conn, identity, "revoke", reviewerId, userId, note);
+    }
+    await conn.commit();
+    return rows.filter(row => row.status === "approved").length;
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally { conn.release(); }
+}
+
+async function expireUserSessions(userId) {
+  const sessions = readSessions();
+  for (const [token, session] of Object.entries(sessions)) {
+    if (session.userId === userId) delete sessions[token];
+  }
+  await writeSessions(sessions);
+}
+
+async function issuePlatformSession(res, user, loginMethod, wechatIdentity = null) {
+  const currentUser = readDb().users.find(item => item.id === user.id && item.status === "active");
+  if (!currentUser) return sendJson(res, 403, { error: "账号当前不可用，请联系总部核实" });
+  if (wechatIdentity) {
+    const binding = await wechatIdentityFor(wechatIdentity.appid, wechatIdentity.openid);
+    // 身份查询可能与密码重置交错；回到 JS 后再检查当前账号阻断标记。
+    if (!binding || binding.status !== "approved" || binding.user_id !== currentUser.id
+      || currentUser.wechatBindingSuspended || currentUser.role === "admin") {
+      return sendJson(res, 403, { error: "微信绑定已变化，请重新登录或联系总部核实" });
+    }
+  }
   const token = crypto.randomBytes(24).toString("hex");
   const sessions = readSessions();
   sessions[token] = {
-    userId: user.id, createdAt: now(),
+    userId: currentUser.id, createdAt: sessionCreatedAt(currentUser),
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
   };
   await writeSessions(sessions);
-  sendJson(res, 200, { user: publicUser(user), token, loginMethod }, {
+  sendJson(res, 200, { user: publicUser(currentUser), token, loginMethod }, {
     "Set-Cookie": sessionCookie(token, 7 * 24 * 60 * 60)
   });
 }
@@ -1026,9 +1071,13 @@ async function approveWechatIdentity(id, reviewer, input) {
         if (target.role === "admin") throw identityError("总部管理员微信绑定需本人使用原账号密码操作", 403);
         if (target.status === "pending") {
           const role = ["viewer", "member", "operator"].includes(input.role) ? input.role : "viewer";
-          activatedUser = { ...target, status: "active", role, canDownload: input.canDownload === true };
+          activatedUser = { ...target, status: "active", role, canDownload: input.canDownload === true, wechatBindingSuspended: false };
           await conn.query("UPDATE users SET role = ?, status = ?, doc = ? WHERE id = ?",
             [role, "active", JSON.stringify(activatedUser), target.id]);
+          target = activatedUser;
+        } else if (target.wechatBindingSuspended) {
+          activatedUser = { ...target, wechatBindingSuspended: false };
+          await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(activatedUser), target.id]);
           target = activatedUser;
         }
       } else {
@@ -1122,6 +1171,20 @@ function getCookieToken(req) {
   const cookie = req.headers.cookie || "";
   const hit = cookie.split(";").map(x => x.trim()).find(x => x.startsWith("silver_session="));
   return hit ? decodeURIComponent(hit.split("=")[1]) : "";
+}
+
+// Cookie 是跨站 H5 的兼容入口，但浏览器会自动携带它。所有带 Cookie 的写请求
+// 必须来自明确受信的页面；小程序/脚本使用 Bearer，不依赖浏览器 Origin。
+function cookieMutationOriginAllowed(req) {
+  const origin = String(req.headers.origin || "");
+  const trusted = new Set([
+    "https://proj2.likeduoduiyi.cn",
+    "https://apip2.kkhuacai08.cn",
+    ...String(process.env.SILVER_TRUSTED_WEB_ORIGINS || "").split(",").map(value => value.trim()).filter(Boolean)
+  ]);
+  const host = String(req.headers.host || "");
+  if (/^(localhost|127\.0\.0\.1):\d+$/.test(host)) trusted.add(`http://${host}`);
+  return Boolean(origin && trusted.has(origin));
 }
 
 function publicUser(user) {
@@ -1462,7 +1525,7 @@ async function loginByActivityHubSso(res, token) {
   const sessions = readSessions();
   sessions[tokenValue] = {
     userId: user.id,
-    createdAt: now(),
+    createdAt: sessionCreatedAt(user),
     expiresAt: sessionExpiresAt
   };
   await writeSessions(sessions);
@@ -2307,6 +2370,12 @@ function safeStaticPath(baseDir, urlPath) {
 }
 
 async function handleApi(req, res, pathname) {
+  if (!["GET", "HEAD", "OPTIONS"].includes(req.method)
+    && getCookieToken(req)
+    && !/^Bearer\s+\S+$/i.test(String(req.headers.authorization || ""))
+    && !cookieMutationOriginAllowed(req)) {
+    return sendJson(res, 403, { error: "请求来源不受信任，请刷新页面后重试" });
+  }
   if (req.method === "GET" && pathname === "/api/health") {
     try {
       await pool.query("SELECT 1");
@@ -2328,12 +2397,15 @@ async function handleApi(req, res, pathname) {
     try {
       identity = await exchangeWechatCode(body.code, { appid: WECHAT_MINIAPP_APPID, secret: WECHAT_MINIAPP_SECRET });
     } catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
+    const fingerprint = identityFingerprint(identity.appid, identity.openid);
     const row = await wechatIdentityFor(identity.appid, identity.openid);
-    if (!row) return sendJson(res, 200, { status: "unbound" });
-    if (row.status !== "approved") return sendJson(res, 200, { status: row.status });
+    if (!row) return sendJson(res, 200, { status: "unbound", fingerprint });
+    if (row.status !== "approved") return sendJson(res, 200, { status: row.status, fingerprint });
     const user = readDb().users.find(item => item.id === row.user_id && item.status === "active");
-    if (!user) return sendJson(res, 200, { status: "disabled" });
-    return issuePlatformSession(res, user, "wechat-miniapp");
+    if (!user) return sendJson(res, 200, { status: "disabled", fingerprint });
+    if (user.role === "admin") return sendJson(res, 200, { status: "password-required", fingerprint });
+    if (user.wechatBindingSuspended) return sendJson(res, 200, { status: "revoked", fingerprint });
+    return issuePlatformSession(res, user, "wechat-miniapp", identity);
   }
 
   if (req.method === "POST" && pathname === "/api/auth/wechat/apply") {
@@ -2346,7 +2418,9 @@ async function handleApi(req, res, pathname) {
     } catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
     const existing = await wechatIdentityFor(identity.appid, identity.openid);
     if (existing) {
-      if (existing.status === "pending" || existing.status === "approved") return sendJson(res, 200, { status: existing.status });
+      if (existing.status === "pending" || existing.status === "approved") return sendJson(res, 200, {
+        status: existing.status, fingerprint: identityFingerprint(identity.appid, identity.openid)
+      });
       return sendJson(res, 403, { error: "此微信申请已被处理，请联系总部核实后重新开放" });
     }
     const row = { id: createId("wxr"), ...identity, ...application, createdAt: now() };
@@ -2361,10 +2435,12 @@ async function handleApi(req, res, pathname) {
       );
       await recordWechatIdentityEvent(conn, row, "apply");
       await conn.commit();
-      return sendJson(res, 201, { status: "pending" });
+      return sendJson(res, 201, { status: "pending", fingerprint: identityFingerprint(identity.appid, identity.openid) });
     } catch (error) {
       await conn.rollback();
-      if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 200, { status: "pending" });
+      if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 200, {
+        status: "pending", fingerprint: identityFingerprint(identity.appid, identity.openid)
+      });
       throw error;
     } finally { conn.release(); }
   }
@@ -2378,11 +2454,15 @@ async function handleApi(req, res, pathname) {
     try { checkWechatBindAttempts(identity.appid, identity.openid); }
     catch (error) { return sendJson(res, error.statusCode, { error: error.message }); }
     const username = usernameKey(body.username);
-    const user = readDb().users.find(item => usernameKey(item.username) === username && item.status === "active");
+    const user = readDb().users.find(item => usernameKey(item.username) === username);
     if (!user || !user.passwordHash || user.passwordHash !== hashPassword(String(body.password || ""), user.salt)) {
       checkWechatBindAttempts(identity.appid, identity.openid, true);
       return sendJson(res, 401, { error: "原账号或密码不正确" });
     }
+    if (user.status === "pending") return sendJson(res, 403, { error: "原账号待总部审核，请审核通过后再绑定微信" });
+    if (user.status !== "active") return sendJson(res, 403, { error: "原账号当前不可用，请联系总部核实" });
+    if (user.role === "admin") return sendJson(res, 403, { error: "总部管理员暂不开放微信免密绑定，请使用账号密码登录" });
+    if (user.wechatBindingSuspended) return sendJson(res, 403, { error: "此账号的微信绑定已因密码重置暂停，请联系总部重新核实" });
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -2421,7 +2501,7 @@ async function handleApi(req, res, pathname) {
       throw error;
     } finally { conn.release(); }
     _wechatBindFailures.delete(crypto.createHash("sha256").update(`${identity.appid}:${identity.openid}`).digest("hex"));
-    return issuePlatformSession(res, user, "wechat-miniapp-bind");
+    return issuePlatformSession(res, user, "wechat-miniapp-bind", identity);
   }
 
   // 前台观看埋点：允许游客记录为“游客”，登录用户关联到具体账号。
@@ -2591,7 +2671,7 @@ async function handleApi(req, res, pathname) {
     const sessions = readSessions();
     sessions[token] = {
       userId: user.id,
-      createdAt: now(),
+      createdAt: sessionCreatedAt(user),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
     };
     await writeSessions(sessions);
@@ -4327,13 +4407,18 @@ async function handleApi(req, res, pathname) {
     const user = requireRole(req, res, ["admin"]);
     if (!user) return;
     const db = readDb();
+    const [activeWechatIdentities] = await pool.query("SELECT * FROM wechat_identities WHERE status = 'approved'");
+    const bindingByUserId = new Map(activeWechatIdentities.map(row => [row.user_id, {
+      id: row.id, fingerprint: identityFingerprint(row.appid, row.openid), reviewedAt: row.reviewed_at || null
+    }]));
     sendJson(res, 200, { users: db.users.map(item => ({
       ...publicUser(item),
       applicationContact: item.applicationContact || "",
       applicationCity: item.applicationCity || "",
       applicationOrganization: item.applicationOrganization || "",
       authSource: item.authSource || "",
-      hasPassword: Boolean(item.passwordHash)
+      hasPassword: Boolean(item.passwordHash),
+      wechatBinding: bindingByUserId.get(item.id) || null
     })) });
     return;
   }
@@ -4383,6 +4468,7 @@ async function handleApi(req, res, pathname) {
       sendJson(res, 404, { error: "账号不存在" });
       return;
     }
+    const previous = { ...target };
     if (target.authSource === "wechat-miniapp" && body.username !== undefined) {
       const username = usernameKey(body.username);
       if (!validNewUsername(username)) {
@@ -4401,8 +4487,19 @@ async function handleApi(req, res, pathname) {
     if (body.password) {
       target.salt = crypto.randomBytes(8).toString("hex");
       target.passwordHash = hashPassword(String(body.password), target.salt);
+      // 先持久化阻断标记：即便微信映射表解绑失败，也不能凭旧绑定取得新登录态。
+      target.wechatBindingSuspended = true;
     }
+    const securityChanged = Boolean(body.password) || previous.status !== target.status
+      || previous.role !== target.role || previous.username !== target.username;
+    if (securityChanged) target.sessionRevokedAt = now();
     await writeDb(db);
+    if (securityChanged) await expireUserSessions(target.id);
+    if (body.password) {
+      await revokeWechatBindingsForUser(target.id, user.id, "总部重置账号密码");
+      target.wechatBindingSuspended = false;
+      await writeDb(db);
+    }
     sendJson(res, 200, { user: publicUser(target) });
     return;
   }

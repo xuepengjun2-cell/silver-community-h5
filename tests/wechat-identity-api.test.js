@@ -49,11 +49,16 @@ async function withServer(run) {
     child.stderr.on("data", chunk => { log += chunk; });
     for (let i = 0; i < 100 && !log.includes("running at"); i++) await sleep(100);
     if (!log.includes("running at")) throw new Error(`server did not start: ${log}`);
-    const api = async (route, { method = "GET", token, body } = {}) => {
+    const api = async (route, { method = "GET", token, cookie, origin, contentType, body, rawBody } = {}) => {
       const response = await fetch(`http://127.0.0.1:${port}/api${route}`, {
         method,
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}) },
-        body: body ? JSON.stringify(body) : undefined
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(cookie ? { Cookie: `silver_session=${cookie}` } : {}),
+          ...(origin ? { Origin: origin } : {}),
+          ...(body || rawBody ? { "Content-Type": contentType || "application/json" } : {})
+        },
+        body: rawBody !== undefined ? rawBody : body ? JSON.stringify(body) : undefined
       });
       const text = await response.text();
       let data;
@@ -62,7 +67,7 @@ async function withServer(run) {
     };
     const logged = await api("/login", { method: "POST", body: { username: "test-admin", password: "test-password" } });
     assert.equal(logged.status, 200, log);
-    await run({ api, adminToken: logged.data.token });
+    await run({ api, adminToken: logged.data.token, port });
   } finally {
     if (child) child.kill();
     fs.rmSync(dir, { recursive: true, force: true });
@@ -75,7 +80,9 @@ test("新微信只能申请，管理员确认新建后才拿到同一平台 user
   } });
   assert.equal(apply.status, 201);
   assert.equal(apply.data.status, "pending");
-  assert.deepEqual((await api("/auth/wechat/session", { method: "POST", body: { code: "applicant2" } })).data, { status: "pending" });
+  const pendingSession = await api("/auth/wechat/session", { method: "POST", body: { code: "applicant2" } });
+  assert.equal(pendingSession.data.status, "pending");
+  assert.equal(pendingSession.data.fingerprint.length, 12);
   assert.equal((await api("/my/activity-projects")).status, 401, "未审批者不能进入业务数据接口");
   assert.equal((await api("/admin/wechat/applications")).status, 401, "申请名单仅总部可见");
   const list = await api("/admin/wechat/applications", { token: adminToken });
@@ -100,7 +107,7 @@ test("新微信只能申请，管理员确认新建后才拿到同一平台 user
   const disabled = await api(`/admin/users/${approved.data.user.id}`, { method: "PUT", token: adminToken,
     body: { name: approved.data.user.name, role: "operator", status: "disabled", canDownload: false } });
   assert.equal(disabled.status, 200);
-  assert.deepEqual((await api("/auth/wechat/session", { method: "POST", body: { code: "applicant4" } })).data, { status: "disabled" });
+  assert.equal((await api("/auth/wechat/session", { method: "POST", body: { code: "applicant4" } })).data.status, "disabled");
   assert.equal((await api("/me", { token: login.data.token })).data.user, null);
 }));
 
@@ -121,6 +128,10 @@ test("审核绑定已有账号保持 userId；一人一微信冲突被拒绝", (
   assert.equal(approved.status, 200);
   assert.equal(approved.data.user.id, existing.id);
   assert.equal(approved.data.user.role, "operator", "申请不能改变已有角色");
+  const userList = await api("/admin/users", { token: adminToken });
+  const boundUser = userList.data.users.find(item => item.id === existing.id);
+  assert.equal(boundUser.wechatBinding.id, identityId, "用户卡片不依赖最近30条审核记录，也能找到绑定与解绑入口");
+  assert.equal(boundUser.wechatBinding.fingerprint.length, 12);
   const wxLogin = await api("/auth/wechat/session", { method: "POST", body: { code: "existing2" } });
   assert.equal(wxLogin.data.user.id, existing.id);
   const h5Login = await api("/login", { method: "POST", body: { username: "owner-shanghai", password: "owner-password" } });
@@ -133,7 +144,7 @@ test("审核绑定已有账号保持 userId；一人一微信冲突被拒绝", (
   assert.equal(identities.data.applications.filter(item => item.status === "approved").length, 1);
   const revoked = await api(`/admin/wechat/applications/${identityId}/revoke`, { method: "POST", token: adminToken, body: {} });
   assert.equal(revoked.status, 200);
-  assert.deepEqual((await api("/auth/wechat/session", { method: "POST", body: { code: "existing3" } })).data, { status: "revoked" });
+  assert.equal((await api("/auth/wechat/session", { method: "POST", body: { code: "existing3" } })).data.status, "revoked");
   assert.equal((await api("/me", { token: h5Login.data.token })).data.user, null, "换绑时撤销原平台会话");
   assert.equal((await api(`/admin/wechat/applications/${identityId}/reopen`, {
     method: "POST", token: adminToken, body: {}
@@ -185,4 +196,64 @@ test("账号级 SOP 下载禁用在服务端生效，不依赖隐藏按钮", () 
     body: { name: "无下载权限", role: "viewer", status: "active", canDownload: true } });
   assert.equal(enabled.status, 200);
   assert.equal((await api("/public/activities/act_download_test/download.pdf", { token: logged.data.token })).status, 200);
+}));
+
+test("密码重置解除微信绑定并撤销旧会话；停用再启用不复活旧 token", () => withServer(async ({ api, adminToken }) => {
+  const created = await api("/admin/users", { method: "POST", token: adminToken, body: {
+    username: "reset-owner", password: "old-password", name: "测试主办方", role: "operator"
+  } });
+  const userId = created.data.user.id;
+  const bound = await api("/auth/wechat/bind", { method: "POST", body: {
+    code: "conflict", username: "reset-owner", password: "old-password"
+  } });
+  assert.equal(bound.status, 200);
+  const reset = await api(`/admin/users/${userId}`, { method: "PUT", token: adminToken, body: {
+    name: "测试主办方", role: "operator", status: "active", password: "new-password"
+  } });
+  assert.equal(reset.status, 200);
+  assert.equal((await api("/me", { token: bound.data.token })).data.user, null);
+  assert.equal((await api("/auth/wechat/session", { method: "POST", body: { code: "conflict" } })).data.status, "revoked");
+  assert.equal((await api("/login", { method: "POST", body: { username: "reset-owner", password: "old-password" } })).status, 401);
+  const relogged = await api("/login", { method: "POST", body: { username: "reset-owner", password: "new-password" } });
+  assert.equal(relogged.status, 200);
+  assert.equal((await api(`/admin/users/${userId}`, { method: "PUT", token: adminToken, body: {
+    name: "测试主办方", role: "operator", status: "disabled"
+  } })).status, 200);
+  assert.equal((await api(`/admin/users/${userId}`, { method: "PUT", token: adminToken, body: {
+    name: "测试主办方", role: "operator", status: "active"
+  } })).status, 200);
+  assert.equal((await api("/me", { token: relogged.data.token })).data.user, null);
+}));
+
+test("H5 待审账号正确密码不计为绑定失败；总部管理员不能自绑微信", () => withServer(async ({ api }) => {
+  assert.equal((await api("/register", { method: "POST", body: {
+    username: "pending-owner", password: "correct-password", name: "待审主办方", contact: "13800000000"
+  } })).status, 201);
+  for (let i = 0; i < 6; i++) {
+    const pending = await api("/auth/wechat/bind", { method: "POST", body: {
+      code: "conflict", username: "pending-owner", password: "correct-password"
+    } });
+    assert.equal(pending.status, 403);
+    assert.match(pending.data.error, /待总部审核/);
+  }
+  const admin = await api("/auth/wechat/bind", { method: "POST", body: {
+    code: "conflict", username: "test-admin", password: "test-password"
+  } });
+  assert.equal(admin.status, 403);
+  assert.match(admin.data.error, /总部管理员/);
+}));
+
+test("外站不能借管理员 Cookie 用简单表单请求创建账号", () => withServer(async ({ api, adminToken, port }) => {
+  const forged = await api("/admin/users", { method: "POST", cookie: adminToken,
+    origin: "https://untrusted.example", contentType: "text/plain",
+    rawBody: JSON.stringify({ username: "csrf-admin", password: "stolen", role: "admin" })
+  });
+  assert.equal(forged.status, 403);
+  const users = await api("/admin/users", { token: adminToken });
+  assert.equal(users.data.users.some(user => user.username === "csrf-admin"), false);
+  const trusted = await api("/admin/users", { method: "POST", cookie: adminToken,
+    origin: `http://127.0.0.1:${port}`,
+    body: { username: "trusted-origin", password: "local-password", role: "viewer" }
+  });
+  assert.equal(trusted.status, 201, "已信任 H5 页面保留原有 Cookie 写入能力");
 }));

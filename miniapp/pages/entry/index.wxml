@@ -6,6 +6,8 @@
   <view wx:else class="card entry-card">
     <view wx:if="{{wechatStatus === 'pending'}}" class="entry-state">微信申请待总部审核。审核通过后，重新打开小程序即可进入。</view>
     <view wx:if="{{wechatStatus === 'rejected' || wechatStatus === 'revoked' || wechatStatus === 'disabled'}}" class="entry-state">此微信身份暂不能进入工作台，请联系总部核实。</view>
+    <view wx:if="{{wechatStatus === 'password-required'}}" class="entry-state">总部管理员请使用账号密码登录，不开放微信免密进入。</view>
+    <view wx:if="{{wechatFingerprint}}" class="entry-state">联系总部时请提供微信核对码：{{wechatFingerprint}}。核对码仅用于定位申请，仍需总部人工核实身份。</view>
     <view wx:if="{{wechatStatus === 'unavailable' && wechatMessage}}" class="entry-state">{{wechatMessage}}</view>
     <view class="entry-card-title">已有工作台账号</view>
     <view class="muted">首次输入原账号密码完成微信绑定；之后可用微信直接进入。微信登录尚未配置时仍可用原账号登录。</view>
