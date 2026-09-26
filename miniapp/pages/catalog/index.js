@@ -102,6 +102,20 @@ Page({
     if (images.includes(current)) wx.previewImage({ current, urls: images });
   },
   onVideo(event) { this.setData({ playingIndex: Number(event.currentTarget.dataset.index) }); },
+  onCaseFullscreen(event) {
+    const index = Number(event.currentTarget.dataset.index);
+    const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
+    if (!media || media.type !== "video") return;
+    const enterFullscreen = () => {
+      try {
+        const video = wx.createVideoContext(`caseVideo${index}`, this);
+        if (!video || typeof video.requestFullScreen !== "function") throw new Error("不支持全屏播放");
+        video.requestFullScreen({ direction: 0 });
+      } catch (_) { wx.showToast({ title: "无法进入全屏，请在页面内观看", icon: "none" }); }
+    };
+    if (this.data.playingIndex === index) enterFullscreen();
+    else this.setData({ playingIndex: index }, enterFullscreen);
+  },
   onDownloadError(error) {
     const message = error && error.message || "下载失败，请稍后重试。";
     if (/登录/.test(message) || error && error.statusCode === 401) {

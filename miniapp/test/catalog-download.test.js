@@ -8,6 +8,16 @@ const caseId = "case_ead7a3aa8b0aa2d9";
 const image = { index: 0, type: "image", url: "https://proj2.likeduoduiyi.cn/silver-images/test.jpg" };
 const video = { index: 1, type: "video", url: "https://proj2.likeduoduiyi.cn/silver-case-videos/test.mp4" };
 
+function catalogPage() {
+  let definition;
+  global.Page = value => { definition = value; };
+  const resolved = require.resolve("../pages/catalog/index.js");
+  delete require.cache[resolved];
+  require(resolved);
+  delete global.Page;
+  return { ...definition, data: { ...definition.data }, setData(values, done) { Object.assign(this.data, values); if (done) done(); } };
+}
+
 function fakeWx(options = {}) {
   const calls = [];
   const wxApi = {
@@ -93,7 +103,23 @@ test("案例文档可鉴权下载并在微信文档页打开", async () => {
 
 test("案例视频在竖屏播放器内打开，且全屏保持竖屏", () => {
   const wxml = fs.readFileSync(path.join(__dirname, "../pages/catalog/index.wxml"), "utf8");
-  assert.match(wxml, /class="case-video"[^>]*direction="0"[^>]*object-fit="contain"/);
+  assert.match(wxml, /id="caseVideo\{\{item\.index\}\}" class="case-video"[^>]*direction="0"[^>]*object-fit="contain"[^>]*show-fullscreen-btn="false"/);
+  assert.match(wxml, /bindtap="onCaseFullscreen">竖屏全屏播放/);
   assert.match(wxml, /bindtap="onCaseSave"/);
   assert.match(wxml, /bindtap="onSopPdf"/);
+  assert.ok(wxml.indexOf("bindtap=\"onCaseSave\"") < wxml.indexOf("class=\"case-image\""), "保存入口在预览图之前");
+  const calls = [];
+  global.wx = { createVideoContext(id, page) {
+    calls.push(["context", id, page]);
+    return { requestFullScreen(options) { calls.push(["fullscreen", options]); } };
+  } };
+  const page = catalogPage();
+  page.allMedia = [video];
+  page.onCaseFullscreen({ currentTarget: { dataset: { index: 1 } } });
+  assert.equal(page.data.playingIndex, 1);
+  assert.deepEqual(calls.map(call => call[0]), ["context", "fullscreen"]);
+  assert.equal(calls[0][1], "caseVideo1");
+  assert.equal(calls[0][2], page);
+  assert.deepEqual(calls[1][1], { direction: 0 });
+  delete global.wx;
 });

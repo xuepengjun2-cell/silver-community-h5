@@ -48,14 +48,15 @@
       <view wx:if="{{!media.length}}" class="notice">案例尚未添加素材。</view>
       <view wx:else class="case-grid {{activeTab === 'video' ? 'case-video-grid' : ''}}">
         <view wx:for="{{shownMedia}}" wx:key="index" class="card case-media">
-          <image wx:if="{{item.type === 'image'}}" class="case-image" src="{{item.url}}" mode="aspectFill" lazy-load="true" data-url="{{item.url}}" bindtap="onImage"/>
-          <block wx:elif="{{item.type === 'video'}}"><video wx:if="{{playingIndex === item.index}}" class="case-video" src="{{item.url}}" poster="{{item.poster || cover}}" controls="true" autoplay="true" direction="0" object-fit="contain" show-fullscreen-btn="true"/><view wx:else class="case-video-poster" data-index="{{item.index}}" bindtap="onVideo"><image wx:if="{{item.poster || cover}}" src="{{item.poster || cover}}" mode="aspectFill"/><text class="play">▶</text></view></block>
-          <view wx:else class="case-other">{{item.type === 'document' ? '📄 文档素材' : '🔗 外部平台素材'}}</view>
           <view class="case-media-title">{{item.title}}</view>
-          <view wx:if="{{item.type === 'image' || item.type === 'video' || item.type === 'document'}}" class="case-actions">
+          <view wx:if="{{item.type === 'image' || item.type === 'video' || item.type === 'document'}}" class="case-actions {{item.type === 'video' ? 'case-video-actions' : ''}}">
+            <button wx:if="{{item.type === 'video'}}" class="button button-primary case-fullscreen" data-index="{{item.index}}" bindtap="onCaseFullscreen">竖屏全屏播放</button>
             <button wx:if="{{item.type === 'document'}}" class="button button-secondary case-save" data-index="{{item.index}}" loading="{{savingIndex === item.index}}" disabled="{{savingIndex !== -1}}" bindtap="onCaseDocument">{{savingIndex === item.index ? '下载中 ' + downloadProgress + '%' : loggedIn ? '下载文档' : '登录后下载'}}</button>
             <button wx:else class="button button-secondary case-save" data-index="{{item.index}}" loading="{{savingIndex === item.index}}" disabled="{{savingIndex !== -1}}" bindtap="onCaseSave">{{savingIndex === item.index ? '下载中 ' + downloadProgress + '%' : !loggedIn ? '登录后下载' : item.type === 'image' ? '保存照片' : '保存视频'}}</button>
           </view>
+          <image wx:if="{{item.type === 'image'}}" class="case-image" src="{{item.url}}" mode="aspectFill" lazy-load="true" data-url="{{item.url}}" bindtap="onImage"/>
+          <block wx:elif="{{item.type === 'video'}}"><video wx:if="{{playingIndex === item.index}}" id="caseVideo{{item.index}}" class="case-video" src="{{item.url}}" poster="{{item.poster || cover}}" controls="true" autoplay="true" direction="0" object-fit="contain" show-fullscreen-btn="false"/><view wx:else class="case-video-poster" data-index="{{item.index}}" bindtap="onVideo"><image wx:if="{{item.poster || cover}}" src="{{item.poster || cover}}" mode="aspectFill"/><text class="play">▶</text></view></block>
+          <view wx:else class="case-other">{{item.type === 'document' ? '📄 文档素材' : '🔗 外部平台素材'}}</view>
         </view>
       </view>
       <button wx:if="{{hasMore}}" class="button button-secondary more" bindtap="onMore">继续查看</button>
