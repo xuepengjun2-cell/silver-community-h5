@@ -23,6 +23,13 @@ async function query(sql, params = []) {
     let rows = table(name);
     if (where) {
       if (/^id = \?$/i.test(where)) rows = rows.filter(r => r.id === params[0]);
+      else if ((m = where.match(/^project_id = \? AND status IN \((.+)\)$/i))) {
+        const statuses = [...m[1].matchAll(/'([^']+)'/g)].map(hit => hit[1]);
+        rows = rows.filter(r => r.project_id === params[0] && statuses.includes(r.status));
+      }
+      else if ((m = where.match(/^project_id = \? AND status = '([^']+)'$/i))) {
+        rows = rows.filter(r => r.project_id === params[0] && r.status === m[1]);
+      }
       else if (/^id\s*<>\s*\?$/i.test(where)) rows = rows.filter(r => r.id !== params[0]);
       else if ((m = where.match(/^status = '(\w+)'$/i))) rows = rows.filter(r => r.status === m[1]);
       else rows = [];

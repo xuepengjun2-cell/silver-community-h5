@@ -9,6 +9,7 @@ const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 190 * 1024 * 1024;
 const MAX_DELIVERY_BYTES = 190 * 1024 * 1024;
 const TARGET_DELIVERY_BYTES = 155 * 1024 * 1024;
+const MAX_VIDEO_DURATION_SECONDS = 2 * 60 * 60;
 
 async function receiveUpload(req, directory, type) {
   const maxSize = type === "video" ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
@@ -85,7 +86,7 @@ function run(command, args, timeoutMs = 15 * 60 * 1000) {
 }
 
 async function probe(file) {
-  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,pix_fmt", "-of", "json", file], 30 * 1000);
+  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,duration", "-of", "json", file], 30 * 1000);
   try { return JSON.parse(raw); }
   catch { throw new Error("无法识别媒体格式。 "); }
 }
@@ -93,14 +94,26 @@ async function probe(file) {
 function videoEncoding(probed) {
   const video = (probed.streams || []).find(stream => stream.codec_type === "video");
   const audio = (probed.streams || []).find(stream => stream.codec_type === "audio");
-  const duration = Number(probed.format && probed.format.duration);
-  if (!video || !Number.isFinite(duration) || duration <= 0 || duration > 40 * 60) {
-    throw new Error("视频无法解析或时长超过40分钟，请分段上传。 ");
-  }
+  if (!video) throw new Error("文件中未识别到视频画面，请核对原片是否完整。 ");
+  const durations = [probed.format?.duration, video.duration, audio?.duration].map(Number);
+  const duration = durations.find(value => Number.isFinite(value) && value > 0);
+  if (!duration) throw new Error("无法读取视频时长，请确认 MP4 原片完整且可正常播放。 ");
+  if (duration > MAX_VIDEO_DURATION_SECONDS) throw new Error(`视频时长约 ${Math.ceil(duration / 60)} 分钟，超过 120 分钟处理上限，请分段上传。 `);
   if (Number(video.width) > 4096 || Number(video.height) > 4096) throw new Error("视频分辨率过大，请先降低到4K以内。 ");
-  const bitrate = Math.min(2300, Math.floor(TARGET_DELIVERY_BYTES * 8 / duration / 1000 - (audio ? 96 : 0)));
-  if (bitrate < 350) throw new Error("视频太长，压缩到可保存大小会明显失真，请分段上传。 ");
-  return { video, audio, duration, bitrate };
+  const audioBitrate = audio ? duration > 40 * 60 ? 64 : 96 : 0;
+  const bitrate = Math.min(2300, Math.floor(TARGET_DELIVERY_BYTES * 8 / duration / 1000 - audioBitrate));
+  return { video, audio, duration, bitrate, audioBitrate };
+}
+
+function videoDeliveryMode(info, sourceSize) {
+  // MP4 是封装格式，不代表内部编码必然兼容。接近目标体积且码率充足时压缩；
+  // 已够小或长视频码率本就很低时仅整理索引，避免重复有损编码。
+  const compatible = info.video.codec_name === "h264" && info.video.pix_fmt === "yuv420p" &&
+    (!info.audio || info.audio.codec_name === "aac");
+  if (compatible && sourceSize > 0 && sourceSize < MAX_DELIVERY_BYTES &&
+      (sourceSize <= TARGET_DELIVERY_BYTES || info.bitrate < 350)) return "copy";
+  if (info.bitrate < 180) throw new Error("视频时长与文件大小超出交付范围，压缩到 190MB 内会明显失真，请分段上传。 ");
+  return "encode";
 }
 
 async function processImage(source, target) {
@@ -118,7 +131,8 @@ async function processImage(source, target) {
 async function processVideo(source, target) {
   const input = videoEncoding(await probe(source));
   const sourceSize = (await fsp.stat(source)).size;
-  const sourceBitrate = Math.floor(sourceSize * 8 * 0.9 / input.duration / 1000 - (input.audio ? 96 : 0));
+  const mode = videoDeliveryMode(input, sourceSize);
+  const sourceBitrate = Math.floor(sourceSize * 8 * 0.9 / input.duration / 1000 - input.audioBitrate);
   const verifiedOutput = async () => {
     const result = videoEncoding(await probe(target));
     if (result.video.codec_name !== "h264" || result.audio && result.audio.codec_name !== "aac" || Math.abs(result.duration - input.duration) > Math.max(1, input.duration * 0.02)) {
@@ -126,9 +140,7 @@ async function processVideo(source, target) {
     }
   };
   // 已兼容的原视频只转封装并把索引移到文件头，避免重复有损编码。
-  if (input.video.codec_name === "h264" && input.video.pix_fmt === "yuv420p" && (!input.audio || input.audio.codec_name === "aac") &&
-      (sourceSize < 5 * 1024 * 1024 || input.video.width <= 1280 && input.video.height <= 720 && sourceBitrate <= 2300) &&
-      sourceSize < MAX_DELIVERY_BYTES) {
+  if (mode === "copy") {
     try {
       await run("ffmpeg", [
         "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
@@ -141,17 +153,19 @@ async function processVideo(source, target) {
       }
     } catch { /* 不可转封装时回退转码；原件仍保持不变。 */ }
     await fsp.rm(target, { force: true });
+    if (input.bitrate < 180) throw new Error("兼容 MP4 无损整理失败，且长视频不适合再次有损压缩；原片已保留，请联系管理员核查。 ");
   }
   // 原片码率已低时不盲目把小文件放大；交付大小上限仍由最终校验决定。
-  const bitrate = Math.max(350, Math.min(input.bitrate, sourceBitrate));
-  const maxWidth = bitrate < 700 ? 854 : 1280;
-  const maxHeight = bitrate < 700 ? 480 : 720;
+  const bitrate = Math.max(180, Math.min(input.bitrate, sourceBitrate));
+  const maxWidth = bitrate < 350 ? 480 : bitrate < 700 ? 854 : 1280;
+  const maxHeight = bitrate < 350 ? 270 : bitrate < 700 ? 480 : 720;
+  const fps = bitrate < 350 ? 20 : 25;
   await run("ffmpeg", [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-i", source,
-    "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${maxWidth},iw)':h='min(${maxHeight},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=25`,
+    "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${maxWidth},iw)':h='min(${maxHeight},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${fps}`,
     "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-pix_fmt", "yuv420p", "-b:v", `${bitrate}k`,
     "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
-    "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-y", target
+    "-c:a", "aac", "-b:a", `${input.audioBitrate || 64}k`, "-movflags", "+faststart", "-y", target
   ], 90 * 60 * 1000);
   const stat = await fsp.stat(target);
   if (!stat.size || stat.size >= MAX_DELIVERY_BYTES) throw new Error("视频处理后仍超过190MB，请分段上传。 ");
@@ -178,5 +192,5 @@ async function processVideoPoster(video, target) {
 
 module.exports = {
   MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, MAX_DELIVERY_BYTES,
-  receiveUpload, videoEncoding, processImage, processVideo, processVideoPoster
+  receiveUpload, videoEncoding, videoDeliveryMode, processImage, processVideo, processVideoPoster
 };

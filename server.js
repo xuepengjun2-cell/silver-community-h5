@@ -2885,6 +2885,32 @@ async function handleApi(req, res, pathname) {
     }
   }
 
+  const projectVideoUploadSessions = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/media\/upload-sessions$/);
+  if (req.method === "GET" && projectVideoUploadSessions) {
+    const user = requireRole(req, res, ["admin", "operator", "member"]);
+    if (!user) return;
+    const projectId = decodeURIComponent(projectVideoUploadSessions[1]);
+    const project = (readDb().activityProjects || []).find(item => item.id === projectId);
+    if (!project) return sendJson(res, 404, { error: "活动相册不存在" });
+    if (!projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能查看这个相册的上传任务" });
+    const columns = "id, owner_id, title, filename, status, error, created_at, updated_at";
+    const [active] = await pool.query(
+      `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status IN ('uploading','failed','processing','delivery_failed') ORDER BY created_at DESC LIMIT 50`,
+      [projectId]
+    );
+    const [completed] = await pool.query(
+      `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status = 'completed' ORDER BY updated_at DESC LIMIT 3`,
+      [projectId]
+    );
+    const visible = [...active, ...completed]
+      .filter(item => user.role === "admin" || item.owner_id === user.id)
+      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+    return sendJson(res, 200, { sessions: visible.map(item => ({
+      sessionId: item.id, title: item.title || item.filename, status: item.status,
+      error: item.error || "", updatedAt: item.updated_at
+    })) });
+  }
+
   const projectVideoUploadStatus = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/media\/upload-session\/([^/]+)\/status$/);
   if (req.method === "GET" && projectVideoUploadStatus) {
     const user = requireRole(req, res, ["admin", "operator", "member"]);

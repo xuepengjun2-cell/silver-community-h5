@@ -157,6 +157,9 @@ test("H5 大视频后台生成 MP4 期间新建相册，不覆盖其他相册", 
   fs.mkdirSync(path.join(ctx.dir, "tos"), { recursive: true });
   fs.writeFileSync(path.join(ctx.dir, "tos", encodeURIComponent(session.object_key)), body);
   assert.equal((await ctx.api(`/my/activity-projects/${a}/media/upload-session/${init.data.sessionId}/complete?delivery=1`, { method: "POST", token, body: {} })).status, 202);
+  const pending = await ctx.api(`/my/activity-projects/${a}/media/upload-sessions`, { token });
+  assert.equal(pending.status, 200);
+  assert.equal(pending.data.sessions.find(item => item.sessionId === init.data.sessionId)?.status, "processing");
   await sleep(300);
   await createAlbum(ctx, token, "C");
   let status = {};
@@ -165,6 +168,8 @@ test("H5 大视频后台生成 MP4 期间新建相册，不覆盖其他相册", 
     status = (await ctx.api(`/my/activity-projects/${a}/media/upload-session/${init.data.sessionId}/status`, { token })).data;
   }
   assert.equal(status.status, "completed", status.error);
+  const finished = await ctx.api(`/my/activity-projects/${a}/media/upload-sessions`, { token });
+  assert.equal(finished.data.sessions.find(item => item.sessionId === init.data.sessionId)?.status, "completed");
   assertAlbumsIntact(ctx, await listAlbums(ctx, token), ["A", "B", "C"], "A");
 }));
 
@@ -222,6 +227,7 @@ test("相册全员可查看，只有创建者与总部管理员可修改、上�
     ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "PATCH", token: colleague.token, body: { title: "越权修改" } }),
     ctx.api(`/my/activity-projects/${ownerAlbum}`, { method: "DELETE", token: colleague.token }),
     ctx.api(`/my/activity-projects/${ownerAlbum}/media/init`, { method: "POST", token: colleague.token, body: { type: "video", ext: "mp4", size: 100 } }),
+    ctx.api(`/my/activity-projects/${ownerAlbum}/media/upload-sessions`, { token: colleague.token }),
     ctx.api(`/my/activity-projects/${ownerAlbum}/miniapp-media?type=image`, { method: "POST", token: colleague.token }),
     ctx.api(`/my/activity-projects/${ownerAlbum}/media/0`, { method: "DELETE", token: colleague.token }),
     ctx.api(`/my/activity-projects/${ownerAlbum}/promote-case`, { method: "POST", token: colleague.token })
