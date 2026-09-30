@@ -8,7 +8,9 @@ const Busboy = require("busboy");
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 190 * 1024 * 1024;
 const MAX_DELIVERY_BYTES = 190 * 1024 * 1024;
-const TARGET_DELIVERY_BYTES = 155 * 1024 * 1024;
+// Leave enough headroom below the hard 190 MiB limit for muxing/metadata while
+// preserving as much quality as possible. Long clips trade resolution/fps for size.
+const TARGET_DELIVERY_BYTES = 175 * 1024 * 1024;
 const MAX_VIDEO_DURATION_SECONDS = 2 * 60 * 60;
 
 async function receiveUpload(req, directory, type) {
@@ -100,9 +102,18 @@ function videoEncoding(probed) {
   if (!duration) throw new Error("无法读取视频时长，请确认 MP4 原片完整且可正常播放。 ");
   if (duration > MAX_VIDEO_DURATION_SECONDS) throw new Error(`视频时长约 ${Math.ceil(duration / 60)} 分钟，超过 120 分钟处理上限，请分段上传。 `);
   if (Number(video.width) > 4096 || Number(video.height) > 4096) throw new Error("视频分辨率过大，请先降低到4K以内。 ");
-  const audioBitrate = audio ? duration > 40 * 60 ? 64 : 96 : 0;
+  const audioBitrate = audio ? duration >= 90 * 60 ? 32 : duration > 40 * 60 ? 48 : 96 : 0;
   const bitrate = Math.min(2300, Math.floor(TARGET_DELIVERY_BYTES * 8 / duration / 1000 - audioBitrate));
   return { video, audio, duration, bitrate, audioBitrate };
+}
+
+function videoEncodingProfile(bitrate) {
+  if (bitrate >= 700) return { maxDimension: 1280, fps: 25 };
+  if (bitrate >= 350) return { maxDimension: 854, fps: 24 };
+  if (bitrate >= 220) return { maxDimension: 640, fps: 20 };
+  if (bitrate >= 120) return { maxDimension: 426, fps: 15 };
+  if (bitrate >= 70) return { maxDimension: 256, fps: 12 };
+  throw new Error("原视频码率过低，即使降到最低分辨率仍无法稳定交付，请分段上传或更换原片。 ");
 }
 
 function videoDeliveryMode(info, sourceSize) {
@@ -112,7 +123,6 @@ function videoDeliveryMode(info, sourceSize) {
     (!info.audio || info.audio.codec_name === "aac");
   if (compatible && sourceSize > 0 && sourceSize < MAX_DELIVERY_BYTES &&
       (sourceSize <= TARGET_DELIVERY_BYTES || info.bitrate < 350)) return "copy";
-  if (info.bitrate < 180) throw new Error("视频时长与文件大小超出交付范围，压缩到 190MB 内会明显失真，请分段上传。 ");
   return "encode";
 }
 
@@ -153,20 +163,17 @@ async function processVideo(source, target) {
       }
     } catch { /* 不可转封装时回退转码；原件仍保持不变。 */ }
     await fsp.rm(target, { force: true });
-    if (input.bitrate < 180) throw new Error("兼容 MP4 无损整理失败，且长视频不适合再次有损压缩；原片已保留，请联系管理员核查。 ");
   }
   // 原片码率已低时不盲目把小文件放大；交付大小上限仍由最终校验决定。
-  const bitrate = Math.max(180, Math.min(input.bitrate, sourceBitrate));
-  const maxWidth = bitrate < 350 ? 480 : bitrate < 700 ? 854 : 1280;
-  const maxHeight = bitrate < 350 ? 270 : bitrate < 700 ? 480 : 720;
-  const fps = bitrate < 350 ? 20 : 25;
+  const bitrate = Math.floor(Math.min(input.bitrate, sourceBitrate));
+  const profile = videoEncodingProfile(bitrate);
   await run("ffmpeg", [
     "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-i", source,
-    "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${maxWidth},iw)':h='min(${maxHeight},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${fps}`,
+    "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${profile.maxDimension},iw)':h='min(${profile.maxDimension},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${profile.fps}`,
     "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-pix_fmt", "yuv420p", "-b:v", `${bitrate}k`,
     "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
     "-c:a", "aac", "-b:a", `${input.audioBitrate || 64}k`, "-movflags", "+faststart", "-y", target
-  ], 90 * 60 * 1000);
+  ], Math.min(5 * 60 * 60 * 1000, Math.max(30 * 60 * 1000, input.duration * 2 * 1000 + 15 * 60 * 1000)));
   const stat = await fsp.stat(target);
   if (!stat.size || stat.size >= MAX_DELIVERY_BYTES) throw new Error("视频处理后仍超过190MB，请分段上传。 ");
   await verifiedOutput();
@@ -192,5 +199,5 @@ async function processVideoPoster(video, target) {
 
 module.exports = {
   MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, MAX_DELIVERY_BYTES,
-  receiveUpload, videoEncoding, videoDeliveryMode, processImage, processVideo, processVideoPoster
+  receiveUpload, videoEncoding, videoEncodingProfile, videoDeliveryMode, processImage, processVideo, processVideoPoster
 };
