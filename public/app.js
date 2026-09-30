@@ -1983,11 +1983,13 @@ async function loadProjectManager(id) {
 }
 
 function projectUploadSessionsHtml(projectId) {
-  const sessions = (state.projectUploadSessions || []).slice(0, 53);
+  // Completed sessions are retained briefly by the API so polling can refresh the
+  // album after delivery, but the task panel is only for work needing attention.
+  const sessions = (state.projectUploadSessions || []).filter(item => item.status !== "completed").slice(0, 50);
   if (!sessions.length && !state.projectUploadSessionsError) return "";
   const labels = {
     uploading: "等待续传", failed: "上传未完成", processing: "后台处理中",
-    delivery_failed: "处理失败，原片已保留", completed: "处理完成"
+    delivery_failed: "处理失败，原片已保留"
   };
   return `<section class="project-processing-panel" aria-live="polite"><strong>视频后台任务</strong>
     ${state.projectUploadSessionsError ? `<p>任务状态暂不可读：${esc(state.projectUploadSessionsError)}。请刷新页面后重试。</p>` : ""}
@@ -1995,7 +1997,6 @@ function projectUploadSessionsHtml(projectId) {
       <span class="project-processing-name" title="${esc(item.title)}">${esc(item.title)}</span>
       <span class="project-processing-status">${esc(labels[item.status] || item.status)}</span>
       ${item.status === "delivery_failed" ? `<button class="btn secondary small" type="button" data-project-retry-session="${esc(item.sessionId)}">重试处理</button>` : ""}
-      ${item.status === "completed" ? `<button class="btn secondary small" type="button" data-project-refresh-media="${esc(projectId)}">刷新素材</button>` : ""}
       ${item.error ? `<small>${esc(item.error)}</small>` : ""}
     </div>`).join("")}
     ${sessions.some(item => ["uploading", "failed"].includes(item.status)) ? `<p class="project-processing-note">上传未完成时重新选择同一文件可续传；已进入后台处理的文件无需重新上传。</p>` : ""}
