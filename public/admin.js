@@ -1959,36 +1959,78 @@ function renderCaseAdminDetail() {
 }
 
 // ---- 账号管理 ----
+function wechatReviewSelection(target) {
+  if (target === "__new__") return { mode: "new", canApprove: true, canSetPermissions: true };
+  const user = state.users.find(item => item.id === target);
+  if (!user || user.role === "admin" || user.retiredToUserId || !["active", "pending"].includes(user.status)) {
+    return { mode: "unselected", canApprove: false, canSetPermissions: false };
+  }
+  if (user.wechatBinding) return { mode: "conflict", user, canApprove: false, canSetPermissions: false };
+  return { mode: user.status, user, canApprove: true, canSetPermissions: user.status === "pending" };
+}
+
+function syncWechatReviewCard(card) {
+  const target = card.querySelector("[data-wx-target]").value;
+  const selection = wechatReviewSelection(target);
+  const role = card.querySelector("[data-wx-role]");
+  const download = card.querySelector("[data-wx-download]");
+  const confirmation = card.querySelector("[data-wx-confirm]");
+  if (card.dataset.reviewTarget !== target) {
+    role.value = selection.mode === "active" ? selection.user.role : "viewer";
+    download.checked = selection.mode === "active" ? Boolean(selection.user.canDownload) : false;
+    confirmation.checked = false;
+    card.dataset.reviewTarget = target;
+  }
+  role.disabled = !selection.canSetPermissions;
+  download.disabled = !selection.canSetPermissions;
+  card.querySelector("[data-wx-new-confirm]").hidden = selection.mode !== "new";
+  card.querySelector("[data-wx-approve]").disabled = !selection.canApprove
+    || (selection.mode === "new" && !confirmation.checked);
+  const note = card.querySelector("[data-wx-selection-note]");
+  note.textContent = selection.mode === "active"
+    ? `将绑定原账号 ${selection.user.username}（userId：${selection.user.id}），保留原角色“${roleLabel(selection.user.role)}”和 SOP 下载权限“${selection.user.canDownload ? "允许" : "禁止"}”。`
+    : selection.mode === "pending"
+      ? `将审核并绑定 H5 待审账号 ${selection.user.username}（userId：${selection.user.id}），保留原账号密码和相册归属；请逐项授予角色与 SOP 下载权限。`
+      : selection.mode === "new"
+        ? "只有核实此人没有原平台账号后才可新建；新账号默认只读、禁止 SOP 下载，由总部逐项授权。"
+        : selection.mode === "conflict"
+          ? "该账号已经绑定微信，不能重复匹配。请先核实本人身份，在原账号卡片处理绑定。"
+          : "先核实本人身份，再选择对应原账号；姓名、昵称、联系方式只用于人工核对，不会自动合并。";
+}
+
 function wechatApplicationsHtml() {
   const applications = state.wechatApplications || [];
   const pending = applications.filter(item => item.status === "pending");
   const decided = applications.filter(item => item.status !== "pending").slice(0, 30);
-  const userOptions = state.users.filter(user => ["active", "pending"].includes(user.status) && user.role !== "admin")
-    .map(user => `<option value="${esc(user.id)}">${esc(user.name || user.username)} · ${esc(user.username)} · ${esc(roleLabel(user.role))}${user.status === "pending" ? " · H5 待审" : ""}</option>`).join("");
+  const userOptions = state.users.filter(user => ["active", "pending"].includes(user.status) && user.role !== "admin" && !user.retiredToUserId)
+    .map(user => `<option value="${esc(user.id)}" ${user.wechatBinding ? "disabled" : ""}>${esc(user.name || user.username)} · @${esc(user.username)} · ${esc(roleLabel(user.role))} · ${user.status === "pending" ? "H5 待审" : "已启用"} · ${user.wechatBinding ? `微信已绑定 ${esc(user.wechatBinding.fingerprint)}` : "微信未绑定"} · userId：${esc(user.id)}</option>`).join("");
   return `<div class="panel" style="margin-bottom:16px;border:1px solid #f0c9a8">
     <div class="panel-header"><h2>微信小程序申请 <span style="color:#e8462c">(${pending.length} 待核实)</span></h2></div>
     <div style="padding:12px;display:flex;flex-direction:column;gap:12px">
-      ${pending.length ? pending.map(item => `<div class="user-card" data-wx-id="${esc(item.id)}" style="display:block">
+      <p class="account-review-note">先匹配原平台账号，再考虑新建；绑定后的 H5 与小程序共用同一账号、权限及相册归属。总部管理员账号不通过普通申请授予。</p>
+      ${pending.length ? pending.map(item => `<div class="user-card wechat-review-card" data-wx-id="${esc(item.id)}">
         <strong>${esc(item.name)} · ${esc(item.city || "城市未填")} · ${esc(item.organization || "机构未填")}</strong>
         <div style="font-size:13px;color:var(--muted);margin:8px 0">联系方式：${esc(item.contact)} · 微信核对码：${esc(item.fingerprint)} · ${esc(item.createdAt)}</div>
         ${state.users.some(user => user.applicationContact && user.applicationContact === item.contact)
           ? `<div style="color:#a74724;font-size:13px;margin-bottom:8px">发现同联系方式的 H5 申请或账号，请人工核实并优先绑定原账号；不能仅凭号码自动合并。</div>` : ""}
-        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
-          <select class="select" data-wx-target style="min-width:220px;max-width:100%">
-            <option value="">请选择绑定方式</option><option value="__new__">核实后新建平台账号</option>${userOptions}
-          </select>
-          <select class="select" data-wx-role><option value="viewer">待审/新账号：只读</option><option value="member">待审/新账号：学习用户</option><option value="operator">待审/新账号：城市主理人</option></select>
-          <label class="checkline"><input type="checkbox" data-wx-download> 待审/新账号允许下载 SOP</label>
-          <label class="checkline"><input type="checkbox" data-wx-confirm> 已核对不存在原账号</label>
-          <button class="btn small" data-wx-approve="${esc(item.id)}">核实并通过</button>
-          <button class="btn danger small" data-wx-reject="${esc(item.id)}">拒绝</button>
+        <div class="wechat-review-controls">
+          <label class="field wechat-review-target"><span>核实后的平台账号</span>
+            <select class="select" data-wx-target>
+              <option value="">请选择已核实的原账号</option>${userOptions}<option value="__new__">没有原账号：核实后新建平台账号</option>
+            </select>
+          </label>
+          <label class="field"><span>待审 / 新账号角色</span><select class="select" data-wx-role disabled><option value="viewer">只读账号</option><option value="member">学习用户</option><option value="operator">城市主理人</option></select></label>
+          <label class="checkline"><input type="checkbox" data-wx-download disabled> 允许下载 SOP</label>
+          <label class="checkline wechat-review-new-confirm" data-wx-new-confirm hidden><input type="checkbox" data-wx-confirm> 已核实不存在原平台账号</label>
+          <p class="account-review-note wechat-review-selection" data-wx-selection-note></p>
+          <div class="wechat-review-actions"><button class="btn small" data-wx-approve="${esc(item.id)}" disabled>核实并通过</button>
+          <button class="btn danger small" data-wx-reject="${esc(item.id)}">拒绝</button></div>
         </div>
-        <small style="color:var(--muted)">绑定已启用账号会保留原角色和下载权限；绑定 H5 待审账号或新建账号时使用上方角色和下载选项。</small>
       </div>`).join("") : `<p style="color:var(--muted)">暂无待核实的微信申请。</p>`}
       ${decided.length ? `<details><summary>查看已处理的微信身份（最近 ${decided.length} 条）</summary>
         ${decided.map(item => `<div style="padding:9px 0;border-top:1px solid var(--line)">
           ${esc(item.name)} · ${esc(item.fingerprint)} · ${esc(item.status)}
-          ${item.user ? `→ ${esc(item.user.name || item.user.username)} (${esc(item.user.username)})` : ""}
+          ${item.user ? `→ ${esc(item.user.name || item.user.username)} (@${esc(item.user.username)}) · userId：${esc(item.user.id)}` : ""}
           ${item.status === "approved" ? `<button class="btn secondary small" data-wx-revoke="${esc(item.id)}">解除绑定</button>` : ""}
           ${["rejected", "revoked"].includes(item.status) ? `<button class="btn secondary small" data-wx-reopen="${esc(item.id)}">重新开放申请</button>` : ""}
         </div>`).join("")}</details>` : ""}
@@ -1999,7 +2041,7 @@ function wechatApplicationsHtml() {
 function renderUsers() {
   const content = document.querySelector("#content");
   content.innerHTML = `
-    <div class="topbar"><div><h1>账号权限</h1><p>管理主理人账号，控制 SOP 下载权限。</p></div></div>
+    <div class="topbar"><div><h1>账号权限</h1><p>逐人审核 H5 / 微信申请，匹配同一平台账号，管理角色及 SOP 下载权限。</p></div></div>
     <div class="content-area">
       ${state.message}
       ${(() => {
@@ -2017,6 +2059,7 @@ function renderUsers() {
                 <div class="user-avatar">${esc((u.name||u.username).slice(0,1))}</div>
                 <div style="flex:1;min-width:140px">
                   <strong>${esc(u.name||u.username)} <span style="font-weight:400;color:var(--muted)">@${esc(u.username)}</span></strong>
+                  <div class="account-review-id">userId：${esc(u.id)}</div>
                   <div style="font-size:12px;color:var(--muted)">H5 申请 · ${esc(u.applicationContact || "联系方式未留")}${u.applicationCity ? ` · ${esc(u.applicationCity)}` : ""}${u.applicationOrganization ? ` · ${esc(u.applicationOrganization)}` : ""}</div>
                   ${u.applicationContact && state.users.some(other => other.id !== u.id && other.status === "active" && other.applicationContact === u.applicationContact)
                     ? `<div style="font-size:12px;color:#a74724">存在同联系方式的已启用账号，请先核实是否应沿用该 userId。</div>` : ""}
@@ -2099,6 +2142,7 @@ function userCardHtml(u) {
                 <div class="user-avatar">${esc((u.name||u.username).slice(0,1))}</div>
                 <div class="user-card-info">
                   <strong>${esc(u.name||u.username)} <span style="font-weight:400;color:var(--muted)">@${esc(u.username)}</span></strong>
+                  <span class="account-review-id">userId：${esc(u.id)}</span>
                   <span>${roleLabel(u.role)} · ${{ active:"✅ 启用", pending:"⏳ 待审核", disabled:"⛔ 停用", rejected:"❌ 已拒绝" }[u.status] || esc(u.status)} · SOP下载：${u.canDownload?"允许":"禁止"}</span>
                   ${u.wechatBinding ? `<span>微信已绑定 · 核对码 ${esc(u.wechatBinding.fingerprint)}</span>` : `<span>微信未绑定</span>`}
                 </div>
@@ -2149,6 +2193,11 @@ function userCardHtml(u) {
 }
 
 function bindUserEvents() {
+  document.querySelectorAll("[data-wx-id]").forEach(card => {
+    card.querySelector("[data-wx-target]").addEventListener("change", () => syncWechatReviewCard(card));
+    card.querySelector("[data-wx-confirm]").addEventListener("change", () => syncWechatReviewCard(card));
+    syncWechatReviewCard(card);
+  });
   // ---- H5 待审核账号：逐个核实，停用账号绝不进入审核队列 ----
   document.querySelectorAll("[data-approve-user]").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -2157,6 +2206,7 @@ function bindUserEvents() {
       const dlBox = document.querySelector(`[data-uapprove-dl="${id}"]`);
       const roleBox = document.querySelector(`[data-uapprove-role="${id}"]`);
       const canDownload = dlBox ? dlBox.checked : false;
+      if (!confirm(`确认已核实 ${u.name || u.username} 的申请，并启用平台账号 ${u.username}（userId：${id}）？`)) return;
       try {
         await api(`/api/admin/users/${encodeURIComponent(id)}`, { method:"PUT", body:{
           name: u.name, role: roleBox ? roleBox.value : "viewer", status:"active", canDownload
@@ -2183,16 +2233,20 @@ function bindUserEvents() {
     const id = btn.dataset.wxApprove;
     const target = card.querySelector("[data-wx-target]").value;
     if (!target) return flash("请先选择绑定原账号或核实后新建", "error");
-    const isNew = target === "__new__";
+    const selection = wechatReviewSelection(target);
+    if (!selection.canApprove) return flash("所选账号当前不能绑定，请刷新后核实账号状态和微信绑定", "error");
+    const isNew = selection.mode === "new";
     if (isNew && !card.querySelector("[data-wx-confirm]").checked) return flash("新建前必须确认不存在原账号", "error");
-    if (!confirm(isNew ? "确认已核实身份且不存在原账号，并创建新平台账号？" : "确认将此微信身份绑定到选中的原账号？")) return;
+    if (!confirm(isNew ? "确认已核实身份且不存在原账号，并创建新平台账号？" : `确认将此微信身份绑定到 ${selection.user.username}（userId：${selection.user.id}）？${selection.mode === "active" ? "原角色及下载权限保持不变。" : "该 H5 待审账号将按所选权限启用。"}`)) return;
     btn.disabled = true;
     try {
       await api(`/api/admin/wechat/applications/${encodeURIComponent(id)}/approve`, { method:"POST", body:{
         userId: isNew ? "" : target,
         confirmNoExistingAccount: isNew,
-        role: card.querySelector("[data-wx-role]").value,
-        canDownload: card.querySelector("[data-wx-download]").checked
+        ...(selection.canSetPermissions ? {
+          role: card.querySelector("[data-wx-role]").value,
+          canDownload: card.querySelector("[data-wx-download]").checked
+        } : {})
       }});
       await refreshData(); flash("微信身份已通过；平台账号和相册归属保持统一"); renderUsers();
     } catch (err) { flash(err.message, "error"); renderUsers(); }

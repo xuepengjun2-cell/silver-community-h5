@@ -4,21 +4,26 @@ const { cardView, catalogPath, sharePayload, filterCatalogCards } = require("../
 
 Page({
   data: {
-    loading: true, busy: false, error: "", user: null, tab: "projects", canCreateProjects: false,
+    loading: true, busy: false, error: "", user: null, guest: false, tab: "projects", canCreateProjects: false,
     projects: [], activities: [], visibleActivities: [], activityQuery: "", cases: [], creating: false,
     title: "", dateLabel: "", city: "", description: ""
+  },
+  onLoad(options) {
+    this.guestMode = options && options.guest === "1";
+    if (this.guestMode) this.setData({ guest: true, tab: "activities", user: null, projects: [], canCreateProjects: false });
   },
   onShow() { this.load(); },
   async load() {
     this.setData({ loading: true, error: "" });
     try {
-      const session = await validateSession(wx);
-      if (!session) return wx.redirectTo({ url: "/pages/entry/index" });
-      this.setData({ user: session.user });
+      const session = this.guestMode ? null : await validateSession(wx);
+      if (!session && !this.guestMode) return wx.redirectTo({ url: "/pages/entry/index" });
+      this.setData({ user: session && session.user, guest: Boolean(this.guestMode) });
+      const token = session && session.token;
       const [mine, activities, cases] = await Promise.all([
-        api(wx, "/my/activity-projects", { token: session.token }),
-        api(wx, "/public/activities", { token: session.token }),
-        api(wx, "/public/cases", { token: session.token })
+        this.guestMode ? Promise.resolve({ projects: [], canCreate: false }) : api(wx, "/my/activity-projects", { token }),
+        api(wx, "/public/activities", { token }),
+        api(wx, "/public/cases", { token })
       ]);
       const activityCards = (activities.activities || []).map(item => cardView(item, "activities"));
       this.setData({
@@ -30,7 +35,7 @@ Page({
         loading: false
       });
     } catch (error) {
-      if (error.statusCode === 401) {
+      if (error.statusCode === 401 && !this.guestMode) {
         clearSession(wx);
         return wx.redirectTo({ url: "/pages/entry/index" });
       }
@@ -40,6 +45,7 @@ Page({
   onPullDownRefresh() { this.load().finally(() => wx.stopPullDownRefresh()); },
   onTab(event) {
     const tab = event.currentTarget.dataset.tab;
+    if (this.guestMode && !["activities", "cases"].includes(tab)) return;
     this.setData({ tab });
   },
   onActivitySearch(event) {
@@ -72,16 +78,19 @@ Page({
     finally { this.setData({ busy: false }); }
   },
   onManage(event) {
+    if (this.guestMode) return;
     wx.navigateTo({ url: `/pages/manage/index?id=${event.currentTarget.dataset.id}` });
   },
   onView(event) {
+    if (this.guestMode) return;
     wx.navigateTo({ url: albumPath(event.currentTarget.dataset.id) });
   },
   onCatalog(event) {
     const type = event.currentTarget.dataset.type;
     const id = event.currentTarget.dataset.id;
-    wx.navigateTo({ url: catalogPath(type, id) });
+    wx.navigateTo({ url: `${catalogPath(type, id)}${this.guestMode ? "&guest=1" : ""}` });
   },
+  onLogin() { wx.navigateTo({ url: "/pages/entry/index" }); },
   onShareAppMessage(options) {
     const dataset = options.target && options.target.dataset || {};
     const type = dataset.type;

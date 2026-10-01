@@ -2,6 +2,11 @@
 .entry-lead { margin: 28rpx 0 50rpx; }
 .entry-card { padding: 32rpx; }
 .entry-card-title { font-size: 35rpx; font-weight: 700; margin-bottom: 24rpx; }
+.entry-wechat { margin-bottom: 26rpx; }
+.entry-password-heading { padding-top: 28rpx; margin-top: 26rpx; border-top: 1rpx solid #eee4dc; }
+.entry-text-button { margin-top: 18rpx; padding: 8rpx; background: transparent; color: #72584b; font-size: 27rpx; }
+.entry-text-button::after { border: none; }
+.entry-guest { margin: 0 0 28rpx; }
 .entry-label { font-size: 30rpx; font-weight: 650; margin: 22rpx 0 12rpx; }
 .entry-field { width: 100%; height: 96rpx; padding: 0 22rpx; border: 1rpx solid #dfd1c7; border-radius: 16rpx; background: #fff; font-size: 32rpx; }
 .entry-open { margin-top: 36rpx; }

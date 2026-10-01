@@ -1,9 +1,9 @@
 <view class="page workbench">
-  <view class="eyebrow">开开华彩 · 主办方工作台</view>
-  <view class="title">你好，{{user.name || user.username || '主办方'}}</view>
-  <view class="muted subtitle">{{canCreateProjects ? '主办方账号' : '资料查看账号'}} · 按现有账号权限展示</view>
+  <view class="eyebrow">开开华彩 · {{guest ? '公开内容浏览' : '主办方工作台'}}</view>
+  <view class="title">{{guest ? '活动库与精彩案例' : '你好，' + (user.name || user.username || '主办方')}}</view>
+  <view class="muted subtitle">{{guest ? '可浏览公开介绍；活动方案和案例素材下载需登录并具有相应权限。' : (canCreateProjects ? '主办方账号' : '资料查看账号') + ' · 按现有账号权限展示'}}</view>
   <view class="tabs">
-    <view data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
+    <view wx:if="{{!guest}}" data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
     <view data-tab="activities" bindtap="onTab" class="tab {{tab === 'activities' ? 'active' : ''}}">活动库</view>
     <view data-tab="cases" bindtap="onTab" class="tab {{tab === 'cases' ? 'active' : ''}}">精彩案例</view>
   </view>
@@ -62,5 +62,6 @@
       </view>
     </block>
   </block>
-  <button class="logout" bindtap="onLogout">退出登录</button>
+  <button wx:if="{{guest}}" class="button button-primary" bindtap="onLogin">登录工作台</button>
+  <button wx:else class="logout" bindtap="onLogout">退出登录</button>
 </view>

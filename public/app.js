@@ -513,15 +513,15 @@ function loginModal() {
       <form class="login-modal" id="loginForm">
         <button class="modal-close" type="button" data-close-login>×</button>
         <h2>登录学习平台</h2>
-        <p>平台内容免费开放浏览，登录后即可导出可视化 SOP。</p>
+        <p>使用原平台账号登录；活动方案下载按总部授权开放。</p>
         ${tabs}
         ${msg}
         <div class="field">
-          <label>账号</label>
+          <label>平台账号</label>
           <input class="input" name="username" autocomplete="username" placeholder="请输入账号">
         </div>
         <div class="field">
-          <label>密码</label>
+          <label>平台密码</label>
           <input class="input" name="password" type="password" autocomplete="current-password" placeholder="请输入密码">
         </div>
         <div style="display:flex;gap:10px;margin-top:4px">
@@ -535,16 +535,16 @@ function loginModal() {
     <div class="modal-mask">
       <form class="login-modal" id="registerForm">
         <button class="modal-close" type="button" data-close-login>×</button>
-        <h2>申请学习账号</h2>
-        <p>提交申请后，管理员审核开通即可登录学习。</p>
+        <h2>申请平台账号</h2>
+        <p>已有账号请直接登录，无需重复申请。新用户提交后由总部核实开通，并授予相册操作及 SOP 下载权限。</p>
         ${tabs}
         ${msg}
         <div class="field">
           <label>账号</label>
-          <input class="input" name="username" autocomplete="username" placeholder="设置登录账号">
+          <input class="input" name="username" autocomplete="username" placeholder="设置平台登录账号" required>
         </div>
         <div class="field">
-          <label>姓名/昵称</label>
+          <label>真实姓名</label>
           <input class="input" name="name" placeholder="请填写便于总部核实的真实姓名" required>
         </div>
         <div class="field">
@@ -557,7 +557,7 @@ function loginModal() {
         </div>
         <div class="field">
           <label>密码</label>
-          <input class="input" name="password" type="password" autocomplete="new-password" placeholder="至少6位">
+          <input class="input" name="password" type="password" autocomplete="new-password" placeholder="设置平台密码，至少6位" minlength="6" required>
         </div>
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn" type="submit" style="flex:1">提交申请</button>
@@ -1009,11 +1009,14 @@ function tabSop(a) {
     </div>` : "";
 
   const downloadHtml = !state.user
-    ? `<div class="download-info"><h4>导出可视化 SOP</h4><p>登录账号后即可导出可视化执行包，内容浏览无需登录。</p></div>
+    ? `<div class="download-info"><h4>导出可视化 SOP</h4><p>请使用已开通 SOP 下载权限的平台账号登录；新用户须经总部审核授权。</p></div>
        <button class="btn" type="button" data-open-login>登录导出</button>`
     : a.downloadEnabled === false
     ? `<div class="download-info"><h4>导出可视化 SOP</h4><p>该活动暂未开放 SOP 导出，请联系总部开通。</p></div>
        <button class="btn secondary" disabled>暂未开放导出</button>`
+    : !canDownload()
+    ? `<div class="download-info"><h4>导出可视化 SOP</h4><p>当前平台账号未开通 SOP 下载权限，请联系总部审核授权。</p></div>
+       <button class="btn secondary" disabled>未开通下载权限</button>`
     : `<div class="download-info"><h4>导出可视化 SOP</h4><p>包含活动定位、当日时间轴、沟通话术、所需物料、人员分工和复盘清单，可直接打印或另存 PDF。</p></div>
        <div style="display:flex;gap:10px;flex-wrap:wrap;">
          <button class="btn" type="button" id="downloadSopBtn">⬇ 导出 SOP</button>
@@ -1033,7 +1036,7 @@ function tabSop(a) {
           <div class="sop-locked-box">
             <div class="sop-locked-icon">🔒</div>
             <h4>完整执行方案需登录查看</h4>
-            <p>登录或申请注册账号后，即可查看活动定位、所需物料、人员分工、话术承接、注意事项与风险预案等完整 SOP。</p>
+            <p>使用已启用的平台账号登录，即可查看完整 SOP；没有账号可申请，由总部审核。方案下载另按账号授权开放。</p>
             <div class="sop-locked-btns">
               <button class="btn" type="button" data-open-login>登录查看</button>
               <button class="btn secondary" type="button" data-open-register>申请注册</button>
@@ -1259,6 +1262,8 @@ function renderDetail(a) {
           ? `<button class="btn" id="downloadSopBtn">⬇ 导出 SOP</button>`
           : a.downloadEnabled === false
           ? `<button class="btn light" disabled>暂未开放下载</button>`
+          : state.user
+          ? `<button class="btn light" disabled>未开通下载权限</button>`
           : `<button class="btn" type="button" data-open-login>登录下载</button>`}
       </div>
     </div>

@@ -155,6 +155,23 @@ function sessionCreatedAt(user) {
   return new Date(Math.max(Date.now(), Number.isFinite(revokedAt) ? revokedAt + 1 : 0)).toISOString();
 }
 
+function userSecurityKey(user) {
+  if (!user) return "";
+  return JSON.stringify([user.id, user.username, user.role, user.status, user.salt,
+    user.passwordHash, user.sessionRevokedAt, Boolean(user.wechatBindingSuspended)]);
+}
+
+function userSessionRevokedAt(user) {
+  // 新登录时间可能比当前毫秒提前一毫秒；撤销点必须覆盖已发出的所有会话。
+  const previous = new Date(user.sessionRevokedAt || 0).getTime();
+  let revokedAt = Math.max(Date.now(), Number.isFinite(previous) ? previous : 0);
+  for (const session of Object.values(readSessions())) {
+    const createdAt = new Date(session.createdAt).getTime();
+    if (session.userId === user.id && Number.isFinite(createdAt)) revokedAt = Math.max(revokedAt, createdAt);
+  }
+  return new Date(revokedAt).toISOString();
+}
+
 function sessionCookie(value, maxAge) {
   return `silver_session=${encodeURIComponent(value || "")}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=${maxAge}`;
 }
@@ -1021,12 +1038,18 @@ async function expireUserSessions(userId) {
   await writeSessions(sessions);
 }
 
+// 调用方须持有 withUserWriteLock，覆盖授权检查、身份读回和会话持久化。
 async function issuePlatformSession(res, user, loginMethod, wechatIdentity = null) {
-  const currentUser = readDb().users.find(item => item.id === user.id && item.status === "active");
+  const expectedSecurity = userSecurityKey(user);
+  let currentUser = readDb().users.find(item => item.id === user.id && item.status === "active");
   if (!currentUser) return sendJson(res, 403, { error: "账号当前不可用，请联系总部核实" });
   if (wechatIdentity) {
     const binding = await wechatIdentityFor(wechatIdentity.appid, wechatIdentity.openid);
-    // 身份查询可能与密码重置交错；回到 JS 后再检查当前账号阻断标记。
+    currentUser = readDb().users.find(item => item.id === user.id && item.status === "active");
+    // 使用独立快照比较，不能依赖可能被其他写入原地修改的 user 引用。
+    if (!currentUser || userSecurityKey(currentUser) !== expectedSecurity) {
+      return sendJson(res, 403, { error: "账号权限已变化，请重新登录" });
+    }
     if (!binding || binding.status !== "approved" || binding.user_id !== currentUser.id
       || currentUser.wechatBindingSuspended || currentUser.role === "admin") {
       return sendJson(res, 403, { error: "微信绑定已变化，请重新登录或联系总部核实" });
@@ -1039,6 +1062,11 @@ async function issuePlatformSession(res, user, loginMethod, wechatIdentity = nul
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
   };
   await writeSessions(sessions);
+  if (userSecurityKey(readDb().users.find(item => item.id === user.id)) !== expectedSecurity || !readSessions()[token]) {
+    delete readSessions()[token];
+    await writeSessions(readSessions());
+    return sendJson(res, 403, { error: "账号权限已变化，请重新登录" });
+  }
   sendJson(res, 200, { user: publicUser(currentUser), token, loginMethod }, {
     "Set-Cookie": sessionCookie(token, 7 * 24 * 60 * 60)
   });
@@ -1052,8 +1080,12 @@ async function withUserWriteLock(task) {
   return run;
 }
 
-async function approveWechatIdentity(id, reviewer, input) {
+async function approveWechatIdentity(id, reviewer, input, req) {
   return withUserWriteLock(async () => {
+    const currentReviewer = getAuthedUser(req);
+    if (!currentReviewer || currentReviewer.id !== reviewer.id || currentReviewer.role !== "admin") {
+      throw identityError("管理员登录或权限已变化，请重新登录", 403);
+    }
     const conn = await pool.getConnection();
     let createdUser = null;
     let activatedUser = null;
@@ -1068,7 +1100,7 @@ async function approveWechatIdentity(id, reviewer, input) {
       if (existingUserId) {
         target = readDb().users.find(user => user.id === existingUserId && ["active", "pending"].includes(user.status));
         if (!target) throw identityError("原账号不存在、已停用或已拒绝，请先核实", 409);
-        if (target.role === "admin") throw identityError("总部管理员微信绑定需本人使用原账号密码操作", 403);
+        if (target.role === "admin") throw identityError("总部管理员使用平台账号密码登录，不接受微信申请匹配", 403);
         if (target.status === "pending") {
           const role = ["viewer", "member", "operator"].includes(input.role) ? input.role : "viewer";
           activatedUser = { ...target, status: "active", role, canDownload: input.canDownload === true, wechatBindingSuspended: false };
@@ -1493,44 +1525,46 @@ async function loginByActivityHubSso(res, token) {
     return;
   }
 
-  const db = readDb();
-  const resolution = resolveOrProvisionActivityHubUser(db, claims, ACTIVITY_HUB_SSO_USER_MAP);
-  const user = resolution.user;
-  if (!user) {
-    sendJson(res, 403, { error: "活动平台存在同名、停用或冲突账号，请使用原账号登录或联系管理员处理绑定" });
-    return;
-  }
-  if (resolution.created) await writeDb(db);
-
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  try {
-    await pool.query("DELETE FROM activity_hub_sso_tickets WHERE expires_at < ?", [mysqlDateFromSeconds(nowSeconds)]);
-    await pool.query(
-      `INSERT INTO activity_hub_sso_tickets (jti, subject, username, expires_at, created_at) VALUES (?,?,?,?,?)`,
-      [claims.jti, claims.subject, claims.username, mysqlDateFromSeconds(claims.expiresAt), now()]
-    );
-  } catch (error) {
-    if (error && error.code === "ER_DUP_ENTRY") {
-      sendJson(res, 409, { error: "免密入口已使用，请重新从视频号助手进入" });
+  return withUserWriteLock(async () => {
+    const db = readDb();
+    const resolution = resolveOrProvisionActivityHubUser(db, claims, ACTIVITY_HUB_SSO_USER_MAP);
+    const user = resolution.user;
+    if (!user) {
+      sendJson(res, 403, { error: "活动平台存在同名、停用或冲突账号，请使用原账号登录或联系管理员处理绑定" });
       return;
     }
-    throw error;
-  }
+    if (resolution.created) await persistDb();
 
-  const tokenValue = crypto.randomBytes(24).toString("hex");
-  const sessionExpiresAt = new Date(Math.min(
-    Date.now() + 7 * 24 * 60 * 60 * 1000,
-    claims.accessExpiresAt * 1000
-  )).toISOString();
-  const sessions = readSessions();
-  sessions[tokenValue] = {
-    userId: user.id,
-    createdAt: sessionCreatedAt(user),
-    expiresAt: sessionExpiresAt
-  };
-  await writeSessions(sessions);
-  sendJson(res, 200, { ok: true, user: publicUser(user), token: tokenValue, loginMethod: "activity-hub-sso" }, {
-    "Set-Cookie": sessionCookie(tokenValue, Math.max(1, Math.floor((new Date(sessionExpiresAt).getTime() - Date.now()) / 1000)))
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    try {
+      await pool.query("DELETE FROM activity_hub_sso_tickets WHERE expires_at < ?", [mysqlDateFromSeconds(nowSeconds)]);
+      await pool.query(
+        `INSERT INTO activity_hub_sso_tickets (jti, subject, username, expires_at, created_at) VALUES (?,?,?,?,?)`,
+        [claims.jti, claims.subject, claims.username, mysqlDateFromSeconds(claims.expiresAt), now()]
+      );
+    } catch (error) {
+      if (error && error.code === "ER_DUP_ENTRY") {
+        sendJson(res, 409, { error: "免密入口已使用，请重新从视频号助手进入" });
+        return;
+      }
+      throw error;
+    }
+
+    const tokenValue = crypto.randomBytes(24).toString("hex");
+    const sessionExpiresAt = new Date(Math.min(
+      Date.now() + 7 * 24 * 60 * 60 * 1000,
+      claims.accessExpiresAt * 1000
+    )).toISOString();
+    const sessions = readSessions();
+    sessions[tokenValue] = {
+      userId: user.id,
+      createdAt: sessionCreatedAt(user),
+      expiresAt: sessionExpiresAt
+    };
+    await writeSessions(sessions);
+    sendJson(res, 200, { ok: true, user: publicUser(user), token: tokenValue, loginMethod: "activity-hub-sso" }, {
+      "Set-Cookie": sessionCookie(tokenValue, Math.max(1, Math.floor((new Date(sessionExpiresAt).getTime() - Date.now()) / 1000)))
+    });
   });
 }
 
@@ -2397,15 +2431,17 @@ async function handleApi(req, res, pathname) {
     try {
       identity = await exchangeWechatCode(body.code, { appid: WECHAT_MINIAPP_APPID, secret: WECHAT_MINIAPP_SECRET });
     } catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
-    const fingerprint = identityFingerprint(identity.appid, identity.openid);
-    const row = await wechatIdentityFor(identity.appid, identity.openid);
-    if (!row) return sendJson(res, 200, { status: "unbound", fingerprint });
-    if (row.status !== "approved") return sendJson(res, 200, { status: row.status, fingerprint });
-    const user = readDb().users.find(item => item.id === row.user_id && item.status === "active");
-    if (!user) return sendJson(res, 200, { status: "disabled", fingerprint });
-    if (user.role === "admin") return sendJson(res, 200, { status: "password-required", fingerprint });
-    if (user.wechatBindingSuspended) return sendJson(res, 200, { status: "revoked", fingerprint });
-    return issuePlatformSession(res, user, "wechat-miniapp", identity);
+    return withUserWriteLock(async () => {
+      const fingerprint = identityFingerprint(identity.appid, identity.openid);
+      const row = await wechatIdentityFor(identity.appid, identity.openid);
+      if (!row) return sendJson(res, 200, { status: "unbound", fingerprint });
+      if (row.status !== "approved") return sendJson(res, 200, { status: row.status, fingerprint });
+      const user = readDb().users.find(item => item.id === row.user_id && item.status === "active");
+      if (!user) return sendJson(res, 200, { status: "disabled", fingerprint });
+      if (user.role === "admin") return sendJson(res, 200, { status: "password-required", fingerprint });
+      if (user.wechatBindingSuspended) return sendJson(res, 200, { status: "revoked", fingerprint });
+      return issuePlatformSession(res, user, "wechat-miniapp", identity);
+    });
   }
 
   if (req.method === "POST" && pathname === "/api/auth/wechat/apply") {
@@ -2416,33 +2452,35 @@ async function handleApi(req, res, pathname) {
       application = validateApplication(body);
       identity = await exchangeWechatCode(body.code, { appid: WECHAT_MINIAPP_APPID, secret: WECHAT_MINIAPP_SECRET });
     } catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
-    const existing = await wechatIdentityFor(identity.appid, identity.openid);
-    if (existing) {
-      if (existing.status === "pending" || existing.status === "approved") return sendJson(res, 200, {
-        status: existing.status, fingerprint: identityFingerprint(identity.appid, identity.openid)
-      });
-      return sendJson(res, 403, { error: "此微信申请已被处理，请联系总部核实后重新开放" });
-    }
-    const row = { id: createId("wxr"), ...identity, ...application, createdAt: now() };
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.query(
-        `INSERT INTO wechat_identities
-         (id, appid, openid, user_id, status, name, contact, city, organization, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        [row.id, row.appid, row.openid, null, "pending", row.name, row.contact, row.city, row.organization, row.createdAt, row.createdAt]
-      );
-      await recordWechatIdentityEvent(conn, row, "apply");
-      await conn.commit();
-      return sendJson(res, 201, { status: "pending", fingerprint: identityFingerprint(identity.appid, identity.openid) });
-    } catch (error) {
-      await conn.rollback();
-      if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 200, {
-        status: "pending", fingerprint: identityFingerprint(identity.appid, identity.openid)
-      });
-      throw error;
-    } finally { conn.release(); }
+    return withUserWriteLock(async () => {
+      const existing = await wechatIdentityFor(identity.appid, identity.openid);
+      if (existing) {
+        if (existing.status === "pending" || existing.status === "approved") return sendJson(res, 200, {
+          status: existing.status, fingerprint: identityFingerprint(identity.appid, identity.openid)
+        });
+        return sendJson(res, 403, { error: "此微信申请已被处理，请联系总部核实后重新开放" });
+      }
+      const row = { id: createId("wxr"), ...identity, ...application, createdAt: now() };
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        await conn.query(
+          `INSERT INTO wechat_identities
+           (id, appid, openid, user_id, status, name, contact, city, organization, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          [row.id, row.appid, row.openid, null, "pending", row.name, row.contact, row.city, row.organization, row.createdAt, row.createdAt]
+        );
+        await recordWechatIdentityEvent(conn, row, "apply");
+        await conn.commit();
+        return sendJson(res, 201, { status: "pending", fingerprint: identityFingerprint(identity.appid, identity.openid) });
+      } catch (error) {
+        await conn.rollback();
+        if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 200, {
+          status: "pending", fingerprint: identityFingerprint(identity.appid, identity.openid)
+        });
+        throw error;
+      } finally { conn.release(); }
+    });
   }
 
   if (req.method === "POST" && pathname === "/api/auth/wechat/bind") {
@@ -2451,57 +2489,60 @@ async function handleApi(req, res, pathname) {
     try {
       identity = await exchangeWechatCode(body.code, { appid: WECHAT_MINIAPP_APPID, secret: WECHAT_MINIAPP_SECRET });
     } catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
-    try { checkWechatBindAttempts(identity.appid, identity.openid); }
-    catch (error) { return sendJson(res, error.statusCode, { error: error.message }); }
-    const username = usernameKey(body.username);
-    const user = readDb().users.find(item => usernameKey(item.username) === username);
-    if (!user || !user.passwordHash || user.passwordHash !== hashPassword(String(body.password || ""), user.salt)) {
-      checkWechatBindAttempts(identity.appid, identity.openid, true);
-      return sendJson(res, 401, { error: "原账号或密码不正确" });
-    }
-    if (user.status === "pending") return sendJson(res, 403, { error: "原账号待总部审核，请审核通过后再绑定微信" });
-    if (user.status !== "active") return sendJson(res, 403, { error: "原账号当前不可用，请联系总部核实" });
-    if (user.role === "admin") return sendJson(res, 403, { error: "总部管理员暂不开放微信免密绑定，请使用账号密码登录" });
-    if (user.wechatBindingSuspended) return sendJson(res, 403, { error: "此账号的微信绑定已因密码重置暂停，请联系总部重新核实" });
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      const [rows] = await conn.query(
-        "SELECT * FROM wechat_identities WHERE appid = ? AND openid = ? FOR UPDATE",
-        [identity.appid, identity.openid]
-      );
-      const existing = rows[0];
-      if (existing && ["rejected", "revoked"].includes(existing.status)) {
-        throw identityError("此微信身份需总部重新核实后才能绑定", 403);
+    // 原密码校验、微信绑定写入与登录态签发共用账号写锁；重置密码不能插在中间。
+    return withUserWriteLock(async () => {
+      try { checkWechatBindAttempts(identity.appid, identity.openid); }
+      catch (error) { return sendJson(res, error.statusCode, { error: error.message }); }
+      const username = usernameKey(body.username);
+      const user = readDb().users.find(item => usernameKey(item.username) === username);
+      if (!user || !user.passwordHash || user.passwordHash !== hashPassword(String(body.password || ""), user.salt)) {
+        checkWechatBindAttempts(identity.appid, identity.openid, true);
+        return sendJson(res, 401, { error: "原账号或密码不正确" });
       }
-      if (existing && existing.status === "approved" && existing.user_id !== user.id) {
-        throw identityError("此微信已绑定其他账号，请联系总部处理", 409);
-      }
-      const row = existing || { id: createId("wxr"), ...identity };
-      const changedAt = now();
-      if (existing) {
-        await conn.query(
-          "UPDATE wechat_identities SET user_id = ?, status = ?, reviewer_id = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
-          [user.id, "approved", user.id, changedAt, changedAt, row.id]
+      if (user.status === "pending") return sendJson(res, 403, { error: "原账号待总部审核，请审核通过后再绑定微信" });
+      if (user.status !== "active") return sendJson(res, 403, { error: "原账号当前不可用，请联系总部核实" });
+      if (user.role === "admin") return sendJson(res, 403, { error: "总部管理员暂不开放微信免密绑定，请使用账号密码登录" });
+      if (user.wechatBindingSuspended) return sendJson(res, 403, { error: "此账号的微信绑定已因密码重置暂停，请联系总部重新核实" });
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        const [rows] = await conn.query(
+          "SELECT * FROM wechat_identities WHERE appid = ? AND openid = ? FOR UPDATE",
+          [identity.appid, identity.openid]
         );
-      } else {
-        await conn.query(
-          `INSERT INTO wechat_identities
-           (id, appid, openid, user_id, status, name, created_at, updated_at, reviewer_id, reviewed_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
-          [row.id, identity.appid, identity.openid, user.id, "approved", user.name || user.username, changedAt, changedAt, user.id, changedAt]
-        );
-      }
-      await recordWechatIdentityEvent(conn, row, "bind-existing", user.id, user.id);
-      await conn.commit();
-    } catch (error) {
-      await conn.rollback();
-      if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 409, { error: "该微信或原账号已绑定，请联系总部核对" });
-      if (error && error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
-      throw error;
-    } finally { conn.release(); }
-    _wechatBindFailures.delete(crypto.createHash("sha256").update(`${identity.appid}:${identity.openid}`).digest("hex"));
-    return issuePlatformSession(res, user, "wechat-miniapp-bind", identity);
+        const existing = rows[0];
+        if (existing && ["rejected", "revoked"].includes(existing.status)) {
+          throw identityError("此微信身份需总部重新核实后才能绑定", 403);
+        }
+        if (existing && existing.status === "approved" && existing.user_id !== user.id) {
+          throw identityError("此微信已绑定其他账号，请联系总部处理", 409);
+        }
+        const row = existing || { id: createId("wxr"), ...identity };
+        const changedAt = now();
+        if (existing) {
+          await conn.query(
+            "UPDATE wechat_identities SET user_id = ?, status = ?, reviewer_id = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+            [user.id, "approved", user.id, changedAt, changedAt, row.id]
+          );
+        } else {
+          await conn.query(
+            `INSERT INTO wechat_identities
+             (id, appid, openid, user_id, status, name, created_at, updated_at, reviewer_id, reviewed_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`,
+            [row.id, identity.appid, identity.openid, user.id, "approved", user.name || user.username, changedAt, changedAt, user.id, changedAt]
+          );
+        }
+        await recordWechatIdentityEvent(conn, row, "bind-existing", user.id, user.id);
+        await conn.commit();
+      } catch (error) {
+        await conn.rollback();
+        if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 409, { error: "该微信或原账号已绑定，请联系总部核对" });
+        if (error && error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
+        throw error;
+      } finally { conn.release(); }
+      _wechatBindFailures.delete(crypto.createHash("sha256").update(`${identity.appid}:${identity.openid}`).digest("hex"));
+      return issuePlatformSession(res, user, "wechat-miniapp-bind", identity);
+    });
   }
 
   // 前台观看埋点：允许游客记录为“游客”，登录用户关联到具体账号。
@@ -2633,54 +2674,44 @@ async function handleApi(req, res, pathname) {
       sendJson(res, 400, { error: "密码至少6位" });
       return;
     }
-    const db = readDb();
-    if (db.users.some(x => usernameKey(x.username) === username)) {
-      sendJson(res, 409, { error: "该账号已被使用，请换一个" });
-      return;
-    }
-    const salt = crypto.randomBytes(8).toString("hex");
-    const newUser = {
-      id: createId("u"),
-      username,
-      name: application.name,
-      role: "viewer",
-      status: "pending",
-      canDownload: false,
-      applicationContact: application.contact,
-      applicationCity: application.city,
-      applicationOrganization: application.organization,
-      salt,
-      passwordHash: hashPassword(password, salt),
-      createdAt: now()
-    };
-    db.users.push(newUser);
-    await writeDb(db);
-    sendJson(res, 201, { ok: true, message: "申请已提交，请等待管理员开通后登录" });
-    return;
+    return withUserWriteLock(async () => {
+      const db = readDb();
+      if (db.users.some(x => usernameKey(x.username) === username)) {
+        sendJson(res, 409, { error: "该账号已被使用，请换一个" });
+        return;
+      }
+      const salt = crypto.randomBytes(8).toString("hex");
+      const newUser = {
+        id: createId("u"),
+        username,
+        name: application.name,
+        role: "viewer",
+        status: "pending",
+        canDownload: false,
+        applicationContact: application.contact,
+        applicationCity: application.city,
+        applicationOrganization: application.organization,
+        salt,
+        passwordHash: hashPassword(password, salt),
+        createdAt: now()
+      };
+      db.users.push(newUser);
+      await persistDb();
+      sendJson(res, 201, { ok: true, message: "申请已提交，请等待管理员开通后登录" });
+    });
   }
 
   if (req.method === "POST" && pathname === "/api/login") {
     const body = await parseBody(req);
-    const db = readDb();
-    const user = db.users.find(x => usernameKey(x.username) === usernameKey(body.username) && x.status === "active");
-    if (!user || !user.passwordHash || user.passwordHash !== hashPassword(String(body.password || ""), user.salt)) {
-      sendJson(res, 401, { error: "账号或密码不正确" });
-      return;
-    }
-    const token = crypto.randomBytes(24).toString("hex");
-    const sessions = readSessions();
-    sessions[token] = {
-      userId: user.id,
-      createdAt: sessionCreatedAt(user),
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-    };
-    await writeSessions(sessions);
-    // 同时返回 Bearer token，兼容微信内置浏览器等无法稳定保存跨域 Cookie 的环境。
-    // Cookie 仍然保留，桌面端和已有登录态无需改变。
-    sendJson(res, 200, { user: publicUser(user), token }, {
-      "Set-Cookie": sessionCookie(token, 7 * 24 * 60 * 60)
+    return withUserWriteLock(async () => {
+      const db = readDb();
+      const user = db.users.find(x => usernameKey(x.username) === usernameKey(body.username) && x.status === "active");
+      if (!user || !user.passwordHash || user.passwordHash !== hashPassword(String(body.password || ""), user.salt)) {
+        sendJson(res, 401, { error: "账号或密码不正确" });
+        return;
+      }
+      return issuePlatformSession(res, user, "password");
     });
-    return;
   }
 
   if (req.method === "POST" && pathname === "/api/auth/sso") {
@@ -4339,16 +4370,19 @@ async function handleApi(req, res, pathname) {
     const [, identityId, action] = wechatReview;
     if (action === "approve") {
       try {
-        const result = await approveWechatIdentity(identityId, reviewer, body);
+        const result = await approveWechatIdentity(identityId, reviewer, body, req);
         return sendJson(res, 200, { ok: true, created: result.created, user: publicUser(result.user) });
       } catch (error) {
         if (error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
         throw error;
       }
     }
-    let revokedUserId = null;
     try {
       const decide = async () => {
+        const currentReviewer = getAuthedUser(req);
+        if (!currentReviewer || currentReviewer.id !== reviewer.id || currentReviewer.role !== "admin") {
+          throw identityError("管理员登录或权限已变化，请重新登录", 403);
+        }
         const conn = await pool.getConnection();
         let revokedUser = null;
         try {
@@ -4366,7 +4400,7 @@ async function handleApi(req, res, pathname) {
           if (action === "revoke") {
             const original = readDb().users.find(item => item.id === identity.user_id);
             if (!original) throw identityError("原账号不存在，请先核实", 409);
-            revokedUser = { ...original, sessionRevokedAt: changedAt };
+            revokedUser = { ...original, sessionRevokedAt: userSessionRevokedAt(original) };
             await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(revokedUser), original.id]);
           }
           await conn.query(
@@ -4382,23 +4416,17 @@ async function handleApi(req, res, pathname) {
               if (index >= 0) _persistedSnapshot.users[index] = JSON.parse(JSON.stringify(revokedUser));
             }
           }
+          if (identity.user_id) await expireUserSessions(identity.user_id);
           return identity.user_id;
         } catch (error) {
           await conn.rollback();
           throw error;
         } finally { conn.release(); }
       };
-      revokedUserId = action === "revoke" ? await withUserWriteLock(decide) : await decide();
+      await withUserWriteLock(decide);
     } catch (error) {
       if (error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
       throw error;
-    }
-    if (revokedUserId) {
-      const sessions = readSessions();
-      for (const [token, session] of Object.entries(sessions)) {
-        if (session.userId === revokedUserId) delete sessions[token];
-      }
-      await writeSessions(sessions);
     }
     return sendJson(res, 200, { ok: true, status: { reject: "rejected", reopen: "pending", revoke: "revoked" }[action] });
   }
@@ -4424,8 +4452,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "POST" && pathname === "/api/admin/users") {
-    const user = requireRole(req, res, ["admin"]);
-    if (!user) return;
+    if (!requireRole(req, res, ["admin"])) return;
     const body = await parseBody(req);
     const username = usernameKey(body.username);
     const password = String(body.password || "").trim();
@@ -4434,95 +4461,105 @@ async function handleApi(req, res, pathname) {
       return;
     }
     if (!validNewUsername(username)) return sendJson(res, 400, { error: "账号须为3至80位字母、数字、点、下划线或短横线" });
-    const db = readDb();
-    if (db.users.some(x => usernameKey(x.username) === username)) {
-      sendJson(res, 409, { error: "账号已存在" });
-      return;
-    }
-    const salt = crypto.randomBytes(8).toString("hex");
-    const newUser = {
-      id: createId("u"),
-      username,
-      name: String(body.name || username).trim(),
-      role: VALID_ROLES.includes(body.role) ? body.role : "member",
-      status: body.status === "disabled" ? "disabled" : "active",
-      canDownload: Boolean(body.canDownload),
-      salt,
-      passwordHash: hashPassword(password, salt),
-      createdAt: now()
-    };
-    db.users.push(newUser);
-    await writeDb(db);
-    sendJson(res, 201, { user: publicUser(newUser) });
-    return;
+    if (password.length < 6) return sendJson(res, 400, { error: "密码至少6位" });
+    return withUserWriteLock(async () => {
+      if (!requireRole(req, res, ["admin"])) return;
+      const db = readDb();
+      if (db.users.some(x => usernameKey(x.username) === username)) {
+        sendJson(res, 409, { error: "账号已存在" });
+        return;
+      }
+      const salt = crypto.randomBytes(8).toString("hex");
+      const newUser = {
+        id: createId("u"),
+        username,
+        name: String(body.name || username).trim(),
+        role: VALID_ROLES.includes(body.role) ? body.role : "member",
+        status: body.status === "disabled" ? "disabled" : "active",
+        canDownload: Boolean(body.canDownload),
+        salt,
+        passwordHash: hashPassword(password, salt),
+        createdAt: now()
+      };
+      db.users.push(newUser);
+      await persistDb();
+      sendJson(res, 201, { user: publicUser(newUser) });
+    });
   }
 
   const adminUser = pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
   if (adminUser && req.method === "PUT") {
-    const user = requireRole(req, res, ["admin"]);
-    if (!user) return;
+    if (!requireRole(req, res, ["admin"])) return;
     const body = await parseBody(req);
-    const db = readDb();
-    const target = db.users.find(x => x.id === adminUser[1]);
-    if (!target) {
-      sendJson(res, 404, { error: "账号不存在" });
-      return;
-    }
-    const previous = { ...target };
-    if (target.authSource === "wechat-miniapp" && body.username !== undefined) {
-      const username = usernameKey(body.username);
-      if (!validNewUsername(username)) {
-        return sendJson(res, 400, { error: "H5 登录账号须为3至80位字母、数字、点、下划线或短横线" });
+    if (body.password && String(body.password).length < 6) return sendJson(res, 400, { error: "新密码至少6位" });
+    return withUserWriteLock(async () => {
+      const user = requireRole(req, res, ["admin"]);
+      if (!user) return;
+      const db = readDb();
+      const target = db.users.find(x => x.id === adminUser[1]);
+      if (!target) {
+        sendJson(res, 404, { error: "账号不存在" });
+        return;
       }
-      if (db.users.some(item => item.id !== target.id && usernameKey(item.username) === username)) {
-        return sendJson(res, 409, { error: "H5 登录账号已存在，请使用其他名称" });
+      const previous = { ...target };
+      const resetExistingPassword = Boolean(body.password && previous.passwordHash);
+      if (target.authSource === "wechat-miniapp" && body.username !== undefined) {
+        const username = usernameKey(body.username);
+        if (!validNewUsername(username)) {
+          return sendJson(res, 400, { error: "H5 登录账号须为3至80位字母、数字、点、下划线或短横线" });
+        }
+        if (db.users.some(item => item.id !== target.id && usernameKey(item.username) === username)) {
+          return sendJson(res, 409, { error: "H5 登录账号已存在，请使用其他名称" });
+        }
+        target.username = username;
       }
-      target.username = username;
-    }
-    target.name = String(body.name || target.name).trim();
-    target.role = VALID_ROLES.includes(body.role) ? body.role : target.role;
-    target.status = ["pending", "active", "disabled", "rejected"].includes(body.status) ? body.status : target.status;
-    target.canDownload = target.role === "admin" ? true
-      : (body.canDownload === undefined ? target.canDownload !== false : Boolean(body.canDownload));
-    if (body.password) {
-      target.salt = crypto.randomBytes(8).toString("hex");
-      target.passwordHash = hashPassword(String(body.password), target.salt);
-      // 先持久化阻断标记：即便微信映射表解绑失败，也不能凭旧绑定取得新登录态。
-      target.wechatBindingSuspended = true;
-    }
-    const securityChanged = Boolean(body.password) || previous.status !== target.status
-      || previous.role !== target.role || previous.username !== target.username;
-    if (securityChanged) target.sessionRevokedAt = now();
-    await writeDb(db);
-    if (securityChanged) await expireUserSessions(target.id);
-    if (body.password) {
-      await revokeWechatBindingsForUser(target.id, user.id, "总部重置账号密码");
-      target.wechatBindingSuspended = false;
-      await writeDb(db);
-    }
-    sendJson(res, 200, { user: publicUser(target) });
-    return;
+      target.name = String(body.name || target.name).trim();
+      target.role = VALID_ROLES.includes(body.role) ? body.role : target.role;
+      target.status = ["pending", "active", "disabled", "rejected"].includes(body.status) ? body.status : target.status;
+      target.canDownload = target.role === "admin" ? true
+        : (body.canDownload === undefined ? target.canDownload !== false : Boolean(body.canDownload));
+      if (body.password) {
+        target.salt = crypto.randomBytes(8).toString("hex");
+        target.passwordHash = hashPassword(String(body.password), target.salt);
+        // 先持久化阻断标记：即便微信映射表解绑失败，也不能凭旧绑定取得新登录态。
+        if (resetExistingPassword) target.wechatBindingSuspended = true;
+      }
+      const securityChanged = Boolean(body.password) || previous.status !== target.status
+        || previous.role !== target.role || previous.username !== target.username;
+      if (securityChanged) target.sessionRevokedAt = userSessionRevokedAt(target);
+      await persistDb();
+      if (securityChanged) await expireUserSessions(target.id);
+      if (resetExistingPassword) {
+        await revokeWechatBindingsForUser(target.id, user.id, "总部重置账号密码");
+        target.wechatBindingSuspended = false;
+        await persistDb();
+      }
+      sendJson(res, 200, { user: publicUser(target) });
+    });
   }
 
   if (adminUser && req.method === "DELETE") {
-    const user = requireRole(req, res, ["admin"]);
-    if (!user) return;
-    if (user.id === adminUser[1]) {
-      sendJson(res, 400, { error: "不能删除当前登录账号" });
-      return;
-    }
-    const db = readDb();
-    if ((db.activityProjects || []).some(project => project.ownerId === adminUser[1])) {
-      return sendJson(res, 409, { error: "该账号名下有活动相册，请停用而非删除" });
-    }
-    const [bindings] = await pool.query("SELECT id FROM wechat_identities WHERE user_id = ?", [adminUser[1]]);
-    if (bindings.length) return sendJson(res, 409, { error: "该账号仍绑定微信，请先解除绑定或停用" });
-    const [history] = await pool.query("SELECT id FROM wechat_identity_events WHERE target_user_id = ? LIMIT 1", [adminUser[1]]);
-    if (history.length) return sendJson(res, 409, { error: "该账号有微信身份历史记录，请停用而非删除" });
-    db.users = db.users.filter(x => x.id !== adminUser[1]);
-    await writeDb(db);
-    sendJson(res, 200, { ok: true });
-    return;
+    if (!requireRole(req, res, ["admin"])) return;
+    return withUserWriteLock(async () => {
+      const user = requireRole(req, res, ["admin"]);
+      if (!user) return;
+      if (user.id === adminUser[1]) {
+        sendJson(res, 400, { error: "不能删除当前登录账号" });
+        return;
+      }
+      const db = readDb();
+      if ((db.activityProjects || []).some(project => project.ownerId === adminUser[1])) {
+        return sendJson(res, 409, { error: "该账号名下有活动相册，请停用而非删除" });
+      }
+      const [bindings] = await pool.query("SELECT id FROM wechat_identities WHERE user_id = ?", [adminUser[1]]);
+      if (bindings.length) return sendJson(res, 409, { error: "该账号仍绑定微信，请先解除绑定或停用" });
+      const [history] = await pool.query("SELECT id FROM wechat_identity_events WHERE target_user_id = ? LIMIT 1", [adminUser[1]]);
+      if (history.length) return sendJson(res, 409, { error: "该账号有微信身份历史记录，请停用而非删除" });
+      db.users = db.users.filter(x => x.id !== adminUser[1]);
+      await persistDb();
+      await expireUserSessions(adminUser[1]);
+      sendJson(res, 200, { ok: true });
+    });
   }
 
   // 智能解析：粘贴活动文案 → DeepSeek 抽取成结构化活动

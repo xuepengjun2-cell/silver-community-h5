@@ -9,7 +9,7 @@
     "test:sso": "node tests/activity-hub-sso.js",
     "test:media": "node --test tests/miniapp-media.js tests/video-delivery-io.js tests/sop-pdf.js tests/project-upload-panel.test.js miniapp/test/*.test.js",
     "test:concurrency": "node --test tests/concurrency/concurrent-writes.test.js",
-    "test:identity": "node --test tests/wechat-identity.test.js tests/wechat-identity-api.test.js miniapp/test/wechat-auth.test.js"
+    "test:identity": "node --test tests/wechat-identity.test.js tests/wechat-identity-api.test.js tests/account-review-ui.test.js miniapp/test/wechat-auth.test.js"
   },
   "engines": {
     "node": ">=18"

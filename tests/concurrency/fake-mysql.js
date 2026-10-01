@@ -11,10 +11,27 @@ function table(name) { return (tables[name] = tables[name] || []); }
 function dump() { if (process.env.FAKE_DB_DUMP) fs.writeFileSync(process.env.FAKE_DB_DUMP, JSON.stringify(tables)); }
 function dup(key) { const e = new Error(`Duplicate entry '${key}' for key 'PRIMARY'`); e.code = "ER_DUP_ENTRY"; return e; }
 const tick = () => new Promise(resolve => setTimeout(resolve, Math.random() * 3));
+const gateHits = new Map();
+
+async function waitForTestGate(sql, params) {
+  const configFile = process.env.FAKE_DB_GATE_FILE;
+  if (!configFile || !fs.existsSync(configFile)) return;
+  const gate = JSON.parse(fs.readFileSync(configFile, "utf8"));
+  if (!sql.includes(gate.sqlIncludes) || !(gate.paramsInclude || []).every(value => params.includes(value))) return;
+  const count = (gateHits.get(gate.id) || 0) + 1;
+  gateHits.set(gate.id, count);
+  if (count !== (gate.occurrence || 1)) return;
+  fs.writeFileSync(gate.enteredFile, "entered");
+  for (let attempt = 0; attempt < 1600 && !fs.existsSync(gate.releaseFile); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  if (!fs.existsSync(gate.releaseFile)) throw new Error("fake-mysql: test gate was not released");
+}
 
 async function query(sql, params = []) {
   await tick();
   const s = String(sql).replace(/\s+/g, " ").trim();
+  await waitForTestGate(s, params);
   let m;
   if (/^CREATE TABLE/i.test(s)) return [{}, []];
   if ((m = s.match(/^SELECT COUNT\(\*\) AS (\w+) FROM (\w+)/i))) return [[{ [m[1]]: table(m[2]).length }], []];

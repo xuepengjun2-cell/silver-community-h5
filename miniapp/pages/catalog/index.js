@@ -50,16 +50,17 @@ Page({
     catch { return this.setData({ loading: false, error: "内容编号无效。" }); }
     this.type = options.type;
     this.id = options.id;
+    this.guestMode = options.guest === "1";
     this.load();
   },
   onShow() {
-    const session = getSession(wx);
+    const session = this.guestMode ? null : getSession(wx);
     this.setData({ loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false) });
   },
   async load() {
     this.setData({ loading: true, error: "" });
     try {
-      const session = getSession(wx);
+      const session = this.guestMode ? null : getSession(wx);
       const result = await api(wx, `/public/${this.type}/${encodeURIComponent(this.id)}`, { token: session && session.token });
       const item = result.activity || result.case;
       if (!item) throw new Error("该内容暂时无法查看。");
@@ -132,6 +133,7 @@ Page({
   },
   async onSopPdf() {
     if (this.data.pdfBusy || !this.data.item) return;
+    if (!this.data.loggedIn) return this.onDownloadError(new Error("请先登录平台账号，再按账号权限下载活动方案。"));
     if (this.data.loggedIn && !this.data.canDownloadSop) {
       return wx.showModal({ title: "无下载权限", content: "请联系总部开通 SOP 下载权限。", showCancel: false });
     }
@@ -143,6 +145,7 @@ Page({
   },
   async onCaseSave(event) {
     if (this.data.savingIndex !== -1) return;
+    if (!this.data.loggedIn) return this.onDownloadError(new Error("请先登录平台账号，再下载精彩案例素材。"));
     const index = Number(event.currentTarget.dataset.index);
     const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
     if (!media) return;
@@ -155,6 +158,7 @@ Page({
   },
   async onCaseDocument(event) {
     if (this.data.savingIndex !== -1) return;
+    if (!this.data.loggedIn) return this.onDownloadError(new Error("请先登录平台账号，再下载精彩案例文档。"));
     const index = Number(event.currentTarget.dataset.index);
     const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
     if (!media) return;

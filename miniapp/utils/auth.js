@@ -51,6 +51,11 @@ async function login(wxApi, username, password) {
   return storeSession(wxApi, response);
 }
 
+// 平台申请只创建待审记录；即便服务器响应带有其他字段，也不建立登录态。
+async function applyPlatform(wxApi, details) {
+  return api(wxApi, "/register", { method: "POST", data: details });
+}
+
 function wechatCode(wxApi) {
   return new Promise((resolve, reject) => {
     if (typeof wxApi.login !== "function") return reject(new Error("当前环境暂不支持微信登录，请使用原账号。"));
@@ -110,5 +115,5 @@ async function logout(wxApi) {
 
 module.exports = {
   SESSION_KEY, MANUAL_LOGOUT_KEY, api, login, logout, getSession, clearSession, validateSession,
-  wechatSession, applyWechat, bindWechat, canManageProjects
+  wechatSession, applyWechat, applyPlatform, bindWechat, canManageProjects
 };

@@ -21,3 +21,11 @@ jobs:
         run: npm ci
       - name: Check JavaScript
         run: npm run check
+      - name: Check identity and account review boundaries
+        run: npm run test:identity
+      - name: Check media and anonymous album sharing
+        run: npm run test:media
+      - name: Check account and upload concurrency
+        run: npm run test:concurrency
+      - name: Check existing SSO
+        run: npm run test:sso
