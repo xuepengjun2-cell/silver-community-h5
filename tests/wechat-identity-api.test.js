@@ -9,7 +9,22 @@ const { spawn } = require("node:child_process");
 const ROOT = path.resolve(__dirname, "..");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function withServer(run) {
+function renewalFixture({ hoursRemaining = 6, status = "active", suspended = false, revoked = false, bindingStatus = "approved" } = {}) {
+  const expiry = Date.now() + hoursRemaining * 60 * 60 * 1000;
+  const createdAt = new Date(expiry - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const user = { id: "renewal_owner", username: "renewal-owner", name: "续登主理人", role: "operator", status,
+    canDownload: true, salt: "fixture-salt", passwordHash: crypto.createHash("sha256").update("fixture-salt:fixture-password").digest("hex"),
+    createdAt, ...(suspended ? { wechatBindingSuspended: true } : {}),
+    ...(revoked ? { sessionRevokedAt: new Date().toISOString() } : {}) };
+  return {
+    users: [{ id: user.id, username: user.username, role: user.role, status: user.status, created_at: createdAt, doc: JSON.stringify(user) }],
+    sessions: [{ token: "original-renewal-token", user_id: user.id, created_at: createdAt, expires_at: new Date(expiry).toISOString() }],
+    wechat_identities: [{ id: "renewal_identity", appid: "wx-test", openid: "openid-conflict", user_id: user.id, status: bindingStatus,
+      name: user.name, contact: "13800000000", city: "绍兴", organization: "测试", created_at: createdAt, updated_at: createdAt }]
+  };
+}
+
+async function withServer(run, { extraSeed = {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "silver-wechat-test-"));
   let child;
   try {
@@ -28,12 +43,13 @@ async function withServer(run) {
     const seed = path.join(dir, "seed.json");
     const dumpFile = path.join(dir, "db-dump.json");
     const gateFile = path.join(dir, "query-gate.json");
+    const wechatGateFile = path.join(dir, "wechat-gate.json");
     const activity = { id: "act_download_test", title: "下载权限测试活动", status: "published", downloadEnabled: true,
       city: "上海", category: "同城活动", createdAt: new Date().toISOString(), plan: { target: "测试" } };
-    fs.writeFileSync(seed, JSON.stringify({ users: [{
+    fs.writeFileSync(seed, JSON.stringify({ ...extraSeed, users: [{
       id: admin.id, username: admin.username, role: admin.role, status: admin.status,
       doc: JSON.stringify(admin), created_at: admin.createdAt
-    }], activities: [{ id: activity.id, status: activity.status, city: activity.city, category: activity.category,
+    }, ...(extraSeed.users || [])], activities: [{ id: activity.id, status: activity.status, city: activity.city, category: activity.category,
       sort_order: 1, created_at: activity.createdAt, doc: JSON.stringify(activity) }] }));
     const port = 21000 + Math.floor(Math.random() * 20000);
     const codes = { applicant1: "openid-first", applicant2: "openid-first", applicant3: "openid-first",
@@ -43,7 +59,7 @@ async function withServer(run) {
     child = spawn(process.execPath, ["--require", path.join(ROOT, "tests/concurrency/preload.js"), "server.js"], {
       cwd: dir,
       env: { ...process.env, PORT: String(port), FAKE_DB_SEED: seed, FAKE_DB_DUMP: dumpFile, FAKE_WECHAT_CODES: JSON.stringify(codes),
-        FAKE_DB_GATE_FILE: gateFile,
+        FAKE_DB_GATE_FILE: gateFile, FAKE_WECHAT_GATE_FILE: wechatGateFile,
         WECHAT_MINIAPP_APPID: "wx-test", WECHAT_MINIAPP_SECRET: "test-only-secret" },
       stdio: ["ignore", "pipe", "pipe"]
     });
@@ -70,11 +86,11 @@ async function withServer(run) {
     };
     const logged = await api("/login", { method: "POST", body: { username: "test-admin", password: "test-password" } });
     assert.equal(logged.status, 200, log);
-    const gate = (sqlIncludes, { paramsInclude = [], occurrence = 1 } = {}) => {
+    const makeGate = (configFile, details) => {
       const id = crypto.randomBytes(8).toString("hex");
       const enteredFile = path.join(dir, `${id}.entered`);
       const releaseFile = path.join(dir, `${id}.released`);
-      fs.writeFileSync(gateFile, JSON.stringify({ id, sqlIncludes, paramsInclude, occurrence, enteredFile, releaseFile }));
+      fs.writeFileSync(configFile, JSON.stringify({ id, ...details, enteredFile, releaseFile }));
       return {
         async entered() {
           for (let i = 0; i < 500 && !fs.existsSync(enteredFile); i++) await sleep(5);
@@ -83,7 +99,9 @@ async function withServer(run) {
         release() { fs.writeFileSync(releaseFile, "released"); }
       };
     };
-    await run({ api, adminToken: logged.data.token, port, gate,
+    const gate = (sqlIncludes, { paramsInclude = [], occurrence = 1 } = {}) => makeGate(gateFile, { sqlIncludes, paramsInclude, occurrence });
+    const wechatGate = code => makeGate(wechatGateFile, { code });
+    await run({ api, adminToken: logged.data.token, port, gate, wechatGate,
       persisted: () => JSON.parse(fs.readFileSync(dumpFile, "utf8")) });
   } finally {
     if (child) child.kill();
@@ -408,4 +426,151 @@ test("密码会话写入期间停用不能插队，拒绝状态阻断新的密�
   assert.equal((await api("/me", { token: logged.data.token })).data.user, null);
   assert.equal((await api("/login", { method: "POST", body: { username: "race-password", password: "user-password" } })).status, 401);
   assert.equal((await api("/auth/wechat/bind", { method: "POST", body: { code: "conflict", username: "race-password", password: "user-password" } })).status, 403);
+}));
+
+test("登录与 me 返回同一会话的七天期限；匿名和未知 token 不泄露会话资料", () => withServer(async ({ api, adminToken }) => {
+  const started = Date.now();
+  const login = await api("/login", { method: "POST", body: { username: "test-admin", password: "test-password" } });
+  assert.equal(login.data.loginMethod, "password");
+  assert.ok(new Date(login.data.sessionExpiresAt).getTime() >= started + 7 * 24 * 60 * 60 * 1000);
+  assert.ok(new Date(login.data.sessionExpiresAt).getTime() <= Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const me = await api("/me", { token: login.data.token });
+  assert.equal(me.data.user.id, login.data.user.id);
+  assert.equal(me.data.sessionExpiresAt, login.data.sessionExpiresAt);
+  assert.deepEqual((await api("/me")).data, { user: null });
+  assert.deepEqual((await api("/me", { token: "unknown-token" })).data, { user: null });
+  assert.equal((await api("/auth/wechat/session", { method: "POST", token: adminToken,
+    body: { code: "conflict", autoRenew: true } })).status, 403, "总部账号不能自动微信续登");
+}));
+
+test("原有效 Bearer 在24小时内可凭同一微信续登，保留旧 token 不中断已开始的上传", () => withServer(async ({ api, persisted }) => {
+  const old = await api("/me", { token: "original-renewal-token" });
+  const before = Date.now();
+  const renewed = await api("/auth/wechat/session", { method: "POST", token: "original-renewal-token",
+    body: { code: "conflict", autoRenew: true } });
+  assert.equal(renewed.status, 200);
+  assert.equal(renewed.data.user.id, old.data.user.id);
+  assert.equal(renewed.data.loginMethod, "wechat-miniapp");
+  assert.notEqual(renewed.data.token, "original-renewal-token");
+  assert.ok(new Date(renewed.data.sessionExpiresAt).getTime() >= before + 7 * 24 * 60 * 60 * 1000);
+  assert.ok(new Date(renewed.data.sessionExpiresAt).getTime() <= Date.now() + 7 * 24 * 60 * 60 * 1000);
+  assert.equal((await api("/me", { token: "original-renewal-token" })).data.sessionExpiresAt, old.data.sessionExpiresAt);
+  assert.equal((await api("/me", { token: renewed.data.token })).data.sessionExpiresAt, renewed.data.sessionExpiresAt);
+  assert.equal(persisted().sessions.filter(row => row.user_id === old.data.user.id).length, 2);
+}, { extraSeed: renewalFixture() }));
+
+test("过早自动续登仍核验同一微信，返回原 token 和原期限而不新增会话", () => withServer(async ({ api, persisted }) => {
+  const old = await api("/me", { token: "original-renewal-token" });
+  const before = persisted().sessions.length;
+  const renewed = await api("/auth/wechat/session", { method: "POST", token: "original-renewal-token",
+    body: { code: "conflict", autoRenew: true } });
+  assert.equal(renewed.status, 200);
+  assert.equal(renewed.data.token, "original-renewal-token");
+  assert.equal(renewed.data.sessionExpiresAt, old.data.sessionExpiresAt);
+  assert.equal(persisted().sessions.length, before);
+  const foreign = await api("/auth/wechat/session", { method: "POST", token: "original-renewal-token",
+    body: { code: "existing1", autoRenew: true } });
+  assert.equal(foreign.status, 403, "不能因过早续登跳过微信匹配");
+  assert.equal(foreign.data.token, undefined);
+  assert.equal(persisted().sessions.length, before);
+}, { extraSeed: renewalFixture({ hoursRemaining: 48 }) }));
+
+test("自动续登需要真实有效 Bearer；匿名、未知、仅Cookie和另一微信不能取新 token", () => withServer(async ({ api, persisted }) => {
+  const before = persisted().sessions.length;
+  for (const options of [{}, { token: "unknown-token" }, { cookie: "original-renewal-token", origin: "https://proj2.likeduoduiyi.cn" }]) {
+    const denied = await api("/auth/wechat/session", { method: "POST", ...options, body: { code: "conflict", autoRenew: true } });
+    assert.equal(denied.status, 401);
+    assert.equal(denied.data.token, undefined);
+  }
+  const foreign = await api("/auth/wechat/session", { method: "POST", token: "original-renewal-token", body: { code: "existing1", autoRenew: true } });
+  assert.equal(foreign.status, 403);
+  assert.equal(foreign.data.token, undefined);
+  assert.equal(persisted().sessions.length, before);
+}, { extraSeed: renewalFixture() }));
+
+test("过期、撤销、停用、暂停绑定和未批准身份均不能自动续登", async () => {
+  for (const settings of [{ hoursRemaining: -1 }, { revoked: true }, { status: "disabled" },
+    { status: "rejected" }, { suspended: true }, { bindingStatus: "revoked" }, { bindingStatus: "pending" }]) {
+    await withServer(async ({ api, persisted }) => {
+      const before = persisted().sessions.length;
+      const denied = await api("/auth/wechat/session", { method: "POST", token: "original-renewal-token", body: { code: "conflict", autoRenew: true } });
+      assert.ok([401, 403].includes(denied.status), JSON.stringify(settings));
+      assert.equal(denied.data.token, undefined);
+      assert.equal(persisted().sessions.length, before);
+      if (settings.revoked || settings.hoursRemaining < 0) {
+        const explicit = await api("/auth/wechat/session", { method: "POST", body: { code: "conflict" } });
+        assert.equal(explicit.status, 200);
+        assert.equal(explicit.data.user.id, "renewal_owner", "仍启用且绑定有效的用户可主动重新验证微信登录");
+      }
+    }, { extraSeed: renewalFixture(settings) });
+  }
+});
+
+test("另一已批准账号的微信 code 不能续登当前账号，两边账号和权限不变", () => withServer(async ({ api, adminToken }) => {
+  const other = await api("/admin/users", { method: "POST", token: adminToken,
+    body: { username: "other-wechat-owner", password: "other-password", role: "viewer", canDownload: false } });
+  const binding = await api("/auth/wechat/bind", { method: "POST", body: { code: "existing1", username: "other-wechat-owner", password: "other-password" } });
+  assert.equal(binding.status, 200);
+  const denied = await api("/auth/wechat/session", { method: "POST", token: "original-renewal-token", body: { code: "existing2", autoRenew: true } });
+  assert.equal(denied.status, 403);
+  assert.equal(denied.data.token, undefined);
+  assert.equal((await api("/me", { token: "original-renewal-token" })).data.user.id, "renewal_owner");
+  const otherMe = (await api("/me", { token: binding.data.token })).data.user;
+  assert.equal(otherMe.id, other.data.user.id);
+  assert.equal(otherMe.role, "viewer");
+  assert.equal(otherMe.canDownload, false);
+}, { extraSeed: renewalFixture() }));
+
+test("微信 code 交换期间撤销权限、注销或解绑后，自动续登不得恢复旧权限", async () => {
+  for (const action of ["disable", "role", "logout", "revoke", "reset-password"]) {
+    await withServer(async ({ api, adminToken, wechatGate, persisted }) => {
+      const boundary = wechatGate("conflict");
+      const renew = api("/auth/wechat/session", { method: "POST", token: "original-renewal-token", body: { code: "conflict", autoRenew: true } });
+      await boundary.entered();
+      const changed = action === "logout" ? await api("/logout", { method: "POST", token: "original-renewal-token", body: {} })
+        : action === "revoke" ? await api("/admin/wechat/applications/renewal_identity/revoke", { method: "POST", token: adminToken, body: {} })
+          : await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken,
+            body: action === "disable" ? { status: "disabled" } : action === "role" ? { role: "viewer" } : { password: "changed-password" } });
+      assert.equal(changed.status, 200, action);
+      boundary.release();
+      const denied = await renew;
+      assert.ok([401, 403].includes(denied.status), action);
+      assert.equal(denied.data.token, undefined);
+      assert.equal(persisted().sessions.some(row => row.user_id === "renewal_owner"), false);
+    }, { extraSeed: renewalFixture() });
+  }
+});
+
+test("微信续登写入等待期间原 Bearer 自然到期，也不返回新 token", async () => {
+  const seed = renewalFixture({ hoursRemaining: 3 / 3600 });
+  await withServer(async ({ api, gate, persisted }) => {
+    const boundary = gate("DELETE FROM sessions");
+    const renew = api("/auth/wechat/session", { method: "POST", token: "original-renewal-token", body: { code: "conflict", autoRenew: true } });
+    await boundary.entered();
+    await sleep(Math.max(0, new Date(seed.sessions[0].expires_at).getTime() - Date.now()) + 20);
+    boundary.release();
+    const denied = await renew;
+    assert.equal(denied.status, 401);
+    assert.equal(denied.data.token, undefined);
+    assert.equal(persisted().sessions.some(row => row.user_id === "renewal_owner"), false);
+  }, { extraSeed: seed });
+});
+
+test("主理人与只读账号不能读取总部申请、审批微信或修改用户为管理员", () => withServer(async ({ api, adminToken }) => {
+  await api("/auth/wechat/apply", { method: "POST", body: { code: "applicant1", name: "待审申请人", contact: "13800000000" } });
+  const identityId = (await api("/admin/wechat/applications", { token: adminToken })).data.applications[0].id;
+  for (const role of ["operator", "viewer"]) {
+    const created = await api("/admin/users", { method: "POST", token: adminToken,
+      body: { username: `${role}-permission`, password: "user-password", role } });
+    const user = created.data.user;
+    const login = await api("/login", { method: "POST", body: { username: user.username, password: "user-password" } });
+    assert.equal((await api("/admin/wechat/applications", { token: login.data.token })).status, 403);
+    assert.equal((await api(`/admin/wechat/applications/${identityId}/approve`, { method: "POST", token: login.data.token,
+      body: { userId: user.id, role: "admin" } })).status, 403);
+    assert.equal((await api(`/admin/users/${user.id}`, { method: "PUT", token: login.data.token, body: { role: "admin" } })).status, 403);
+    const current = (await api("/admin/users", { token: adminToken })).data.users.find(item => item.id === user.id);
+    assert.equal(current.role, role);
+    assert.equal(current.id, user.id);
+  }
+  assert.equal((await api("/admin/wechat/applications", { token: adminToken })).data.applications[0].status, "pending");
 }));

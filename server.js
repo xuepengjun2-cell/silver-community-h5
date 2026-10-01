@@ -1039,7 +1039,7 @@ async function expireUserSessions(userId) {
 }
 
 // 调用方须持有 withUserWriteLock，覆盖授权检查、身份读回和会话持久化。
-async function issuePlatformSession(res, user, loginMethod, wechatIdentity = null) {
+async function issuePlatformSession(res, user, loginMethod, wechatIdentity = null, renewalReq = null) {
   const expectedSecurity = userSecurityKey(user);
   let currentUser = readDb().users.find(item => item.id === user.id && item.status === "active");
   if (!currentUser) return sendJson(res, 403, { error: "账号当前不可用，请联系总部核实" });
@@ -1055,11 +1055,15 @@ async function issuePlatformSession(res, user, loginMethod, wechatIdentity = nul
       return sendJson(res, 403, { error: "微信绑定已变化，请重新登录或联系总部核实" });
     }
   }
+  if (renewalReq && getAuthedUser(renewalReq)?.id !== currentUser.id) {
+    return sendJson(res, 401, { error: "原登录已过期或撤销，请重新登录" });
+  }
   const token = crypto.randomBytes(24).toString("hex");
+  const sessionExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
   const sessions = readSessions();
   sessions[token] = {
     userId: currentUser.id, createdAt: sessionCreatedAt(currentUser),
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    expiresAt: sessionExpiresAt
   };
   await writeSessions(sessions);
   if (userSecurityKey(readDb().users.find(item => item.id === user.id)) !== expectedSecurity || !readSessions()[token]) {
@@ -1067,7 +1071,12 @@ async function issuePlatformSession(res, user, loginMethod, wechatIdentity = nul
     await writeSessions(readSessions());
     return sendJson(res, 403, { error: "账号权限已变化，请重新登录" });
   }
-  sendJson(res, 200, { user: publicUser(currentUser), token, loginMethod }, {
+  if (renewalReq && getAuthedUser(renewalReq)?.id !== currentUser.id) {
+    delete readSessions()[token];
+    await writeSessions(readSessions());
+    return sendJson(res, 401, { error: "原登录已过期或撤销，请重新登录" });
+  }
+  sendJson(res, 200, { user: publicUser(currentUser), token, loginMethod, sessionExpiresAt }, {
     "Set-Cookie": sessionCookie(token, 7 * 24 * 60 * 60)
   });
 }
@@ -1237,7 +1246,7 @@ function getAuthedUser(req) {
   if (!token) return null;
   const sessions = readSessions();
   const session = sessions[token];
-  if (!session || new Date(session.expiresAt).getTime() < Date.now()) return null;
+  if (!session || !(new Date(session.expiresAt).getTime() > Date.now())) return null;
   const db = readDb();
   const user = db.users.find(x => x.id === session.userId && x.status === "active");
   if (user && user.sessionRevokedAt &&
@@ -1562,7 +1571,7 @@ async function loginByActivityHubSso(res, token) {
       expiresAt: sessionExpiresAt
     };
     await writeSessions(sessions);
-    sendJson(res, 200, { ok: true, user: publicUser(user), token: tokenValue, loginMethod: "activity-hub-sso" }, {
+    sendJson(res, 200, { ok: true, user: publicUser(user), token: tokenValue, loginMethod: "activity-hub-sso", sessionExpiresAt }, {
       "Set-Cookie": sessionCookie(tokenValue, Math.max(1, Math.floor((new Date(sessionExpiresAt).getTime() - Date.now()) / 1000)))
     });
   });
@@ -2420,27 +2429,59 @@ async function handleApi(req, res, pathname) {
   }
 
   if (req.method === "GET" && pathname === "/api/me") {
-    sendJson(res, 200, { user: publicUser(getAuthedUser(req)) });
+    const user = getAuthedUser(req);
+    const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "") || getCookieToken(req);
+    sendJson(res, 200, { user: publicUser(user), ...(user ? { sessionExpiresAt: readSessions()[token].expiresAt } : {}) });
     return;
   }
 
   // 微信只证明小程序身份；业务权限始终来自同一个 users.id。相册分享页不调用这些接口。
   if (req.method === "POST" && pathname === "/api/auth/wechat/session") {
     const body = await parseBody(req, 8 * 1024);
+    const autoRenew = body.autoRenew === true;
+    const renewalToken = autoRenew ? String(req.headers.authorization || "").replace(/^Bearer\s+/i, "") : "";
+    let renewalUserId;
+    let renewalSecurity;
+    if (autoRenew) {
+      const user = /^Bearer\s+\S+$/i.test(String(req.headers.authorization || "")) ? getAuthedUser(req) : null;
+      if (!user) return sendJson(res, 401, { error: "原登录已过期或撤销，请重新登录" });
+      if (!["operator", "member", "viewer"].includes(user.role) || user.wechatBindingSuspended) {
+        return sendJson(res, 403, { error: "此账号不能自动微信续登，请使用平台账号登录" });
+      }
+      renewalUserId = user.id;
+      renewalSecurity = userSecurityKey(user);
+    }
     let identity;
     try {
       identity = await exchangeWechatCode(body.code, { appid: WECHAT_MINIAPP_APPID, secret: WECHAT_MINIAPP_SECRET });
     } catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
     return withUserWriteLock(async () => {
+      if (autoRenew) {
+        const current = getAuthedUser(req);
+        if (!current || current.id !== renewalUserId) return sendJson(res, 401, { error: "原登录已过期或撤销，请重新登录" });
+        if (userSecurityKey(current) !== renewalSecurity) return sendJson(res, 403, { error: "账号权限已变化，请重新登录" });
+      }
       const fingerprint = identityFingerprint(identity.appid, identity.openid);
       const row = await wechatIdentityFor(identity.appid, identity.openid);
+      if (autoRenew && (!row || row.status !== "approved" || row.user_id !== renewalUserId)) {
+        return sendJson(res, 403, { error: "微信身份与原登录不匹配，请重新登录" });
+      }
       if (!row) return sendJson(res, 200, { status: "unbound", fingerprint });
       if (row.status !== "approved") return sendJson(res, 200, { status: row.status, fingerprint });
       const user = readDb().users.find(item => item.id === row.user_id && item.status === "active");
       if (!user) return sendJson(res, 200, { status: "disabled", fingerprint });
       if (user.role === "admin") return sendJson(res, 200, { status: "password-required", fingerprint });
       if (user.wechatBindingSuspended) return sendJson(res, 200, { status: "revoked", fingerprint });
-      return issuePlatformSession(res, user, "wechat-miniapp", identity);
+      if (autoRenew) {
+        if (getAuthedUser(req)?.id !== user.id) return sendJson(res, 401, { error: "原登录已过期或撤销，请重新登录" });
+        const previousSession = readSessions()[renewalToken];
+        if (new Date(previousSession.expiresAt).getTime() - Date.now() > 24 * 60 * 60 * 1000) {
+          // 过早续登只确认原会话；先验同一微信，既不换 token 也不延长原期限。
+          return sendJson(res, 200, { user: publicUser(user), token: renewalToken,
+            loginMethod: "wechat-miniapp", sessionExpiresAt: previousSession.expiresAt });
+        }
+      }
+      return issuePlatformSession(res, user, "wechat-miniapp", identity, autoRenew ? req : null);
     });
   }
 

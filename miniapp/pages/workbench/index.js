@@ -1,4 +1,4 @@
-const { api, getSession, validateSession, logout, clearSession } = require("../../utils/auth");
+const { api, getSession, validateSession, isSessionCurrent, logout, clearSession } = require("../../utils/auth");
 const { albumPath } = require("../../utils/album");
 const { cardView, catalogPath, sharePayload, filterCatalogCards } = require("../../utils/catalog");
 
@@ -13,11 +13,23 @@ Page({
     if (this.guestMode) this.setData({ guest: true, tab: "activities", user: null, projects: [], canCreateProjects: false });
   },
   onShow() { this.load(); },
-  async load() {
+  load() {
+    if (this.loadingPromise) return this.loadingPromise;
+    const pending = this.loadContent().finally(() => { if (this.loadingPromise === pending) this.loadingPromise = null; });
+    this.loadingPromise = pending;
+    return pending;
+  },
+  async loadContent() {
     this.setData({ loading: true, error: "" });
+    let session = null;
     try {
-      const session = this.guestMode ? null : await validateSession(wx);
-      if (!session && !this.guestMode) return wx.redirectTo({ url: "/pages/entry/index" });
+      session = this.guestMode ? null : await validateSession(wx);
+      if (this.exiting) return;
+      if (!session && !this.guestMode) {
+        if (getSession(wx)) return;
+        return wx.redirectTo({ url: "/pages/entry/index" });
+      }
+      if (session && !isSessionCurrent(wx, session)) return;
       this.setData({ user: session && session.user, guest: Boolean(this.guestMode) });
       const token = session && session.token;
       const [mine, activities, cases] = await Promise.all([
@@ -26,6 +38,7 @@ Page({
         api(wx, "/public/cases", { token })
       ]);
       const activityCards = (activities.activities || []).map(item => cardView(item, "activities"));
+      if (this.exiting || session && !isSessionCurrent(wx, session)) return;
       this.setData({
         projects: mine.projects || [],
         canCreateProjects: mine.canCreate === true,
@@ -35,7 +48,10 @@ Page({
         loading: false
       });
     } catch (error) {
-      if (error.statusCode === 401 && !this.guestMode) {
+      if (this.exiting) return;
+      if (error.cancelled) return;
+      if (session && !isSessionCurrent(wx, session)) return;
+      if ([401, 403].includes(error.statusCode) && !this.guestMode) {
         clearSession(wx);
         return wx.redirectTo({ url: "/pages/entry/index" });
       }
@@ -101,6 +117,7 @@ Page({
     return { title: "开开华彩活动工作台", path: "/pages/entry/index" };
   },
   async onLogout() {
+    this.exiting = true;
     try { await logout(wx); }
     catch { wx.showToast({ title: "已退出本机登录", icon: "none" }); }
     wx.redirectTo({ url: "/pages/entry/index" });
