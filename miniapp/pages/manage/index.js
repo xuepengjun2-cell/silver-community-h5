@@ -1,5 +1,5 @@
 const { api, getSession, clearSession } = require("../../utils/auth");
-const { parseAlbumOptions, albumPath, displayName, saveEligibility, trustedMediaUrl } = require("../../utils/album");
+const { parseAlbumOptions, albumPath, displayName, saveEligibility, videoPosterSources } = require("../../utils/album");
 const { uploadMedia, getVideoJob } = require("../../utils/upload");
 const { privacyErrorMessage } = require("../../utils/errors");
 
@@ -39,12 +39,19 @@ Page({
       videos: media.filter(m => m.type === "video").length,
       tiles: media.map((m, index) => ({
         index, type: m.type, url: m.url, label: displayName(m, index),
-        poster: trustedMediaUrl({ type: "image", url: m.poster }),
+        ...videoPosterSources(m),
         ready: saveEligibility(m).ok
       }))
     });
   },
   onEdit() { if (this.data.project && this.data.project.canManage) this.setData({ editing: !this.data.editing }); },
+  onPosterError(event) {
+    const { index, url } = event.currentTarget.dataset;
+    const tile = this.data.tiles.find(item => item.index === Number(index));
+    if (!tile || tile.type !== "video" || tile.poster !== url) return;
+    this.setData({ tiles: this.data.tiles.map(item => item.index === tile.index
+      ? { ...item, poster: item.fallbackPoster || "", fallbackPoster: "" } : item) });
+  },
   onField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
   onDate(event) { this.setData({ dateLabel: event.detail.value }); },
   async onSave() {

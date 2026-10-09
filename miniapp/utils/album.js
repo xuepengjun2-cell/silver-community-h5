@@ -45,6 +45,18 @@ function isMp4(media) {
   return /\.mp4(?:\?|$)/i.test(String(media && media.url || ""));
 }
 
+function videoPosterSources(media) {
+  if (!media || media.type !== "video") return { poster: "", fallbackPoster: "" };
+  const fallbackPoster = trustedMediaUrl({ type: "image", url: media.poster });
+  const source = trustedMediaUrl(media);
+  // CDN 按处理参数分别缓存；仅请求小幅 JPEG，不预加载整段视频。
+  // 不改写签名 URL；截帧地址只用于封面，不用于播放或保存。
+  const poster = source && isMp4(media) && !source.includes("?")
+    ? `${source}?x-tos-process=video/snapshot,t_1000,w_640,f_jpg`
+    : fallbackPoster;
+  return { poster, fallbackPoster: poster !== fallbackPoster ? fallbackPoster : "" };
+}
+
 function saveSource(media) {
   if (media && media.type === "video" && media.delivery && media.delivery.url) {
     const candidate = { type: "video", url: media.delivery.url, size: media.delivery.size };
@@ -72,5 +84,5 @@ function displayName(media, index) {
 
 module.exports = {
   MAX_VIDEO_BYTES, parseShareInput, parseAlbumOptions, albumPath, mediaPath,
-  trustedMediaUrl, isMp4, saveSource, saveEligibility, displayName
+  trustedMediaUrl, isMp4, videoPosterSources, saveSource, saveEligibility, displayName
 };
