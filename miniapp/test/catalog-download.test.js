@@ -101,6 +101,47 @@ test("案例文档可鉴权下载并在微信文档页打开", async () => {
   assert.deepEqual(wxApi.calls.find(call => call[0] === "open-document"), ["open-document", "wxfile://saved", "docx", true]);
 });
 
+test("案例图片可匿名放大浏览，但游客和已登录账号均不能用原生菜单绕过下载鉴权", () => {
+  const calls = [];
+  global.wx = { previewImage(options) { calls.push(options); } };
+  try {
+    const page = catalogPage();
+    page.type = "cases";
+    page.allMedia = [image, video, { ...image, index: 2, url: image.url.replace("test.jpg", "second.jpg") }];
+    for (const loggedIn of [false, true]) {
+      page.data.loggedIn = loggedIn;
+      page.onImage({ currentTarget: { dataset: { url: image.url } } });
+      assert.deepEqual(calls.at(-1), {
+        current: image.url, urls: [image.url, page.allMedia[2].url], showmenu: false
+      });
+    }
+    page.onImage({ currentTarget: { dataset: { url: "https://example.com/unlisted.jpg" } } });
+    assert.equal(calls.length, 2, "不预览未登记的图片");
+    page.type = "activities";
+    page.onImage({ currentTarget: { dataset: { url: image.url } } });
+    assert.equal(calls.at(-1).showmenu, true, "活动参考图继续沿用原来的预览规则");
+  } finally { delete global.wx; }
+});
+
+test("游客点击案例照片或视频保存只提示登录，不请求下载和系统保存", async () => {
+  const calls = [];
+  global.wx = {
+    showModal(options) { calls.push(["login", options.title, options.content]); },
+    request() { throw new Error("游客不应请求下载接口"); },
+    downloadFile() { throw new Error("游客不应下载素材"); },
+    saveImageToPhotosAlbum() { throw new Error("游客不应保存照片"); },
+    saveVideoToPhotosAlbum() { throw new Error("游客不应保存视频"); }
+  };
+  try {
+    const page = catalogPage();
+    page.allMedia = [image, video];
+    for (const media of page.allMedia) await page.onCaseSave({ currentTarget: { dataset: { index: media.index } } });
+    assert.equal(calls.length, 2);
+    for (const call of calls) assert.deepEqual(call.slice(0, 2), ["login", "需要登录"]);
+    assert.equal(page.data.savingIndex, -1);
+  } finally { delete global.wx; }
+});
+
 test("案例视频在竖屏播放器内打开，且全屏保持竖屏", () => {
   const wxml = fs.readFileSync(path.join(__dirname, "../pages/catalog/index.wxml"), "utf8");
   assert.match(wxml, /id="caseVideo\{\{item\.index\}\}" class="case-video"[^>]*direction="0"[^>]*object-fit="contain"[^>]*show-fullscreen-btn="false"/);

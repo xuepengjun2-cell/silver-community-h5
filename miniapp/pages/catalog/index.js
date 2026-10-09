@@ -104,7 +104,8 @@ Page({
   onImage(event) {
     const current = event.currentTarget.dataset.url;
     const images = this.allMedia.filter(entry => entry.type === "image").map(entry => entry.url);
-    if (images.includes(current)) wx.previewImage({ current, urls: images });
+    // 案例保存统一经过 onCaseSave 的服务端鉴权和审计，原生菜单不能绕过。
+    if (images.includes(current)) wx.previewImage({ current, urls: images, showmenu: this.type !== "cases" });
   },
   onVideo(event) { this.setData({ playingIndex: Number(event.currentTarget.dataset.index) }); },
   onCaseFullscreen(event) {
