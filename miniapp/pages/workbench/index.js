@@ -1,6 +1,7 @@
 const { api, getSession, validateSession, isSessionCurrent, logout, clearSession } = require("../../utils/auth");
 const { albumPath } = require("../../utils/album");
 const { cardView, catalogPath, sharePayload, filterCatalogCards } = require("../../utils/catalog");
+const { PUBLIC_HOME, loginPath } = require("../../utils/navigation");
 
 Page({
   data: {
@@ -81,7 +82,7 @@ Page({
     const title = this.data.title.trim();
     if (!title) return wx.showToast({ title: "请填写活动名称", icon: "none" });
     const session = getSession(wx);
-    if (!session) return wx.redirectTo({ url: "/pages/login/index" });
+    if (!session) return wx.redirectTo({ url: loginPath() });
     this.setData({ busy: true });
     try {
       const { project } = await api(wx, "/my/activity-projects", {
@@ -106,7 +107,7 @@ Page({
     const id = event.currentTarget.dataset.id;
     wx.navigateTo({ url: `${catalogPath(type, id)}${this.guestMode ? "&guest=1" : ""}` });
   },
-  onLogin() { wx.navigateTo({ url: "/pages/entry/index" }); },
+  onLogin() { wx.navigateTo({ url: loginPath() }); },
   onShareAppMessage(options) {
     const dataset = options.target && options.target.dataset || {};
     const type = dataset.type;
@@ -114,12 +115,12 @@ Page({
       ? this.data.cases.find(row => row.id === dataset.id)
       : this.data.activities.find(row => row.id === dataset.id);
     if (item && ["cases", "activities"].includes(type)) return sharePayload(item, type);
-    return { title: "开开华彩活动工作台", path: "/pages/entry/index" };
+    return { title: "开开华彩 · 活动库与精彩案例", path: PUBLIC_HOME };
   },
   async onLogout() {
     this.exiting = true;
     try { await logout(wx); }
     catch { wx.showToast({ title: "已退出本机登录", icon: "none" }); }
-    wx.redirectTo({ url: "/pages/entry/index" });
+    wx.redirectTo({ url: PUBLIC_HOME });
   }
 });

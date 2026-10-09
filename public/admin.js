@@ -2038,6 +2038,47 @@ function wechatApplicationsHtml() {
   </div>`;
 }
 
+function albumReadFieldsHtml(user = {}) {
+  const restricted = user.role !== "admin" && user.albumReadScope === "own-and-selected";
+  const selected = new Set(Array.isArray(user.albumReadProjectIds) ? user.albumReadProjectIds : []);
+  const projects = state.activityProjects || [];
+  const staleCount = [...selected].filter(id => !projects.some(project => project.id === id)).length;
+  return `<fieldset class="album-read-fields">
+    <legend>活动相册查看范围</legend>
+    <select class="select" data-album-read-scope ${user.role === "admin" ? "disabled" : ""}>
+      <option value="all" ${!restricted ? "selected" : ""}>全部相册（现有默认规则）</option>
+      <option value="own-and-selected" ${restricted ? "selected" : ""}>仅本人创建及总部指定的相册</option>
+    </select>
+    <p class="album-read-hint">审核体验账号建议选“仅本人创建及总部指定”。总部管理员始终可管理全部相册；查看授权不会增加上传或删除权限。</p>
+    <div class="album-scope-projects" data-album-projects ${restricted ? "" : "hidden"}>
+      ${projects.length ? projects.map(project => `<label class="album-scope-option"><input type="checkbox" data-album-project value="${esc(project.id)}" ${selected.has(project.id) ? "checked" : ""}><span>${esc(project.title || "未命名相册")}<small>${esc([project.ownerName, project.city, project.dateLabel].filter(Boolean).join(" · "))}</small></span></label>`).join("") : `<p class="album-read-hint">暂无可指定的相册；该账号仍可查看本人随后创建的相册。</p>`}
+      ${staleCount ? `<p class="album-read-hint">有 ${staleCount} 条已失效相册授权，保存时会移除。</p>` : ""}
+    </div>
+    <p class="album-read-hint">只限制登录后的内部相册查看。持有已开放的分享链接者，仍可按原规则查看和保存该链接对应的单个相册。</p>
+  </fieldset>`;
+}
+
+function albumReadFieldsValue(container) {
+  const scope = container.querySelector("[data-album-read-scope]");
+  if (!scope) return {};
+  const role = container.querySelector("[data-u-role], [name='role']");
+  const restricted = role?.value !== "admin" && scope.value === "own-and-selected";
+  return {
+    albumReadScope: restricted ? "own-and-selected" : "all",
+    albumReadProjectIds: restricted ? [...new Set([...container.querySelectorAll("[data-album-project]:checked")].map(node => node.value))] : []
+  };
+}
+
+function syncAlbumReadFields(container) {
+  const scope = container.querySelector("[data-album-read-scope]");
+  const list = container.querySelector("[data-album-projects]");
+  if (!scope || !list) return;
+  const role = container.querySelector("[data-u-role], [name='role']");
+  const admin = role?.value === "admin";
+  scope.disabled = admin;
+  list.hidden = admin || scope.value !== "own-and-selected";
+}
+
 function renderUsers() {
   const content = document.querySelector("#content");
   content.innerHTML = `
@@ -2081,7 +2122,7 @@ function renderUsers() {
         <div class="panel">
           <div class="panel-header"><h2>创建账号</h2></div>
           <div class="panel-body">
-            <form id="createUserForm" style="display:flex;flex-direction:column;gap:12px">
+            <form id="createUserForm" data-album-scope-form style="display:flex;flex-direction:column;gap:12px">
               <div class="field"><label>登录账号</label><input class="input" name="username" placeholder="例如：shanghai01"></div>
               <div class="field"><label>姓名/昵称</label><input class="input" name="name" placeholder="例如：上海主理人"></div>
               <div class="row">
@@ -2100,6 +2141,7 @@ function renderUsers() {
                 <input type="checkbox" name="canDownload" checked>
                 <span>允许导出可视化 SOP</span>
               </label>
+              ${albumReadFieldsHtml()}
               <button class="btn" type="submit">创建账号</button>
             </form>
           </div>
@@ -2144,6 +2186,7 @@ function userCardHtml(u) {
                   <strong>${esc(u.name||u.username)} <span style="font-weight:400;color:var(--muted)">@${esc(u.username)}</span></strong>
                   <span class="account-review-id">userId：${esc(u.id)}</span>
                   <span>${roleLabel(u.role)} · ${{ active:"✅ 启用", pending:"⏳ 待审核", disabled:"⛔ 停用", rejected:"❌ 已拒绝" }[u.status] || esc(u.status)} · SOP下载：${u.canDownload?"允许":"禁止"}</span>
+                  <span>相册查看：${u.role !== "admin" && u.albumReadScope === "own-and-selected" ? `本人创建及指定相册（${Number((u.albumReadProjectIds || []).length)} 个指定）` : "全部相册"}</span>
                   ${u.wechatBinding ? `<span>微信已绑定 · 核对码 ${esc(u.wechatBinding.fingerprint)}</span>` : `<span>微信未绑定</span>`}
                 </div>
                 <div class="user-card-actions">
@@ -2152,7 +2195,7 @@ function userCardHtml(u) {
                   ${u.id !== state.user.id ? `<button class="btn danger small" data-delete-user="${esc(u.id)}">删除</button>` : ""}
                 </div>
               </div>
-              <div class="user-detail-panel" id="udp-${esc(u.id)}">
+              <div class="user-detail-panel" data-album-scope-form id="udp-${esc(u.id)}">
                 ${u.authSource === "wechat-miniapp" ? `<div class="field"><label>H5 登录账号</label><input class="input" data-u-username value="${esc(u.username)}"><small>此账号由微信申请创建；如需在 H5 登录，请设置账号和下方新密码，业务 userId 不会改变。</small></div>` : ""}
                 <div class="row">
                   <div class="field"><label>姓名</label><input class="input" data-u-name value="${esc(u.name)}"></div>
@@ -2184,6 +2227,7 @@ function userCardHtml(u) {
                     </select>
                   </div>
                 </div>
+                ${albumReadFieldsHtml(u)}
                 <div class="field"><label>新密码（不改留空）</label><input class="input" data-u-pw placeholder="不修改请留空"></div>
                 <div style="display:flex;gap:8px">
                   <button class="btn small" data-save-user="${esc(u.id)}">保存更改</button>
@@ -2193,6 +2237,11 @@ function userCardHtml(u) {
 }
 
 function bindUserEvents() {
+  document.querySelectorAll("[data-album-scope-form]").forEach(container => {
+    container.querySelector("[data-album-read-scope]")?.addEventListener("change", () => syncAlbumReadFields(container));
+    container.querySelector("[data-u-role], [name='role']")?.addEventListener("change", () => syncAlbumReadFields(container));
+    syncAlbumReadFields(container);
+  });
   document.querySelectorAll("[data-wx-id]").forEach(card => {
     card.querySelector("[data-wx-target]").addEventListener("change", () => syncWechatReviewCard(card));
     card.querySelector("[data-wx-confirm]").addEventListener("change", () => syncWechatReviewCard(card));
@@ -2269,7 +2318,8 @@ function bindUserEvents() {
     try {
       await api("/api/admin/users", { method:"POST", body:{
         username:f.get("username"), name:f.get("name"), role:f.get("role"),
-        password:f.get("password"), canDownload:f.get("canDownload")==="on"
+        password:f.get("password"), canDownload:f.get("canDownload")==="on",
+        ...albumReadFieldsValue(e.currentTarget)
       }});
       await refreshData(); flash("账号已创建"); renderUsers();
     } catch (err) { flash(err.message, "error"); renderUsers(); }
@@ -2290,6 +2340,7 @@ function bindUserEvents() {
           role: panel.querySelector("[data-u-role]").value,
           status: panel.querySelector("[data-u-status]").value,
           canDownload: panel.querySelector("[data-u-dl]").value === "true",
+          ...albumReadFieldsValue(panel),
           ...(panel.querySelector("[data-u-username]") ? { username: panel.querySelector("[data-u-username]").value } : {}),
           password: panel.querySelector("[data-u-pw]").value
         }});

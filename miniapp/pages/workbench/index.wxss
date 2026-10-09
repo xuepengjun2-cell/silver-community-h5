@@ -1,4 +1,5 @@
 .subtitle { margin: 18rpx 0 30rpx; }
+.guest-account { margin: 0 0 22rpx; min-height: 76rpx; font-size: 29rpx; }
 .tabs { display: flex; gap: 12rpx; margin: 26rpx 0; }
 .tab { flex: 1; font-size: 27rpx; padding: 24rpx 7rpx; text-align: center; background: #f1e9df; border-radius: 14rpx; }
 .tab.active { background: #ba512e; color: #fff; font-weight: 700; }

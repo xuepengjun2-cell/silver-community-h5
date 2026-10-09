@@ -24,7 +24,7 @@ function renewalFixture({ hoursRemaining = 6, status = "active", suspended = fal
   };
 }
 
-async function withServer(run, { extraSeed = {} } = {}) {
+async function withServer(run, { extraSeed = {}, wechatSecret = "test-only-secret" } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "silver-wechat-test-"));
   let child;
   try {
@@ -60,7 +60,7 @@ async function withServer(run, { extraSeed = {} } = {}) {
       cwd: dir,
       env: { ...process.env, PORT: String(port), FAKE_DB_SEED: seed, FAKE_DB_DUMP: dumpFile, FAKE_WECHAT_CODES: JSON.stringify(codes),
         FAKE_DB_GATE_FILE: gateFile, FAKE_WECHAT_GATE_FILE: wechatGateFile,
-        WECHAT_MINIAPP_APPID: "wx-test", WECHAT_MINIAPP_SECRET: "test-only-secret" },
+        WECHAT_MINIAPP_APPID: "wx-test", WECHAT_MINIAPP_SECRET: wechatSecret },
       stdio: ["ignore", "pipe", "pipe"]
     });
     let log = "";
@@ -230,7 +230,13 @@ test("账号级 SOP 下载禁用在服务端生效，不依赖隐藏按钮", () 
   const enabled = await api(`/admin/users/${created.data.user.id}`, { method: "PUT", token: adminToken,
     body: { name: "无下载权限", role: "viewer", status: "active", canDownload: true } });
   assert.equal(enabled.status, 200);
-  assert.equal((await api("/public/activities/act_download_test/download.pdf", { token: logged.data.token })).status, 200);
+  assert.equal((await api("/public/activities/act_download_test/download.pdf", { token: logged.data.token })).status, 401, "权限变化撤销旧会话，不能由旧 token 恢复旧权限");
+  const refreshed = await api("/login", { method: "POST", body: { username: "no-download", password: "test-password" } });
+  assert.equal((await api("/public/activities/act_download_test/download.pdf", { token: refreshed.data.token })).status, 200);
+  assert.equal((await api(`/admin/users/${created.data.user.id}`, { method: "PUT", token: adminToken, body: { canDownload: false } })).status, 200);
+  assert.equal((await api("/public/activities/act_download_test/download.pdf", { token: refreshed.data.token })).status, 401);
+  const revoked = await api("/login", { method: "POST", body: { username: "no-download", password: "test-password" } });
+  assert.equal((await api("/public/activities/act_download_test/download.pdf", { token: revoked.data.token })).status, 403);
 }));
 
 test("密码重置解除微信绑定并撤销旧会话；停用再启用不复活旧 token", () => withServer(async ({ api, adminToken }) => {
@@ -522,7 +528,7 @@ test("另一已批准账号的微信 code 不能续登当前账号，两边账�
 }, { extraSeed: renewalFixture() }));
 
 test("微信 code 交换期间撤销权限、注销或解绑后，自动续登不得恢复旧权限", async () => {
-  for (const action of ["disable", "role", "logout", "revoke", "reset-password"]) {
+  for (const action of ["disable", "role", "logout", "revoke", "reset-password", "album-scope", "download"]) {
     await withServer(async ({ api, adminToken, wechatGate, persisted }) => {
       const boundary = wechatGate("conflict");
       const renew = api("/auth/wechat/session", { method: "POST", token: "original-renewal-token", body: { code: "conflict", autoRenew: true } });
@@ -530,7 +536,9 @@ test("微信 code 交换期间撤销权限、注销或解绑后，自动续登�
       const changed = action === "logout" ? await api("/logout", { method: "POST", token: "original-renewal-token", body: {} })
         : action === "revoke" ? await api("/admin/wechat/applications/renewal_identity/revoke", { method: "POST", token: adminToken, body: {} })
           : await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken,
-            body: action === "disable" ? { status: "disabled" } : action === "role" ? { role: "viewer" } : { password: "changed-password" } });
+            body: action === "disable" ? { status: "disabled" } : action === "role" ? { role: "viewer" }
+              : action === "album-scope" ? { albumReadScope: "own-and-selected", albumReadProjectIds: [] }
+                : action === "download" ? { canDownload: false } : { password: "changed-password" } });
       assert.equal(changed.status, 200, action);
       boundary.release();
       const denied = await renew;
@@ -574,3 +582,164 @@ test("主理人与只读账号不能读取总部申请、审批微信或修改�
   }
   assert.equal((await api("/admin/wechat/applications", { token: adminToken })).data.applications[0].status, "pending");
 }));
+
+function albumScopeFixture() {
+  const seed = renewalFixture();
+  const makeProject = (id, ownerId, { status = "published", shareEnabled = true } = {}) => {
+    const project = { id, ownerId, title: `${id}-title`, status, shareEnabled, media: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    return { id, owner_id: ownerId, status, created_at: project.createdAt, updated_at: project.updatedAt, doc: JSON.stringify(project) };
+  };
+  seed.activity_projects = [makeProject("project_own", "renewal_owner"),
+    makeProject("project_selected", "other_owner", { shareEnabled: false }),
+    makeProject("project_hidden", "other_owner", { status: "draft", shareEnabled: false }),
+    makeProject("project_shared", "other_owner")];
+  seed.project_upload_sessions = [{ id: "scope-hidden-session", project_id: "project_hidden", owner_id: "other_owner",
+    status: "uploading", filename: "hidden.mp4", object_key: "hidden-object", upload_id: "hidden-upload",
+    file_size: 1024, part_size: 1024, part_count: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }];
+  return seed;
+}
+
+test("公开能力接口只返回布尔值，配置存在不等同于已完成真实微信核验", () => withServer(async ({ api }) => {
+  const result = await api("/auth/capabilities");
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { capabilities: { passwordLogin: true, wechatLogin: true } });
+  assert.equal(JSON.stringify(result.data).includes("test-only-secret"), false);
+}));
+
+test("未配置微信时能力为 false，微信会话仍 503 且平台密码登录可用", () => withServer(async ({ api, adminToken, persisted }) => {
+  assert.deepEqual((await api("/auth/capabilities")).data, { capabilities: { passwordLogin: true, wechatLogin: false } });
+  const denied = await api("/auth/wechat/session", { method: "POST", body: { code: "applicant1" } });
+  assert.equal(denied.status, 503);
+  assert.equal(denied.data.token, undefined);
+  assert.equal((await api("/me", { token: adminToken })).data.user.role, "admin");
+  assert.equal((persisted().wechat_identities || []).length, 0);
+}, { wechatSecret: "" }));
+
+test("内部相册范围过滤列表和详情；本人可管理、指定仅可读、公开分享仍单相册可用", () => withServer(async ({ api, adminToken }) => {
+  const before = await api("/my/activity-projects", { token: "original-renewal-token" });
+  assert.equal(before.data.projects.length, 4, "历史未设置账号保留全部可见");
+  const updated = await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken,
+    body: { albumReadScope: "own-and-selected", albumReadProjectIds: ["project_selected"] } });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.data.user.albumReadProjectIds, undefined, "通用 publicUser 不返回内部白名单");
+  assert.equal((await api("/me", { token: "original-renewal-token" })).data.user, null, "查看权限变化即撤销旧会话");
+  let login = await api("/login", { method: "POST", body: { username: "renewal-owner", password: "fixture-password" } });
+  const token = login.data.token;
+  assert.equal(login.data.user.albumReadProjectIds, undefined);
+  const list = await api("/my/activity-projects", { token });
+  assert.equal(list.status, 200);
+  assert.equal(list.data.count, 2, "数量也只统计可见范围");
+  assert.deepEqual(list.data.projects.map(p => p.id).sort(), ["project_own", "project_selected"]);
+  assert.equal(list.data.projects.find(p => p.id === "project_own").canManage, true);
+  assert.equal(list.data.projects.find(p => p.id === "project_selected").canManage, false);
+  assert.equal(JSON.stringify(list.data).includes("project_hidden"), false);
+  assert.equal(JSON.stringify(list.data).includes("project_shared"), false);
+  for (const id of ["project_hidden", "project_shared"]) assert.equal((await api(`/my/activity-projects/${id}`, { token })).status, 404);
+  assert.equal((await api("/my/activity-projects/project_selected", { token })).status, 200);
+  for (const [method, route, body] of [
+    ["PATCH", "/my/activity-projects/project_selected", { title: "不得修改" }],
+    ["DELETE", "/my/activity-projects/project_selected", {}],
+    ["DELETE", "/my/activity-projects/project_selected/media/0", {}],
+    ["POST", "/my/activity-projects/project_selected/media/init", { type: "video", ext: "mp4", size: 1024 }]
+  ]) assert.equal((await api(route, { method, token, body })).status, 403, route);
+  assert.equal((await api("/my/activity-projects/project_own", { method: "PATCH", token, body: { title: "本人可修改" } })).status, 200);
+  for (const route of [
+    "/my/activity-projects/project_hidden/media/upload-sessions",
+    "/my/activity-projects/project_hidden/media/upload-session/scope-hidden-session/status",
+    "/my/activity-projects/project_hidden/media/upload-session/scope-hidden-session/part-url?partNumber=1",
+    "/my/activity-projects/project_hidden/miniapp-media/miniapp_000000000000000000000000"
+  ]) {
+    const denied = await api(route, { token });
+    assert.equal(denied.status, 404, "关联任务读取不能绕过相册范围，即便上传会话确实存在");
+    assert.equal(denied.data.error, "活动相册不存在或没有查看权限", "应先拒绝相册读取，不查询或披露任务存在性");
+  }
+  const created = await api("/my/activity-projects", { method: "POST", token, body: { title: "新建演示相册" } });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.project.canManage, true);
+  assert.equal((await api(`/my/activity-projects/${created.data.project.id}`, { token })).status, 200, "本人新建相册无需额外人工添加");
+  const approved = (await api("/admin/users", { token: adminToken })).data.users.find(u => u.id === "renewal_owner");
+  assert.equal(approved.albumReadScope, "own-and-selected");
+  assert.deepEqual(approved.albumReadProjectIds, ["project_selected"]);
+  assert.equal((await api("/admin/users/renewal_owner", { method: "PUT", token, body: { albumReadScope: "all" } })).status, 403);
+  assert.equal((await api("/admin/users", { token })).status, 403);
+  assert.equal((await api("/admin/users")).status, 401);
+  for (const shareToken of [undefined, token]) {
+    const shared = await api("/public/activity-projects/project_shared", { token: shareToken });
+    assert.equal(shared.status, 200, "分享链接仍可单独访问，不受内部列表范围影响");
+    assert.deepEqual(Object.keys(shared.data), ["project"]);
+    assert.equal(shared.data.project.id, "project_shared");
+    assert.equal(shared.data.project.ownerId, undefined);
+    assert.equal(shared.data.project.ownerName, undefined);
+    assert.equal(shared.data.project.albumReadProjectIds, undefined);
+    assert.equal(JSON.stringify(shared.data).includes("project_hidden"), false);
+  }
+  assert.equal((await api("/public/activity-projects/project_selected")).status, 404);
+  assert.equal((await api("/public/activity-projects")).status, 404);
+  assert.equal((await api("/my/activity-projects")).status, 401);
+  const removed = await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken,
+    body: { albumReadScope: "own-and-selected", albumReadProjectIds: [] } });
+  assert.equal(removed.status, 200);
+  assert.equal((await api("/my/activity-projects", { token })).status, 401, "撤回指定相册同时撤销已有会话");
+  login = await api("/login", { method: "POST", body: { username: "renewal-owner", password: "fixture-password" } });
+  assert.equal((await api("/my/activity-projects/project_selected", { token: login.data.token })).status, 404);
+  assert.equal((await api("/admin/activity-projects", { token: adminToken })).data.projects.length, 5, "总部仍可见全部相册");
+}, { extraSeed: albumScopeFixture() }));
+
+test("范围参数校验原子化、管理员始终all；普通申请不能自设相册或下载权限", () => withServer(async ({ api, adminToken, persisted }) => {
+  for (const body of [
+    { albumReadScope: "unknown" },
+    { albumReadScope: "own-and-selected", albumReadProjectIds: "project_own" },
+    { albumReadScope: "own-and-selected", albumReadProjectIds: ["project_missing"] },
+    { albumReadScope: "all", albumReadProjectIds: [null] }
+  ]) {
+    assert.equal((await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken, body: { ...body, name: "不应写入" } })).status, 400);
+    const user = (await api("/admin/users", { token: adminToken })).data.users.find(u => u.id === "renewal_owner");
+    assert.equal(user.name, "续登主理人");
+    assert.equal(user.albumReadScope, "all");
+    assert.equal((await api("/me", { token: "original-renewal-token" })).data.user.id, "renewal_owner");
+  }
+  const invalidCreate = await api("/admin/users", { method: "POST", token: adminToken,
+    body: { username: "invalid-scope-user", password: "valid-password", albumReadScope: "own-and-selected", albumReadProjectIds: ["project_missing"] } });
+  assert.equal(invalidCreate.status, 400);
+  assert.equal((await api("/admin/users", { token: adminToken })).data.users.some(u => u.username === "invalid-scope-user"), false);
+  const adminUpdate = await api("/admin/users/test_admin", { method: "PUT", token: adminToken,
+    body: { albumReadScope: "invalid", albumReadProjectIds: "invalid" } });
+  assert.equal(adminUpdate.status, 200, "总部忽略普通范围字段，始终all");
+  const admin = (await api("/admin/users", { token: adminToken })).data.users.find(u => u.id === "test_admin");
+  assert.equal(admin.albumReadScope, "all");
+  assert.deepEqual(admin.albumReadProjectIds, []);
+  const registered = await api("/register", { method: "POST", body: { username: "scope-applicant", password: "applicant-password",
+    name: "普通申请人", contact: "13800000000", role: "admin", canDownload: true,
+    albumReadScope: "own-and-selected", albumReadProjectIds: ["project_hidden"] } });
+  assert.equal(registered.status, 201);
+  const pending = JSON.parse(persisted().users.find(row => row.username === "scope-applicant").doc);
+  assert.equal(pending.role, "viewer");
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.canDownload, false);
+  assert.equal(pending.albumReadScope, undefined);
+  assert.equal(pending.albumReadProjectIds, undefined);
+}, { extraSeed: albumScopeFixture() }));
+
+test("总部可直接创建受限演示账号，空白名单只见本人新建，等价授权不注销当前会话", () => withServer(async ({ api, adminToken }) => {
+  const created = await api("/admin/users", { method: "POST", token: adminToken, body: {
+    username: "review-demo", password: "test-review-password", role: "member", canDownload: true,
+    albumReadScope: "own-and-selected", albumReadProjectIds: []
+  } });
+  assert.equal(created.status, 201);
+  const user = created.data.user;
+  const logged = await api("/login", { method: "POST", body: { username: user.username, password: "test-review-password" } });
+  const token = logged.data.token;
+  assert.deepEqual((await api("/my/activity-projects", { token })).data.projects, []);
+  const mine = await api("/my/activity-projects", { method: "POST", token, body: { title: "审核演示素材" } });
+  assert.equal(mine.status, 201);
+  const list = await api("/my/activity-projects", { token });
+  assert.deepEqual(list.data.projects.map(p => p.id), [mine.data.project.id]);
+  assert.equal(list.data.projects[0].canManage, true);
+  const granted = await api(`/admin/users/${user.id}`, { method: "PUT", token: adminToken,
+    body: { albumReadScope: "own-and-selected", albumReadProjectIds: ["project_selected", "project_own", "project_selected"] } });
+  assert.equal(granted.status, 200);
+  const newer = await api("/login", { method: "POST", body: { username: user.username, password: "test-review-password" } });
+  assert.equal((await api(`/admin/users/${user.id}`, { method: "PUT", token: adminToken,
+    body: { albumReadScope: "own-and-selected", albumReadProjectIds: ["project_own", "project_selected"] } })).status, 200);
+  assert.equal((await api("/me", { token: newer.data.token })).data.user.id, user.id, "白名单排序/去重不改变权限，不撤销会话");
+}, { extraSeed: albumScopeFixture() }));

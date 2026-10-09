@@ -158,7 +158,8 @@ function sessionCreatedAt(user) {
 function userSecurityKey(user) {
   if (!user) return "";
   return JSON.stringify([user.id, user.username, user.role, user.status, user.salt,
-    user.passwordHash, user.sessionRevokedAt, Boolean(user.wechatBindingSuspended)]);
+    user.passwordHash, user.sessionRevokedAt, Boolean(user.wechatBindingSuspended),
+    user.canDownload !== false, albumReadPolicy(user)]);
 }
 
 function userSessionRevokedAt(user) {
@@ -2018,6 +2019,42 @@ function projectMediaDuplicate(media, fingerprint, size) {
   }) || null;
 }
 
+// 未设置查看范围的历史账号仍为全部可见；只有总部明确设置后才限制内部相册读取。
+// 未知/损坏的范围值按受限处理，不因异常资料扩大读取权限。
+function albumReadPolicy(user) {
+  if (user?.role === "admin" || user?.albumReadScope === undefined || user?.albumReadScope === "all") {
+    return { scope: "all", projectIds: [] };
+  }
+  const projectIds = user?.albumReadScope === "own-and-selected" && Array.isArray(user.albumReadProjectIds)
+    ? [...new Set(user.albumReadProjectIds.filter(id => typeof id === "string" && id))].sort() : [];
+  return { scope: "own-and-selected", projectIds };
+}
+
+function parseAlbumReadPolicy(body, user, projects) {
+  // 总部管理员始终能读取全部相册；不能用普通账号的范围字段限制总部。
+  if (user.role === "admin") return { scope: "all", projectIds: [] };
+  const hasScope = Object.hasOwn(body, "albumReadScope");
+  const hasIds = Object.hasOwn(body, "albumReadProjectIds");
+  if (!hasScope && !hasIds) return null;
+  const previous = albumReadPolicy(user);
+  const scope = hasScope ? body.albumReadScope : previous.scope;
+  if (!["all", "own-and-selected"].includes(scope)) throw identityError("请选择有效的内部相册查看范围");
+  const ids = hasIds ? body.albumReadProjectIds : previous.projectIds;
+  if (!Array.isArray(ids) || ids.length > 1000) throw identityError("指定相册须为有效的相册列表");
+  const knownIds = new Set(projects.map(project => project.id));
+  if (ids.some(id => typeof id !== "string" || !knownIds.has(id))) {
+    throw identityError("指定相册不存在或已删除，请刷新后重新选择");
+  }
+  return { scope, projectIds: scope === "all" ? [] : [...new Set(ids)].sort() };
+}
+
+function projectCanRead(user, project) {
+  if (!user || !project) return false;
+  const policy = albumReadPolicy(user);
+  return policy.scope === "all" || Boolean(project.ownerId && project.ownerId === user.id)
+    || policy.projectIds.includes(project.id);
+}
+
 function projectCanManage(user, project) {
   return Boolean(user && project && (user.role === "admin" ||
     (["operator", "member"].includes(user.role) && project.ownerId && project.ownerId === user.id)));
@@ -2426,6 +2463,14 @@ async function handleApi(req, res, pathname) {
     } catch (error) {
       return sendJson(res, 503, { ok: false, service: "silver", database: "error", error: "数据库不可用" });
     }
+  }
+
+  if (req.method === "GET" && pathname === "/api/auth/capabilities") {
+    // 仅表示服务端配置是否存在，不暴露密钥，也不宣称真实微信 code 已联调通过。
+    return sendJson(res, 200, { capabilities: {
+      passwordLogin: true,
+      wechatLogin: Boolean(WECHAT_MINIAPP_APPID && WECHAT_MINIAPP_SECRET)
+    } }, { "Cache-Control": "no-store" });
   }
 
   if (req.method === "GET" && pathname === "/api/me") {
@@ -3092,9 +3137,10 @@ async function handleApi(req, res, pathname) {
     if (!user) return;
     const db = readDb();
     const list = [...(db.activityProjects || [])]
+      .filter(project => projectCanRead(user, project))
       .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
       .map(p => projectForAccount(p, db, user));
-    return sendJson(res, 200, { projects: list, count: list.length, canCreate: projectCanCreate(user) });
+    return sendJson(res, 200, { projects: list, count: list.length, canCreate: projectCanCreate(user) }, { "Cache-Control": "private, no-store" });
   }
 
   if (req.method === "POST" && pathname === "/api/my/activity-projects") {
@@ -3192,12 +3238,14 @@ async function handleApi(req, res, pathname) {
     if (!user) return;
     const db = readDb();
     const idx = (db.activityProjects || []).findIndex(p => p.id === decodeURIComponent(myProjectId[1]));
-    if (idx < 0) return sendJson(res, 404, { error: "活动相册不存在" });
+    if (idx < 0 || req.method === "GET" && !projectCanRead(user, db.activityProjects[idx])) {
+      return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" }, { "Cache-Control": "private, no-store" });
+    }
     const item = db.activityProjects[idx];
     if (req.method === "GET") {
       const project = projectForAccount(item, db, user);
       if (project.canManage) project.auditSummary = await loadProjectAuditSummary(item.id);
-      return sendJson(res, 200, { project });
+      return sendJson(res, 200, { project }, { "Cache-Control": "private, no-store" });
     }
     if (!projectCanManage(user, item)) return sendJson(res, 403, { error: "仅创建者或总部管理员可以管理这个活动相册" });
     if (req.method === "DELETE") {
@@ -3289,11 +3337,12 @@ async function handleApi(req, res, pathname) {
     const user = requireRole(req, res, ["admin", "operator", "member"]);
     if (!user) return;
     const projectId = decodeURIComponent(projectVideoPartUrl[1]);
-    const session = await readProjectUploadSession(decodeURIComponent(projectVideoPartUrl[2]));
-    if (!session || session.project_id !== projectId) return sendJson(res, 404, { error: "上传会话不存在" });
     const db = readDb();
     const project = (db.activityProjects || []).find(p => p.id === projectId);
-    if (!project || !projectCanManage(user, project) || session.owner_id !== user.id && user.role !== "admin") {
+    if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
+    const session = await readProjectUploadSession(decodeURIComponent(projectVideoPartUrl[2]));
+    if (!session || session.project_id !== projectId) return sendJson(res, 404, { error: "上传会话不存在" });
+    if (!projectCanManage(user, project) || session.owner_id !== user.id && user.role !== "admin") {
       return sendJson(res, 403, { error: "当前账号不能使用这个上传会话" });
     }
     if (session.status !== "uploading") return sendJson(res, 409, { error: "上传会话已结束" });
@@ -3323,7 +3372,7 @@ async function handleApi(req, res, pathname) {
     if (!user) return;
     const projectId = decodeURIComponent(projectVideoUploadSessions[1]);
     const project = (readDb().activityProjects || []).find(item => item.id === projectId);
-    if (!project) return sendJson(res, 404, { error: "活动相册不存在" });
+    if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     if (!projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能查看这个相册的上传任务" });
     const columns = "id, owner_id, title, filename, status, error, created_at, updated_at";
     const [active] = await pool.query(
@@ -3348,11 +3397,12 @@ async function handleApi(req, res, pathname) {
     const user = requireRole(req, res, ["admin", "operator", "member"]);
     if (!user) return;
     const projectId = decodeURIComponent(projectVideoUploadStatus[1]);
-    const session = await readProjectUploadSession(decodeURIComponent(projectVideoUploadStatus[2]));
-    if (!session || session.project_id !== projectId) return sendJson(res, 404, { error: "上传会话不存在" });
     const db = readDb();
     const project = (db.activityProjects || []).find(p => p.id === projectId);
-    if (!project || !projectCanManage(user, project) || (session.owner_id !== user.id && user.role !== "admin")) {
+    if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
+    const session = await readProjectUploadSession(decodeURIComponent(projectVideoUploadStatus[2]));
+    if (!session || session.project_id !== projectId) return sendJson(res, 404, { error: "上传会话不存在" });
+    if (!projectCanManage(user, project) || (session.owner_id !== user.id && user.role !== "admin")) {
       return sendJson(res, 403, { error: "当前账号不能查看这个上传会话" });
     }
     if (session.status === "completed") {
@@ -3524,6 +3574,7 @@ async function handleApi(req, res, pathname) {
     if (!user) return;
     const projectId = decodeURIComponent(miniappJobStatus[1]);
     const project = (readDb().activityProjects || []).find(item => item.id === projectId);
+    if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     const job = _miniappJobs.get(miniappJobStatus[2]);
     if (!project || !projectCanManage(user, project) || !job || job.projectId !== projectId || job.uploadedBy !== user.id && user.role !== "admin") {
       return sendJson(res, 404, { error: "上传任务不存在或没有权限。" });
@@ -3776,7 +3827,7 @@ async function handleApi(req, res, pathname) {
     if (!user) return;
     const db = readDb();
     // 复制后再排序：原地排序缓存会让进行中的上传按旧下标写到别的相册。
-    const list = [...(db.activityProjects || [])].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map(p => publicProject(p, db, { includeOwner: true }));
+    const list = [...(db.activityProjects || [])].filter(project => projectCanRead(user, project)).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).map(p => publicProject(p, db, { includeOwner: true }));
     return sendJson(res, 200, { projects: list, count: list.length });
   }
 
@@ -4482,6 +4533,8 @@ async function handleApi(req, res, pathname) {
     }]));
     sendJson(res, 200, { users: db.users.map(item => ({
       ...publicUser(item),
+      albumReadScope: albumReadPolicy(item).scope,
+      albumReadProjectIds: albumReadPolicy(item).projectIds,
       applicationContact: item.applicationContact || "",
       applicationCity: item.applicationCity || "",
       applicationOrganization: item.applicationOrganization || "",
@@ -4510,14 +4563,20 @@ async function handleApi(req, res, pathname) {
         sendJson(res, 409, { error: "账号已存在" });
         return;
       }
+      const role = VALID_ROLES.includes(body.role) ? body.role : "member";
+      let albumPolicy;
+      try { albumPolicy = parseAlbumReadPolicy(body, { role }, db.activityProjects || []) || { scope: "all", projectIds: [] }; }
+      catch (error) { return sendJson(res, error.statusCode || 400, { error: error.message }); }
       const salt = crypto.randomBytes(8).toString("hex");
       const newUser = {
         id: createId("u"),
         username,
         name: String(body.name || username).trim(),
-        role: VALID_ROLES.includes(body.role) ? body.role : "member",
+        role,
         status: body.status === "disabled" ? "disabled" : "active",
         canDownload: Boolean(body.canDownload),
+        albumReadScope: albumPolicy.scope,
+        albumReadProjectIds: albumPolicy.projectIds,
         salt,
         passwordHash: hashPassword(password, salt),
         createdAt: now()
@@ -4543,6 +4602,10 @@ async function handleApi(req, res, pathname) {
         return;
       }
       const previous = { ...target };
+      const nextRole = VALID_ROLES.includes(body.role) ? body.role : target.role;
+      let albumPolicy;
+      try { albumPolicy = parseAlbumReadPolicy(body, { ...target, role: nextRole }, db.activityProjects || []); }
+      catch (error) { return sendJson(res, error.statusCode || 400, { error: error.message }); }
       const resetExistingPassword = Boolean(body.password && previous.passwordHash);
       if (target.authSource === "wechat-miniapp" && body.username !== undefined) {
         const username = usernameKey(body.username);
@@ -4555,10 +4618,14 @@ async function handleApi(req, res, pathname) {
         target.username = username;
       }
       target.name = String(body.name || target.name).trim();
-      target.role = VALID_ROLES.includes(body.role) ? body.role : target.role;
+      target.role = nextRole;
       target.status = ["pending", "active", "disabled", "rejected"].includes(body.status) ? body.status : target.status;
       target.canDownload = target.role === "admin" ? true
         : (body.canDownload === undefined ? target.canDownload !== false : Boolean(body.canDownload));
+      if (albumPolicy) {
+        target.albumReadScope = albumPolicy.scope;
+        target.albumReadProjectIds = albumPolicy.projectIds;
+      }
       if (body.password) {
         target.salt = crypto.randomBytes(8).toString("hex");
         target.passwordHash = hashPassword(String(body.password), target.salt);
@@ -4566,7 +4633,9 @@ async function handleApi(req, res, pathname) {
         if (resetExistingPassword) target.wechatBindingSuspended = true;
       }
       const securityChanged = Boolean(body.password) || previous.status !== target.status
-        || previous.role !== target.role || previous.username !== target.username;
+        || previous.role !== target.role || previous.username !== target.username
+        || (previous.canDownload !== false) !== (target.canDownload !== false)
+        || stableSerialize(albumReadPolicy(previous)) !== stableSerialize(albumReadPolicy(target));
       if (securityChanged) target.sessionRevokedAt = userSessionRevokedAt(target);
       await persistDb();
       if (securityChanged) await expireUserSessions(target.id);

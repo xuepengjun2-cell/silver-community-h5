@@ -165,3 +165,79 @@ test("H5 申请引导沿用原账号；未授权 SOP 下载没有可点击的导
   context.page.state.user.canDownload = true;
   assert.match(context.page.tabSop({ plan: {}, downloadEnabled: true }), /id="downloadSopBtn"/);
 });
+
+test("总部相册范围控件：旧账号默认全部，受限账号只勾选指定相册并转义内容", () => {
+  const context = loadPage("admin.js", ["state", "albumReadFieldsHtml", "userCardHtml"]);
+  context.page.state.activityProjects = [
+    { id: "project_demo", title: "演示相册 <script>", ownerName: "主办方", city: "北京" },
+    { id: "project_other", title: "另一相册" }
+  ];
+  context.page.state.user = { id: "u_hq" };
+  const legacy = context.page.albumReadFieldsHtml({ role: "member" });
+  assert.match(legacy, /value="all" selected/);
+  assert.match(legacy, /data-album-projects hidden/);
+  assert.match(legacy, /分享链接.*单个相册/);
+  const limited = context.page.albumReadFieldsHtml({ role: "member", albumReadScope: "own-and-selected", albumReadProjectIds: ["project_demo", "project_deleted"] });
+  assert.match(limited, /value="own-and-selected" selected/);
+  assert.match(limited, /value="project_demo" checked/);
+  assert.doesNotMatch(limited, /value="project_other" checked/);
+  assert.match(limited, /演示相册 &lt;script&gt;/);
+  assert.match(limited, /1 条已失效相册授权/);
+  assert.match(context.page.userCardHtml({ id: "u_review", username: "review", role: "member", albumReadScope: "own-and-selected", albumReadProjectIds: ["project_demo"] }), /本人创建及指定相册（1 个指定）/);
+});
+
+function albumScopeForm(roleValue, scopeValue, checkedIds) {
+  const role = element({ value: roleValue });
+  const scope = element({ value: scopeValue });
+  const list = element();
+  const container = {
+    querySelector(selector) {
+      return selector === "[data-album-read-scope]" ? scope
+        : selector === "[data-u-role], [name='role']" ? role
+        : selector === "[data-album-projects]" ? list : null;
+    },
+    querySelectorAll(selector) { return selector === "[data-album-project]:checked" ? checkedIds.map(value => ({ value })) : []; }
+  };
+  return { container, role, scope, list };
+}
+
+test("相册范围提交：限制查看仅提交勾选IDs，全部/总部不保留隐含授权", () => {
+  const context = loadPage("admin.js", ["albumReadFieldsValue", "syncAlbumReadFields"]);
+  const fixture = albumScopeForm("member", "own-and-selected", ["project_demo", "project_demo"]);
+  const value = () => JSON.parse(JSON.stringify(context.page.albumReadFieldsValue(fixture.container)));
+  assert.deepEqual(value(), { albumReadScope: "own-and-selected", albumReadProjectIds: ["project_demo"] });
+  context.page.syncAlbumReadFields(fixture.container);
+  assert.equal(fixture.scope.disabled, false);
+  assert.equal(fixture.list.hidden, false);
+  fixture.scope.value = "all";
+  assert.deepEqual(value(), { albumReadScope: "all", albumReadProjectIds: [] });
+  context.page.syncAlbumReadFields(fixture.container);
+  assert.equal(fixture.list.hidden, true);
+  fixture.scope.value = "own-and-selected";
+  fixture.role.value = "admin";
+  assert.deepEqual(value(), { albumReadScope: "all", albumReadProjectIds: [] });
+  context.page.syncAlbumReadFields(fixture.container);
+  assert.equal(fixture.scope.disabled, true);
+  assert.equal(fixture.list.hidden, true);
+});
+
+test("新建和编辑账号共享相册范围控件，选择行为即时更新，不设审核绕过", () => {
+  const context = loadPage("admin.js", ["state", "renderUsers", "bindUserEvents"]);
+  const content = { innerHTML: "" };
+  const fixture = albumScopeForm("member", "all", []);
+  context.page.state.user = { id: "u_hq" };
+  context.page.state.users = [{ id: "u_member", username: "member", role: "member", name: "主办方", status: "active" }];
+  context.document.querySelector = selector => selector === "#content" ? content : element();
+  context.document.querySelectorAll = selector => selector === "[data-album-scope-form]" ? [fixture.container] : [];
+  context.page.renderUsers();
+  assert.equal((content.innerHTML.match(/data-album-scope-form/g) || []).length, 2);
+  assert.match(content.innerHTML, /活动相册查看范围/);
+  assert.match(content.innerHTML, /仅本人创建及总部指定/);
+  fixture.scope.value = "own-and-selected";
+  fixture.scope.handlers.change();
+  assert.equal(fixture.list.hidden, false);
+  fixture.role.value = "admin";
+  fixture.role.handlers.change();
+  assert.equal(fixture.scope.disabled, true);
+  assert.equal(fixture.list.hidden, true);
+});

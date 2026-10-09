@@ -2,6 +2,7 @@
   <view class="eyebrow">开开华彩 · {{guest ? '公开内容浏览' : '主办方工作台'}}</view>
   <view class="title">{{guest ? '活动库与精彩案例' : '你好，' + (user.name || user.username || '主办方')}}</view>
   <view class="muted subtitle">{{guest ? '可浏览公开介绍；活动方案和案例素材下载需登录并具有相应权限。' : (canCreateProjects ? '主办方账号' : '资料查看账号') + ' · 按现有账号权限展示'}}</view>
+  <button wx:if="{{guest}}" class="button button-secondary guest-account" bindtap="onLogin">主办方登录 / 申请账号</button>
   <view class="tabs">
     <view wx:if="{{!guest}}" data-tab="projects" bindtap="onTab" class="tab {{tab === 'projects' ? 'active' : ''}}">活动相册</view>
     <view data-tab="activities" bindtap="onTab" class="tab {{tab === 'activities' ? 'active' : ''}}">活动库</view>
@@ -62,6 +63,5 @@
       </view>
     </block>
   </block>
-  <button wx:if="{{guest}}" class="button button-primary" bindtap="onLogin">登录工作台</button>
-  <button wx:else class="logout" bindtap="onLogout">退出登录</button>
+  <button wx:if="{{!guest}}" class="logout" bindtap="onLogout">退出登录</button>
 </view>

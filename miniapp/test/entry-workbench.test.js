@@ -12,15 +12,16 @@ function pageAt(relativePath) {
   return { ...definition, data: { ...definition.data }, setData(values) { Object.assign(this.data, values); } };
 }
 
-test("普通启动直接显示登录表单，旧分享编号仍直接进匿名相册", async () => {
+test("普通启动直接进入公开内容，旧分享编号仍直接进匿名相册", async () => {
   const redirects = [];
   global.wx = { getStorageSync: () => null, redirectTo: value => redirects.push(value.url) };
   const entry = pageAt("../pages/entry/index.js");
   await entry.onLoad({});
   assert.equal(entry.data.loading, false);
-  assert.deepEqual(redirects, []);
+  assert.equal(entry.data.loginPage, false);
+  assert.deepEqual(redirects, ["/pages/workbench/index?guest=1"]);
   await entry.onLoad({ id: "project_85aae4b746069044" });
-  assert.deepEqual(redirects, ["/pages/album/index?id=project_85aae4b746069044"]);
+  assert.deepEqual(redirects, ["/pages/workbench/index?guest=1", "/pages/album/index?id=project_85aae4b746069044"]);
   delete global.wx;
 });
 
@@ -58,12 +59,13 @@ test("旧会话过期后回到密码入口，不自动获取微信身份", async
     login() { throw new Error("进入页面不应调用 wx.login"); },
     redirectTo: value => redirects.push(value.url),
     request(options) {
+      if (options.url.endsWith("/auth/capabilities")) return options.success({ statusCode: 200, data: { capabilities: { wechatLogin: false } } });
       if (options.url.endsWith("/me")) return options.success({ statusCode: 401, data: { error: "登录已过期" } });
       throw new Error(`unexpected request: ${options.url}`);
     }
   };
   const entry = pageAt("../pages/entry/index.js");
-  await entry.onLoad({});
+  await entry.onLoad({ mode: "login" });
   assert.equal(storage.has(SESSION_KEY), false);
   assert.equal(entry.data.loading, false);
   assert.equal(entry.data.wechatStatus, "idle");
@@ -110,7 +112,7 @@ test("只有明确选择绑定才绑定原账号，取消绑定后恢复密码�
     redirectTo() {}
   };
   const entry = pageAt("../pages/entry/index.js");
-  entry.setData({ wechatStatus: "unbound", username: "existing", password: "cleared-on-binding" });
+  entry.setData({ wechatLoginAvailable: true, wechatStatus: "unbound", username: "existing", password: "cleared-on-binding" });
   entry.onBindOpen();
   assert.equal(entry.data.authMode, "bind");
   assert.equal(entry.data.password, "");
@@ -136,11 +138,15 @@ test("点击微信登录才获取 code；未绑定状态不建立平台会话", 
     getStorageSync: key => storage.get(key), setStorageSync: (key, value) => storage.set(key, value),
     removeStorageSync: key => storage.delete(key),
     login(options) { loginCalls++; options.success({ code: "clicked-code" }); },
-    request(options) { requests.push(options); options.success({ statusCode: 200, data: { status: "unbound", fingerprint: "a1b2c3d4e5f6" } }); },
+    request(options) {
+      if (options.url.endsWith("/auth/capabilities")) return options.success({ statusCode: 200, data: { capabilities: { wechatLogin: true } } });
+      requests.push(options); options.success({ statusCode: 200, data: { status: "unbound", fingerprint: "a1b2c3d4e5f6" } });
+    },
     redirectTo() {}
   };
   const entry = pageAt("../pages/entry/index.js");
-  await entry.onLoad({});
+  await entry.onLoad({ mode: "login" });
+  await entry.capabilitiesPromise;
   assert.equal(loginCalls, 0);
   assert.equal(requests.length, 0);
   await entry.onWechatRetry();
@@ -185,7 +191,7 @@ test("微信新申请待审批不给 token，也不会自动转为平台新账�
     request(options) { requests.push(options); options.success({ statusCode: 201, data: { status: "pending", fingerprint: "a1b2c3d4e5f6" } }); }
   };
   const entry = pageAt("../pages/entry/index.js");
-  entry.setData({ wechatStatus: "unbound" });
+  entry.setData({ wechatLoginAvailable: true, wechatStatus: "unbound" });
   entry.onWechatApplyOpen();
   entry.setData({ applicantName: "主办方", applicantContact: "13800000000", applicantAgreed: true });
   await entry.onApply();

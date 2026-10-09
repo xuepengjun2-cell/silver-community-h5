@@ -1,24 +1,13 @@
-<view class="page entry-page">
+<view wx:if="{{!loginPage}}" class="page"><view class="state">正在打开活动内容…</view></view>
+<view wx:else class="page entry-page">
   <view class="eyebrow">开开华彩 · 活动工作台</view>
-  <view class="title">活动工作台登录</view>
-  <view class="muted entry-lead">使用本平台账号或微信登录。新主办方可申请账号，由总部核实开通。</view>
+  <view class="title">主办方登录</view>
+  <view class="muted entry-lead">公开活动与案例无需登录。管理相册、查看完整方案和下载资料时，请使用本平台账号。</view>
   <view class="muted entry-remember">登录成功后，有效期内再次打开将自动进入，无需重复选择。</view>
-  <button wx:if="{{!loading}}" class="entry-secondary entry-guest" disabled="{{busy}}" bindtap="onGuest">暂不登录，浏览活动库与精彩案例</button>
+  <button wx:if="{{!loading}}" class="entry-secondary entry-guest" disabled="{{busy}}" bindtap="onGuest">继续浏览公开活动与案例</button>
   <view wx:if="{{loading}}" class="state">正在检查登录状态…</view>
   <view wx:else class="card entry-card">
-    <button class="button button-primary entry-wechat" loading="{{busy}}" disabled="{{busy}}" bindtap="onWechatRetry">{{lastLoginMethod === 'wechat-miniapp' ? '使用微信登录（上次使用）' : '使用微信登录'}}</button>
-    <view wx:if="{{wechatStatus === 'pending'}}" class="entry-state">微信申请待总部审核。审核通过后，点击微信登录即可进入。已有平台账号也可直接使用密码登录。</view>
-    <view wx:if="{{wechatStatus === 'rejected' || wechatStatus === 'revoked' || wechatStatus === 'disabled'}}" class="entry-state">此微信身份暂不能进入工作台，请联系总部核实。</view>
-    <view wx:if="{{wechatStatus === 'password-required'}}" class="entry-state">总部管理员请使用账号密码登录，不开放微信免密进入。</view>
-    <view wx:if="{{wechatFingerprint}}" class="entry-state">联系总部时请提供微信核对码：{{wechatFingerprint}}。核对码仅用于定位申请，仍需总部人工核实身份。</view>
-    <view wx:if="{{wechatStatus === 'unavailable' && wechatMessage}}" class="entry-state">{{wechatMessage}} 可继续使用平台账号密码登录，或申请平台账号。</view>
-    <view wx:if="{{wechatStatus === 'unbound'}}" class="entry-state">此微信尚未绑定平台账号。已有账号可选择绑定；没有账号可申请开通。</view>
-    <view wx:if="{{wechatStatus === 'unbound' || wechatStatus === 'pending'}}" class="entry-identity-actions">
-      <button class="entry-secondary" disabled="{{busy}}" bindtap="onBindOpen">绑定已有平台账号到此微信</button>
-      <button wx:if="{{wechatStatus === 'unbound'}}" class="entry-secondary" disabled="{{busy}}" bindtap="onWechatApplyOpen">使用此微信申请账号</button>
-    </view>
-    <button wx:if="{{wechatStatus !== 'idle'}}" class="entry-text-button" disabled="{{busy}}" bindtap="onCancelWechat">取消微信流程，使用平台账号</button>
-    <view class="entry-card-title entry-password-heading">{{authMode === 'bind' ? '绑定已有平台账号' : '平台账号密码登录'}}</view>
+    <view class="entry-card-title">{{authMode === 'bind' ? '绑定已有平台账号' : '平台账号密码登录'}}</view>
     <view class="muted">{{authMode === 'bind' ? '验证账号后，将此微信绑定到原账号，保留原权限、相册和数据。之后可使用微信登录。总部管理员继续使用平台密码登录。' : '使用与网页工作台相同的账号和密码。密码登录不会自动绑定微信。'}}</view>
     <view class="entry-label">平台账号</view>
     <input class="entry-field" value="{{username}}" bindinput="onUser" placeholder="请输入本平台账号" maxlength="80"/>
@@ -27,6 +16,20 @@
     <view wx:if="{{error && !showApply}}" class="entry-error">{{error}}</view>
     <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">{{authMode === 'bind' ? '确认绑定并进入' : '平台账号登录'}}</button>
     <button wx:if="{{authMode === 'bind'}}" class="entry-secondary" disabled="{{busy}}" bindtap="onCancelWechat">取消绑定，返回密码登录</button>
+    <view wx:if="{{wechatLoginAvailable}}" class="entry-wechat-section">
+      <button class="entry-secondary entry-wechat" loading="{{busy}}" disabled="{{busy}}" bindtap="onWechatRetry">{{lastLoginMethod === 'wechat-miniapp' ? '使用微信登录（上次使用）' : '使用微信登录'}}</button>
+      <view wx:if="{{wechatStatus === 'pending'}}" class="entry-state">微信申请待总部审核。审核通过后，点击微信登录即可进入。已有平台账号也可直接使用密码登录。</view>
+      <view wx:if="{{wechatStatus === 'rejected' || wechatStatus === 'revoked' || wechatStatus === 'disabled'}}" class="entry-state">此微信身份暂不能进入工作台，请联系总部核实。</view>
+      <view wx:if="{{wechatStatus === 'password-required'}}" class="entry-state">总部管理员请使用账号密码登录，不开放微信免密进入。</view>
+      <view wx:if="{{wechatFingerprint}}" class="entry-state">联系总部时请提供微信核对码：{{wechatFingerprint}}。核对码仅用于定位申请，仍需总部人工核实身份。</view>
+      <view wx:if="{{wechatStatus === 'unavailable' && wechatMessage}}" class="entry-state">{{wechatMessage}} 可继续使用平台账号密码登录，或申请平台账号。</view>
+      <view wx:if="{{wechatStatus === 'unbound'}}" class="entry-state">此微信尚未绑定平台账号。已有账号可选择绑定；没有账号可申请开通。</view>
+      <view wx:if="{{wechatStatus === 'unbound' || wechatStatus === 'pending'}}" class="entry-identity-actions">
+        <button class="entry-secondary" disabled="{{busy}}" bindtap="onBindOpen">绑定已有平台账号到此微信</button>
+        <button wx:if="{{wechatStatus === 'unbound'}}" class="entry-secondary" disabled="{{busy}}" bindtap="onWechatApplyOpen">使用此微信申请账号</button>
+      </view>
+      <button wx:if="{{wechatStatus !== 'idle'}}" class="entry-text-button" disabled="{{busy}}" bindtap="onCancelWechat">取消微信流程，使用平台账号</button>
+    </view>
   </view>
   <view wx:if="{{!loading}}" class="card entry-card entry-apply">
     <view wx:if="{{applicationMessage}}" class="entry-state">{{applicationMessage}}</view>

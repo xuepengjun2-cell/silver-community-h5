@@ -2,6 +2,7 @@ const { api, getSession } = require("../../utils/auth");
 const { mediaUrl } = require("../../utils/urls");
 const { catalogPath, catalogCover, sharePayload } = require("../../utils/catalog");
 const { openSopPdf, saveCaseMedia, openCaseDocument } = require("../../utils/catalog-download");
+const { loginPath } = require("../../utils/navigation");
 
 const CASE_GROUPS = [
   { key: "image", label: "照片" },
@@ -127,7 +128,7 @@ Page({
         title: "需要登录",
         content: message,
         confirmText: "去登录",
-        success(result) { if (result.confirm) wx.navigateTo({ url: "/pages/login/index" }); }
+        success: result => { if (result.confirm) this.onLogin(); }
       });
     } else wx.showModal({ title: "未能完成下载", content: message, showCancel: false });
   },
@@ -167,6 +168,6 @@ Page({
     catch (error) { this.onDownloadError(error); }
     finally { this.setData({ savingIndex: -1, downloadProgress: 0 }); }
   },
-  onLogin() { wx.navigateTo({ url: "/pages/login/index" }); },
+  onLogin() { wx.navigateTo({ url: loginPath(catalogPath(this.type, this.id)) }); },
   onShareAppMessage() { return sharePayload(this.rawItem || this.data.item || { id: this.id }, this.type); }
 });

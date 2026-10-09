@@ -73,21 +73,22 @@ test("有效密码会话自动进入，entry onLoad/onShow合并同一次服务�
   delete global.wx;
 });
 
-test("entry返回前台重新核验，网络失败保留token但不进入未核验工作台", async () => {
+test("显式登录页返回前台重新核验，网络失败保留token但不进入未核验工作台", async () => {
   const session = original("password", 48);
   let attempt = 0;
   const wx = fakeWx(session, options => {
+    if (options.url.endsWith("/auth/capabilities")) return success(options, { capabilities: { wechatLogin: false } });
     attempt++;
     if (attempt === 1) options.fail({ errMsg: "request:fail offline" });
     else me(options, session);
   });
   global.wx = wx;
   const entry = pageAt("../pages/entry/index.js");
-  await entry.onLoad({});
+  await entry.onLoad({ mode: "login" });
   assert.equal(getSession(wx).token, "old-token");
   assert.deepEqual(wx.redirects, []);
   await entry.onShow();
-  assert.equal(wx.calls.length, 2);
+  assert.equal(wx.calls.filter(call => call.url.endsWith("/me")).length, 2);
   assert.deepEqual(wx.redirects, ["/pages/workbench/index"]);
   delete global.wx;
 });

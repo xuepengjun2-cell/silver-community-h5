@@ -1,9 +1,10 @@
 const { parseShareInput, albumPath } = require("../../utils/album");
-const { login, validateSession, cancelSessionValidation, isSessionCurrent, getLastLoginMethod, wechatSession, applyWechat, applyPlatform, bindWechat } = require("../../utils/auth");
+const { api, login, validateSession, cancelSessionValidation, isSessionCurrent, getLastLoginMethod, wechatSession, applyWechat, applyPlatform, bindWechat } = require("../../utils/auth");
+const { PUBLIC_HOME, WORKBENCH, catalogReturnTo } = require("../../utils/navigation");
 
 Page({
   data: {
-    loading: true, username: "", password: "", busy: false, error: "",
+    loading: true, loginPage: false, wechatLoginAvailable: false, username: "", password: "", busy: false, error: "",
     authMode: "password", lastLoginMethod: "", wechatStatus: "idle", wechatMessage: "", wechatFingerprint: "", showApply: false,
     applyMode: "platform", applicationMessage: "", applicantUsername: "", applicantPassword: "",
     applicantName: "", applicantContact: "", applicantCity: "", applicantOrganization: "", applicantAgreed: false
@@ -14,6 +15,10 @@ Page({
       this.shareEntry = true;
       return wx.redirectTo({ url: albumPath(parsed.id, parsed.index) });
     }
+    this.explicitLogin = options && options.mode === "login";
+    this.returnTo = this.explicitLogin ? catalogReturnTo(options.returnTo) : "";
+    this.setData({ loginPage: Boolean(this.explicitLogin) });
+    if (this.explicitLogin) this.loadCapabilities();
     return this.restoreSession();
   },
   onShow() {
@@ -27,15 +32,37 @@ Page({
         const session = await validateSession(wx);
         if (!this.guestEntry && session && isSessionCurrent(wx, session)) {
           this.redirecting = true;
-          wx.redirectTo({ url: "/pages/workbench/index" });
+          wx.redirectTo({ url: this.returnTo || WORKBENCH });
+        } else if (!this.explicitLogin && !this.guestEntry && !this.redirecting) {
+          this.openPublicHome();
         }
       } catch (error) {
         // 断网时保留本地登录态，不能把暂时无网误判为账号过期。
-        if (!error.cancelled) this.setData({ error: error.message });
+        if (!error.cancelled) {
+          if (!this.explicitLogin && !this.guestEntry && !this.redirecting) this.openPublicHome();
+          else this.setData({ error: error.message });
+        }
       } finally { this.setData({ loading: false, lastLoginMethod: getLastLoginMethod(wx) }); }
     })().finally(() => { if (this.restoring === pending) this.restoring = null; });
     this.restoring = pending;
     return pending;
+  },
+  loadCapabilities() {
+    if (this.capabilitiesPromise) return this.capabilitiesPromise;
+    // 能力检测只影响可选微信入口，不阻塞密码登录、申请或公开浏览。
+    this.capabilitiesPromise = api(wx, "/auth/capabilities")
+      .then(result => this.setData({ wechatLoginAvailable: Boolean(result.capabilities && result.capabilities.wechatLogin === true) }))
+      .catch(() => this.setData({ wechatLoginAvailable: false }));
+    return this.capabilitiesPromise;
+  },
+  openPublicHome() {
+    this.redirecting = true;
+    wx.redirectTo({ url: PUBLIC_HOME });
+  },
+  enterSession(session) {
+    if (this.guestEntry || !isSessionCurrent(wx, session)) return;
+    this.redirecting = true;
+    wx.redirectTo({ url: this.returnTo || WORKBENCH });
   },
   onUser(event) { this.setData({ username: event.detail.value, error: "" }); },
   onPassword(event) { this.setData({ password: event.detail.value, error: "" }); },
@@ -52,11 +79,11 @@ Page({
     this.setData({ showApply: true, applyMode: "platform", authMode: "password", applicantAgreed: false, error: "", applicationMessage: "" });
   },
   onWechatApplyOpen() {
-    if (this.data.busy || this.data.wechatStatus !== "unbound") return;
+    if (this.data.busy || !this.data.wechatLoginAvailable || this.data.wechatStatus !== "unbound") return;
     this.setData({ showApply: true, applyMode: "wechat", authMode: "password", applicantAgreed: false, error: "", applicationMessage: "" });
   },
   onBindOpen() {
-    if (this.data.busy || !["unbound", "pending"].includes(this.data.wechatStatus)) return;
+    if (this.data.busy || !this.data.wechatLoginAvailable || !["unbound", "pending"].includes(this.data.wechatStatus)) return;
     this.setData({ authMode: "bind", showApply: false, password: "", error: "" });
   },
   onCancelWechat() {
@@ -71,20 +98,21 @@ Page({
     if (this.data.busy) return;
     this.guestEntry = true;
     cancelSessionValidation(wx);
-    wx.navigateTo({ url: "/pages/workbench/index?guest=1" });
+    this.openPublicHome();
   },
   async onWechatRetry() {
-    if (this.data.busy) return;
+    if (this.data.busy || !this.data.wechatLoginAvailable) return;
     this.setData({ busy: true, authMode: "password", showApply: false, error: "", wechatMessage: "" });
     try {
       const result = await wechatSession(wx, { explicit: true });
-      if (result.session && isSessionCurrent(wx, result.session)) return wx.redirectTo({ url: "/pages/workbench/index" });
+      if (result.session) return this.enterSession(result.session);
       this.setData({ wechatStatus: result.status, wechatFingerprint: result.fingerprint || "", wechatMessage: "" });
     } catch (error) { if (!error.cancelled) this.setData({ wechatStatus: "unavailable", wechatMessage: error.message, error: "" }); }
     finally { this.setData({ busy: false }); }
   },
   async onApply() {
     if (this.data.busy) return;
+    if (this.data.applyMode === "wechat" && !this.data.wechatLoginAvailable) return this.setData({ error: "微信登录暂未开通，请申请平台账号。" });
     if (!this.data.applicantAgreed) return this.setData({ error: "请先阅读并同意用户隐私保护指引。" });
     const details = {
       name: this.data.applicantName.trim(), contact: this.data.applicantContact.trim(),
@@ -111,6 +139,7 @@ Page({
   },
   async onSubmit() {
     if (this.data.busy) return;
+    if (this.data.authMode === "bind" && !this.data.wechatLoginAvailable) return this.setData({ error: "微信绑定暂未开通，请返回平台账号登录。" });
     const username = this.data.username.trim();
     if (!username || !this.data.password) return this.setData({ error: "请输入本平台账号和密码，不是微信密码。" });
     this.setData({ busy: true, error: "" });
@@ -119,7 +148,7 @@ Page({
         ? await bindWechat(wx, username, this.data.password)
         : await login(wx, username, this.data.password);
       this.setData({ password: "" });
-      if (isSessionCurrent(wx, session)) wx.redirectTo({ url: "/pages/workbench/index" });
+      this.enterSession(session);
     } catch (error) { if (!error.cancelled) this.setData({ error: error.message || "登录失败" }); }
     finally { this.setData({ busy: false }); }
   }
