@@ -1723,7 +1723,33 @@ function isMobileProjectDownload() {
     || Boolean(window.matchMedia?.("(max-width: 760px)").matches);
 }
 
+function projectVideoPosterSources(media) {
+  if (!media || media.type !== "video") return { poster: "", fallbackPoster: "" };
+  const imageBase = "https://proj2.likeduoduiyi.cn/silver-project-images/";
+  const videoBase = "https://proj2.likeduoduiyi.cn/silver-project-videos/";
+  const fallbackPoster = String(media.poster || "").startsWith(imageBase) && !/[\s#]/.test(media.poster) ? media.poster : "";
+  const source = String(media.url || "");
+  const poster = source.startsWith(videoBase) && /\.mp4$/i.test(source) && !/[\s?#]/.test(source)
+    ? `${source}?x-tos-process=video/snapshot,t_1000,w_640,f_jpg` : fallbackPoster;
+  return { poster, fallbackPoster: poster !== fallbackPoster ? fallbackPoster : "" };
+}
+
+function projectVideoPosterHtml(media, name) {
+  const { poster, fallbackPoster } = projectVideoPosterSources(media);
+  return poster ? `<img src="${esc(poster)}" alt="${esc(name)}视频画面" loading="lazy" data-project-video-poster data-poster-fallback="${esc(fallbackPoster)}">` : "";
+}
+
 function bindProjectVideoThumbs() {
+  document.querySelectorAll("img[data-project-video-poster]").forEach(image => {
+    const fallback = () => {
+      const url = image.dataset.posterFallback;
+      image.dataset.posterFallback = "";
+      if (url && image.src !== url) image.src = url;
+      else image.remove();
+    };
+    image.addEventListener("error", fallback);
+    if (image.complete && image.naturalWidth === 0) fallback();
+  });
   document.querySelectorAll("video[data-project-video-thumb]").forEach(video => {
     const seekToThumb = () => {
       if (video.dataset.thumbReady === "1" || !Number.isFinite(video.duration) || video.duration <= 0) return;
@@ -1822,7 +1848,7 @@ function projectMediaCardHtml(project, m, manager = false, canDelete = manager) 
   if (!["image", "video"].includes(m.type)) return "";
   const mediaName = projectMediaDisplayName(m, m.index);
   if (!manager) {
-    const poster = m.type === "video" && m.poster ? `<img src="${esc(m.poster)}" alt="${esc(mediaName)}首帧" loading="lazy">` : "";
+    const poster = projectVideoPosterHtml(m, mediaName);
     const visual = m.type === "image"
       ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
       : m.type === "video"
@@ -1836,7 +1862,7 @@ function projectMediaCardHtml(project, m, manager = false, canDelete = manager) 
   const visual = m.type === "image"
     ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
     : m.type === "video"
-    ? `<button class="project-media-video-preview" type="button" data-project-open-media="${m.index}" aria-label="打开视频 ${m.index + 1}">${m.poster ? `<img src="${esc(m.poster)}" alt="${esc(mediaName)}首帧" loading="lazy">` : `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video>`}<span class="project-gallery-play">▶</span></button>`
+    ? `<button class="project-media-video-preview" type="button" data-project-open-media="${m.index}" aria-label="打开视频 ${m.index + 1}">${projectVideoPosterHtml(m, mediaName) || `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video>`}<span class="project-gallery-play">▶</span></button>`
     : "";
   return `<article class="project-media-card ${selected}" data-project-media-index="${m.index}">
     <div class="project-media-visual">${visual}</div>

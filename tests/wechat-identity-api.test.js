@@ -109,6 +109,32 @@ async function withServer(run, { extraSeed = {}, wechatSecret = "test-only-secre
   }
 }
 
+test("案例可匿名预览，但照片与视频下载均拒绝匿名和无效会话", () => {
+  const item = {
+    id: "case_preview_guard", title: "案例预览测试", status: "published", createdAt: new Date().toISOString(),
+    media: [
+      { type: "image", url: "https://proj2.likeduoduiyi.cn/silver-images/test.jpg" },
+      { type: "video", url: "https://proj2.likeduoduiyi.cn/silver-case-videos/test.mp4" }
+    ]
+  };
+  return withServer(async ({ api, adminToken }) => {
+    const preview = await api(`/public/cases/${item.id}`);
+    assert.equal(preview.status, 200);
+    assert.equal(preview.data.case.media.length, 2);
+    for (let index = 0; index < item.media.length; index++) {
+      const route = `/public/cases/${item.id}/download?i=${index}&format=json`;
+      for (const token of [undefined, "expired-or-invalid-token"]) {
+        const denied = await api(route, { token });
+        assert.equal(denied.status, 401);
+        assert.equal(denied.data.url, undefined);
+      }
+      const allowed = await api(route, { token: adminToken });
+      assert.equal(allowed.status, 200);
+      assert.equal(allowed.data.url, item.media[index].url);
+    }
+  }, { extraSeed: { cases: [{ id: item.id, status: item.status, created_at: item.createdAt, doc: JSON.stringify(item) }] } });
+});
+
 test("新微信只能申请，管理员确认新建后才拿到同一平台 userId", () => withServer(async ({ api, adminToken }) => {
   const apply = await api("/auth/wechat/apply", { method: "POST", body: {
     code: "applicant1", name: "上海主理人", contact: "13800000000", city: "上海", organization: "银发俱乐部"

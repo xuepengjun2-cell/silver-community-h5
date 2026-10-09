@@ -1,7 +1,7 @@
 const { getProject } = require("../../utils/api");
 const { saveMedia } = require("../../utils/save");
 const { apiBase } = require("../../config");
-const { parseAlbumOptions, albumPath, mediaPath, saveEligibility, displayName, trustedMediaUrl } = require("../../utils/album");
+const { parseAlbumOptions, albumPath, mediaPath, saveEligibility, displayName, trustedMediaUrl, videoPosterSources } = require("../../utils/album");
 
 Page({
   data: {
@@ -30,7 +30,7 @@ Page({
       const eligibility = saveEligibility(media);
       wx.setNavigationBarTitle({ title: media.type === "video" ? "保存活动视频" : "保存活动照片" });
       this.setData({
-        loading: false, project, media, poster: trustedMediaUrl({ type: "image", url: media.poster }), index: this.index, count: project.media.length,
+        loading: false, project, media, poster: videoPosterSources(media).poster, index: this.index, count: project.media.length,
         name: displayName(media, this.index), canSave: eligibility.ok, reason: eligibility.reason
       });
       if (media.type === "image") this.recordView();

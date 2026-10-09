@@ -1,5 +1,5 @@
 const { getProject } = require("../../utils/api");
-const { parseAlbumOptions, albumPath, mediaPath, trustedMediaUrl, displayName } = require("../../utils/album");
+const { parseAlbumOptions, albumPath, mediaPath, trustedMediaUrl, videoPosterSources, displayName } = require("../../utils/album");
 
 Page({
   data: {
@@ -28,7 +28,8 @@ Page({
       const tiles = (project.media || []).map((media, index) => ({
         index, type: media.type, name: displayName(media, index),
         imageUrl: media.type === "image" ? trustedMediaUrl(media) :
-          trustedMediaUrl({ type: "image", url: media.poster })
+          videoPosterSources(media).poster,
+        fallbackImageUrl: videoPosterSources(media).fallbackPoster
       })).filter(item => item.type === "image" || item.type === "video");
       const imageCount = tiles.filter(item => item.type === "image").length;
       const videoCount = tiles.length - imageCount;
@@ -49,6 +50,14 @@ Page({
     wx.navigateTo({ url: mediaPath(this.projectId, Number(event.currentTarget.dataset.index)) });
   },
   onRetry() { this.loadAlbum(); },
+  onPosterError(event) {
+    const { index, url } = event.currentTarget.dataset;
+    const tile = this.data.tiles.find(item => item.index === Number(index));
+    if (!tile || tile.type !== "video" || tile.imageUrl !== url) return;
+    const updated = { ...tile, imageUrl: tile.fallbackImageUrl || "", fallbackImageUrl: "" };
+    const replace = item => item.index === updated.index ? updated : item;
+    this.setData({ tiles: this.data.tiles.map(replace), shown: this.data.shown.map(replace) });
+  },
   onShareAppMessage() {
     const project = this.data.project;
     return { title: project ? `${project.title}｜活动相册` : "活动相册", path: albumPath(this.projectId) };

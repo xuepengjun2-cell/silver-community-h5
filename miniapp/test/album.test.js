@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   MAX_VIDEO_BYTES, parseShareInput, parseAlbumOptions, albumPath,
-  mediaPath, saveEligibility, trustedMediaUrl
+  mediaPath, saveEligibility, trustedMediaUrl, videoPosterSources
 } = require("../utils/album");
 
 const id = "project_85aae4b746069044";
@@ -44,7 +44,7 @@ test("仅下载本项目 CDN 媒体；MP4 不超过微信 200 MB 限制", () => 
   }).ok, true);
 });
 
-test("相册卡片和视频详情展示服务端首帧，拒绝外域伪造封面", async () => {
+test("相册卡片和视频详情请求轻量视频画面，保留可信服务端封面用于回退", async () => {
   const poster = "https://proj2.likeduoduiyi.cn/silver-project-images/first-frame.jpg";
   const project = { id, title: "绍兴活动", media: [image, { ...mp4, poster }, { ...mp4, poster: "https://example.org/fake.jpg" }] };
   global.wx = {
@@ -64,13 +64,42 @@ test("相册卡片和视频详情展示服务端首帧，拒绝外域伪造封�
     const album = page("../pages/album/index.js");
     album.projectId = id;
     await album.loadAlbum();
+    const generated = videoPosterSources(mp4).poster;
+    assert.equal(album.data.tiles[1].imageUrl, generated);
+    assert.equal(album.data.tiles[1].fallbackImageUrl, poster);
+    assert.equal(album.data.tiles[2].imageUrl, generated);
+    assert.equal(album.data.tiles[2].fallbackImageUrl, "");
+    album.onTab({ currentTarget: { dataset: { tab: "video" } } });
+    album.onPosterError({ currentTarget: { dataset: { index: 1, url: generated } } });
     assert.equal(album.data.tiles[1].imageUrl, poster);
-    assert.equal(album.data.tiles[2].imageUrl, "");
+    assert.equal(album.data.shown[0].imageUrl, poster);
+    album.onPosterError({ currentTarget: { dataset: { index: 1, url: generated } } });
+    assert.equal(album.data.tiles[1].imageUrl, poster, "忽略旧请求晚到的错误");
+    album.onPosterError({ currentTarget: { dataset: { index: 1, url: poster } } });
+    assert.equal(album.data.tiles[1].imageUrl, "", "回退失败后保留原播放入口，不循环请求");
     const detail = page("../pages/media/index.js");
     detail.projectId = id;
     detail.index = 1;
     await detail.loadMedia();
-    assert.equal(detail.data.poster, poster);
+    assert.equal(detail.data.poster, generated);
+    assert.equal(detail.data.media.url, mp4.url);
     assert.equal(detail.data.canSave, true);
+    const manager = page("../pages/manage/index.js");
+    manager.showProject(project);
+    assert.equal(manager.data.tiles[1].poster, generated);
+    manager.onPosterError({ currentTarget: { dataset: { index: 1, url: generated } } });
+    assert.equal(manager.data.tiles[1].poster, poster);
   } finally { delete global.wx; delete global.Page; }
+});
+
+test("旧视频封面不受 200 MB 保存限制影响，也不修改原片与签名链接", () => {
+  const large = { ...mp4, size: 700 * 1024 * 1024 };
+  assert.equal(videoPosterSources(large).poster, videoPosterSources(mp4).poster);
+  assert.match(videoPosterSources(mp4).poster, /\?x-tos-process=video\/snapshot,t_1000,w_640,f_jpg$/);
+  assert.match(saveEligibility(large).reason, /200 MB/);
+  const fallback = image.url;
+  assert.equal(videoPosterSources({ ...mp4, url: mp4.url + "?signature=keep", poster: fallback }).poster, fallback);
+  assert.deepEqual(videoPosterSources({ ...mp4, url: "https://evil.example/a.mp4", poster: "https://evil.example/p.jpg" }), { poster: "", fallbackPoster: "" });
+  assert.deepEqual(videoPosterSources(image), { poster: "", fallbackPoster: "" });
+  assert.equal(mp4.url, "https://proj2.likeduoduiyi.cn/silver-project-videos/demo.mp4");
 });
