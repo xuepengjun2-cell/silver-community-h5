@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const maintenance = require("../scripts/replace-album-videos.cjs");
-const { stable, hash, validateManifest, sourceKey, newUrl, patchMedia, buildExpectedRows, assertRowsEqual, assertStartupStable, validateOptions, safePath, assertPrivateFile } = maintenance;
+const { stable, hash, validateManifest, sourceKey, newUrl, patchMedia, buildExpectedRows, assertRowsEqual, assertStartupStable, resolveTosEndpoint, assertTosNetwork, validateOptions, safePath, assertPrivateFile } = maintenance;
 const MiB = 1024 * 1024;
 const clone = value => JSON.parse(JSON.stringify(value));
 
@@ -187,6 +187,82 @@ test("路径与CLI仅允许指定维护目录、显式模式和目录内清单",
     args.map(arg => arg.startsWith("--manifest=") ? `--manifest=${work}/../manifest.json` : arg),
     ["--mode=replace", `--work=${work}`, `--backup=${backup}`, "--manifest"]
   ]) assert.throws(() => validateOptions(invalid));
+});
+test("TOS网络默认公网，显式公网与内网均支持两种CLI参数形式", () => {
+  const work = "/var/tmp/silver-album-maintenance-20261011-test", backup = "/var/backups/silver-album-maintenance-20261011-test";
+  const args = ["--mode=stage", `--work=${work}`, `--backup=${backup}`, `--manifest=${work}/manifest.json`];
+  const before = [...args];
+  assert.equal(validateOptions(args).tosNetwork, "public");
+  assert.equal(validateOptions(["--mode=audit", `--work=${work}`]).tosNetwork, "public");
+  for (const network of ["public", "internal"]) {
+    assert.equal(validateOptions([...args, `--tos-network=${network}`]).tosNetwork, network);
+    assert.equal(validateOptions([...args, "--tos-network", network]).tosNetwork, network);
+  }
+  assert.deepEqual(args, before);
+});
+test("TOS网络CLI拒绝未知、空白、重复和缺值参数", () => {
+  const args = ["--mode=audit", "--work=/var/tmp/silver-album-maintenance-20261011-test"];
+  for (const value of ["", "private", "INTERNAL", "Public", " internal", "internal ", "public,internal", "https://evil.example"]) {
+    assert.throws(() => validateOptions([...args, `--tos-network=${value}`]));
+  }
+  for (const extra of [
+    ["--tos-network"], ["--tos-network", "--mode=stage"],
+    ["--tos-network=internal", "--tos-network=public"],
+    ["--tos-network", "internal", "--tos-network=internal"], ["--tosNetwork=internal"]
+  ]) assert.throws(() => validateOptions([...args, ...extra]));
+});
+test("公网TOS保留现有endpoint配置，默认模式与显式公网一致", () => {
+  for (const endpoint of ["tos-cn-beijing.volces.com", "https://tos-cn-beijing.volces.com/", "https://tos-cn-shanghai.volces.com"]) {
+    assert.equal(resolveTosEndpoint(endpoint, "cn-beijing"), endpoint);
+    assert.equal(resolveTosEndpoint(endpoint, "cn-beijing", "public"), endpoint);
+  }
+});
+test("内网TOS仅把北京官方公网endpoint转换为官方内网host", () => {
+  for (const scheme of ["", "http://", "https://"]) for (const suffix of ["", "/"]) {
+    assert.equal(resolveTosEndpoint(`${scheme}tos-cn-beijing.volces.com${suffix}`, "cn-beijing", "internal"), "tos-cn-beijing.ivolces.com");
+  }
+});
+test("内网TOS拒绝其他地区、内网输入、仿冒host及路径或凭据注入", () => {
+  const official = "tos-cn-beijing.volces.com";
+  for (const region of [undefined, "", "cn-shanghai", "cn-beijing ", "CN-BEIJING"]) {
+    assert.throws(() => resolveTosEndpoint(official, region, "internal"));
+  }
+  for (const endpoint of [
+    undefined, null, "", "tos-cn-beijing.ivolces.com", "tos-cn-shanghai.volces.com", "evil.example",
+    `${official}.evil.example`, `evil-${official}`, `https://${official}:443`, `https://${official}/bucket`,
+    `https://${official}//`, `https://${official}?redirect=evil`, `https://${official}#fragment`,
+    `https://user:password@${official}`, `https://${official}@evil.example`, `https://${official}%2fevil`,
+    ` ${official}`, `${official}\n`, `ftp://${official}`
+  ]) assert.throws(() => resolveTosEndpoint(endpoint, "cn-beijing", "internal"));
+  for (const network of [null, "private", "INTERNAL", ""]) {
+    assert.throws(() => resolveTosEndpoint(official, "cn-beijing", network));
+  }
+});
+test("旧备份缺少网络字段时固定为公网，不能切换为内网", () => {
+  const legacy = { version: 1, manifestHash: "a".repeat(64), envHash: "b".repeat(64) }, before = clone(legacy);
+  assert.equal(assertTosNetwork(legacy), "public");
+  assert.equal(assertTosNetwork(legacy, "public"), "public");
+  assert.throws(() => assertTosNetwork(legacy, "internal"));
+  assert.deepEqual(legacy, before);
+});
+test("备份网络绑定必须匹配请求，两方向切换均拒绝且不修改备份hash", () => {
+  for (const network of ["public", "internal"]) {
+    const state = { version: 1, tosNetwork: network, envHash: "a".repeat(64), snapshotHash: "b".repeat(64) };
+    const before = clone(state), beforeHash = hash(stable(state));
+    assert.equal(assertTosNetwork(state, network), network);
+    assert.throws(() => assertTosNetwork(state, network === "public" ? "internal" : "public"));
+    if (network === "internal") assert.throws(() => assertTosNetwork(state));
+    assert.deepEqual(state, before);
+    assert.equal(hash(stable(state)), beforeHash);
+  }
+});
+test("备份显式无效网络不得退回公网，非法请求网络也拒绝", () => {
+  for (const tosNetwork of [undefined, null, "", "private", "PUBLIC", 0]) {
+    assert.throws(() => assertTosNetwork({ tosNetwork }, "public"));
+    assert.throws(() => assertTosNetwork({ tosNetwork }, "internal"));
+  }
+  for (const network of [null, "", "private", "INTERNAL", 0]) assert.throws(() => assertTosNetwork({}, network));
+  for (const state of [undefined, null, "public", 1]) assert.throws(() => assertTosNetwork(state));
 });
 function startupFixture() {
   const result = fixture();

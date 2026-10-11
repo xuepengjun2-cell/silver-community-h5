@@ -107,15 +107,31 @@ function safePath(value, kind) {
   if (!prefix || typeof value !== "string" || !new RegExp(`^${prefix}/silver-album-maintenance-[a-zA-Z0-9.-]+$`).test(value) || path.resolve(value) !== value) stop("Unsafe maintenance directory");
   return value;
 }
+function resolveTosEndpoint(endpoint, region, network = "public") {
+  if (!["public", "internal"].includes(network)) stop("Invalid TOS network");
+  if (network === "public") return endpoint;
+  const hostname = String(endpoint || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (region !== "cn-beijing" || hostname !== "tos-cn-beijing.volces.com") stop("Internal TOS requires verified official Beijing configuration");
+  return "tos-cn-beijing.ivolces.com";
+}
+function assertTosNetwork(state, network = "public") {
+  if (!state || typeof state !== "object" || !["public", "internal"].includes(network)) stop("Invalid TOS network binding");
+  const bound = Object.hasOwn(state, "tosNetwork") ? state.tosNetwork : "public";
+  if (!["public", "internal"].includes(bound) || bound !== network) stop("Backup TOS network differs from requested network");
+  return bound;
+}
 function validateOptions(args) {
   const result = {};
   for (let i = 0; i < args.length; i++) {
-    const match = args[i].match(/^--(mode|work|backup|manifest)(?:=(.*))?$/);
-    if (!match || Object.hasOwn(result, match[1])) stop("Invalid argument");
+    const match = args[i].match(/^--(mode|work|backup|manifest|tos-network)(?:=(.*))?$/);
+    const key = match?.[1] === "tos-network" ? "tosNetwork" : match?.[1];
+    if (!match || Object.hasOwn(result, key)) stop("Invalid argument");
     const value = match[2] === undefined ? args[++i] : match[2];
     if (!value || value.startsWith("--")) stop("Missing argument");
-    result[match[1]] = value;
+    result[key] = value;
   }
+  if (!Object.hasOwn(result, "tosNetwork")) result.tosNetwork = "public";
+  if (!["public", "internal"].includes(result.tosNetwork)) stop("Invalid TOS network");
   if (!["audit", "backup", "stage", "replace", "verify", "rollback"].includes(result.mode)) stop("Invalid mode");
   safePath(result.work, "work");
   if (result.mode !== "audit") {
@@ -181,11 +197,12 @@ function envFile(file) {
   }
   return output;
 }
-function tos(env) {
+function tos(env, network = "public") {
   const cfg = { ...envFile("/etc/itinerary-admin.env"), ...envFile("/opt/learning-upload/tos.env"), ...env };
   if (!["TOS_ACCESS_KEY_ID", "TOS_SECRET_ACCESS_KEY", "TOS_BUCKET", "TOS_ENDPOINT"].every(k => cfg[k])) stop("TOS configuration unavailable");
+  const endpoint = resolveTosEndpoint(cfg.TOS_ENDPOINT, cfg.TOS_REGION || "cn-beijing", network);
   const { TosClient } = require(`${ROOT}/node_modules/@volcengine/tos-sdk`);
-  return { bucket: cfg.TOS_BUCKET, client: new TosClient({ accessKeyId: cfg.TOS_ACCESS_KEY_ID, accessKeySecret: cfg.TOS_SECRET_ACCESS_KEY, endpoint: cfg.TOS_ENDPOINT, region: cfg.TOS_REGION || "cn-beijing", requestTimeout: 120000, maxRetryCount: 0 }) };
+  return { bucket: cfg.TOS_BUCKET, client: new TosClient({ accessKeyId: cfg.TOS_ACCESS_KEY_ID, accessKeySecret: cfg.TOS_SECRET_ACCESS_KEY, endpoint, region: cfg.TOS_REGION || "cn-beijing", requestTimeout: 120000, maxRetryCount: 0 }) };
 }
 async function database(env) {
   return require(`${ROOT}/node_modules/mysql2/promise`).createConnection({ host: env.DB_HOST || "127.0.0.1", port: Number(env.DB_PORT || 3306), user: env.DB_USER || "silver", password: env.DB_PASS || "", database: env.DB_NAME || "silver", connectTimeout: 10000 });
@@ -254,6 +271,7 @@ async function fileHash(file) {
 }
 function loadState(o, manifest) {
   const state = readJson(`${o.backup}/state.json`, true);
+  assertTosNetwork(state, o.tosNetwork);
   if (state.version !== 1 || state.manifestHash !== hash(stable(manifest)) || state.work !== o.work) stop("Backup is for a different manifest");
   const snapshot = readJson(`${o.backup}/business.json`, true);
   if (hash(stable(snapshot)) !== state.snapshotHash) stop("Backup snapshot corrupted");
@@ -272,7 +290,7 @@ async function main(args = process.argv.slice(2)) {
   if (o.mode === "audit") {
     const env = liveEnv(), conn = await database(env);
     try {
-      const t = tos(env), inventory = [];
+      const t = tos(env, o.tosNetwork), inventory = [];
       const [projects] = await conn.query("SELECT id, doc FROM activity_projects ORDER BY id");
       for (const row of projects) {
         const doc = typeof row.doc === "string" ? JSON.parse(row.doc) : row.doc;
@@ -293,7 +311,7 @@ async function main(args = process.argv.slice(2)) {
     try {
       await idle(conn);
       await conn.query("SET TRANSACTION READ ONLY"); await conn.query("START TRANSACTION WITH CONSISTENT SNAPSHOT");
-      const snapshot = await rows(conn), t = tos(env), entries = [];
+      const snapshot = await rows(conn), t = tos(env, o.tosNetwork), entries = [];
       assertStartupStable(snapshot);
       for (const item of manifest.items) {
         await sourceGuard(t, item);
@@ -306,12 +324,12 @@ async function main(args = process.argv.slice(2)) {
       fs.mkdirSync(o.backup, { mode: 0o700 }); assertDirectory(o.backup);
       writePrivate(`${o.backup}/effective-env.json`, env);
       writePrivate(`${o.backup}/business.json`, snapshot);
-      writePrivate(`${o.backup}/state.json`, { version: 1, work: o.work, manifestHash: hash(stable(manifest)), snapshotHash: hash(stable(snapshot)), envHash: hash(stable(env)), runtimeHash: await fileHash(`${ROOT}/server.js`), originalPid: processInfo(true).pid, entries, createdAt: new Date().toISOString() });
+      writePrivate(`${o.backup}/state.json`, { version: 1, work: o.work, tosNetwork: o.tosNetwork, manifestHash: hash(stable(manifest)), snapshotHash: hash(stable(snapshot)), envHash: hash(stable(env)), runtimeHash: await fileHash(`${ROOT}/server.js`), originalPid: processInfo(true).pid, entries, createdAt: new Date().toISOString() });
     } finally { await conn.end(); }
     process.stdout.write('{"mode":"backup","ok":true,"originalObjectsRetained":true}\n'); return;
   }
   assertDirectory(o.backup);
-  const { state, snapshot, env } = loadState(o, manifest), t = tos(env);
+  const { state, snapshot, env } = loadState(o, manifest), t = tos(env, o.tosNetwork);
   if (await fileHash(`${ROOT}/server.js`) !== state.runtimeHash) stop("Server code changed since backup");
   if (o.mode === "stage") {
     processInfo(true); assertDirectory(`${o.work}/files`);
@@ -400,5 +418,5 @@ async function main(args = process.argv.slice(2)) {
   }
   process.stdout.write(`${JSON.stringify({ mode: o.mode, ok: true, items: manifest.items.length, originalObjectsRetained: true })}\n`);
 }
-module.exports = { stable, hash, validateManifest, sourceKey, newUrl, replacement, patchMedia, buildExpectedRows, assertRowsEqual, assertStartupStable, validateOptions, safePath, assertPrivateFile, main };
+module.exports = { stable, hash, validateManifest, sourceKey, newUrl, replacement, patchMedia, buildExpectedRows, assertRowsEqual, assertStartupStable, resolveTosEndpoint, assertTosNetwork, validateOptions, safePath, assertPrivateFile, main };
 if (require.main === module) main().catch(error => { process.stderr.write(`${JSON.stringify({ ok: false, error: error instanceof SafeError ? error.message : "Maintenance failed; credentials and raw errors withheld" })}\n`); process.exitCode = 1; });
