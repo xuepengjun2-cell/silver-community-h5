@@ -19,7 +19,7 @@ server.unref();
 
 class TosClient {
   constructor(config) { this.config = config; fs.mkdirSync(dir, { recursive: true }); }
-  async putObjectFromFile({ key, filePath }) { await delay(); fs.copyFileSync(filePath, file(key)); return { data: {} }; }
+  async putObjectFromFile({ key, filePath }) { await delay(); if (process.env.FAKE_TOS_REJECT_POSTER === "1" && key.startsWith("silver-images/")) throw new Error("test: poster storage unavailable"); fs.copyFileSync(filePath, file(key)); return { data: {} }; }
   async putObject({ key, body }) { await delay(); fs.writeFileSync(file(key), body); return { data: {} }; }
   async headObject({ key }) {
     await new Promise(resolve => setTimeout(resolve, Number(process.env.FAKE_TOS_HEAD_DELAY_MS || 0)));

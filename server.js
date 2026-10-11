@@ -150,6 +150,11 @@ async function verifyPublishedVideo(media) {
   if (!posterSize || posterSize > 3 * 1024 * 1024) throw new Error("视频封面缺失或不符合要求，请重新上传。");
 }
 
+function publishedObjectReferenced(key) {
+  const refs = [...(readDb().activityProjects || []), ...(readDb().cases || [])].flatMap(item => item.media || []);
+  return refs.some(item => trustedObjectKey(item.url, [[CASE_VIDEO_PUBLIC_BASE, CASE_VIDEO_TOS_PREFIX], [PROJECT_VIDEO_PUBLIC_BASE, PROJECT_VIDEO_TOS_PREFIX]]) === key || trustedObjectKey(item.poster, [[CASE_IMAGE_PUBLIC_BASE, CASE_IMAGE_TOS_PREFIX], [PROJECT_IMAGE_PUBLIC_BASE, PROJECT_IMAGE_TOS_PREFIX]]) === key);
+}
+
 async function prepareCaseVideos(candidate, existing, extraReady = []) {
   const ready = [..._miniappJobs.values()].filter(job => job.kind === "case-admin" && job.status === "ready" && job.deliveryStandard === 1)
     .map(job => ({ type: "video", url: job.url, poster: job.poster, size: job.size, fingerprint: job.fingerprint }));
@@ -2543,7 +2548,7 @@ function caseDirectDeliveryService() {
         return { uploadedKeys, media: { type: "video", url, poster, size, fingerprint, sourceSha256, sourceVideoId: session.source_video_id,
           title: cleanString(session.title), caption: cleanString(session.caption), createdAt: now() } };
       } catch (error) {
-        for (const key of uploadedKeys) await client.deleteObject({ bucket, key }).catch(() => {});
+        for (const key of uploadedKeys) if (!publishedObjectReferenced(key)) await client.deleteObject({ bucket, key }).catch(() => {});
         throw error;
       } finally { releaseSpace(); }
     },
@@ -2567,7 +2572,7 @@ function caseDirectDeliveryService() {
     },
     discard: async prepared => {
       const { client, bucket } = getCaseVideoTosClient();
-      for (const key of prepared.uploadedKeys || []) await client.deleteObject({ bucket, key });
+      for (const key of prepared.uploadedKeys || []) if (!publishedObjectReferenced(key)) await client.deleteObject({ bucket, key });
     },
     cleanup: id => fs.promises.rm(stageDir(id), { recursive: true, force: true }),
     onError: (id, error) => console.error("[case-direct-video-delivery]", id, String(error.message || "处理失败").slice(0, 500))

@@ -86,3 +86,31 @@ test("native videos share the global six-task gate", () => withServer({ tosDelay
   assert.deepEqual((await Promise.all(Array.from({ length: 6 }, upload))).map(x => x.status), Array(6).fill(202));
   assert.equal((await upload()).status, 429);
 }));
+
+test("resumed automation failure cannot delete a delivery already moved to another case", () => {
+  const fs = require("node:fs"), path = require("node:path");
+  const source = crypto.randomBytes(160 * 1024), fingerprint = crypto.createHash("sha256").update(source).digest("hex");
+  const sessionId = "case_upload_1234", filename = `case_delivery_${sessionId}_${fingerprint.slice(0, 16)}.mp4`;
+  const media = { ...video, url: `https://proj2.likeduoduiyi.cn/silver-case-videos/${filename}`, size: source.length, fingerprint };
+  const row = (id, media) => ({ id, status: "published", doc: JSON.stringify({ id, title: id, status: "published", media }) });
+  return withServer({ env: { FAKE_TOS_REJECT_POSTER: "1" }, seed: {
+    cases: [row(CASE_T, []), row("case_kept", [media])],
+    case_direct_upload_sessions: [{ id: sessionId, case_id: CASE_T, source_video_id: "1234567890", source_sha256: fingerprint, filename: "source.mp4", object_key: "silver-case-videos-sources/source.mp4", file_size: source.length, part_size: 16777216, part_count: 1, upload_id: "test", status: "uploading" }]
+  } }, async ctx => {
+    const dir = path.join(ctx.dir, "tos"), sourceKey = "silver-case-videos-sources/source.mp4", finalKey = `silver-case-videos/${filename}`;
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, encodeURIComponent(sourceKey)), source);
+    fs.writeFileSync(path.join(dir, encodeURIComponent(finalKey)), source);
+    const headers = { Authorization: `Bearer ${SYNC_TOKEN}` }, route = `/automation/cases/${CASE_T}/videos/upload-session/${sessionId}`;
+    assert.equal((await ctx.api(`${route}/complete`, { method: "POST", headers, body: {} })).status, 202);
+    let result;
+    for (let i = 0; i < 80; i++) {
+      result = (await ctx.api(`${route}/status`, { headers })).data;
+      if (result.status === "delivery_failed") break;
+      await sleep(50);
+    }
+    assert.equal(result.status, "delivery_failed", result.error);
+    assert.ok(fs.existsSync(path.join(dir, encodeURIComponent(finalKey))), "already referenced video must survive failed retry cleanup");
+    assert.ok(fs.existsSync(path.join(dir, encodeURIComponent(sourceKey))), "failed source remains retryable");
+  });
+});
