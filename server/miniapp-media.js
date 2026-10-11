@@ -52,7 +52,7 @@ async function receiveUpload(req, directory, type) {
     parser.on("close", async () => {
       try {
         if (writing) await writing;
-        if (tooLarge) throw new Error(`素材过大：${type === "video" ? "视频须小于190MB" : "照片须小于50MB"}。`);
+        if (tooLarge) throw new Error(`素材过大：${type === "video" ? "视频须小于200MB" : "照片须小于50MB"}。`);
         if (invalid || count !== 1) throw new Error("请一次上传一个素材文件。 ");
         const stat = await fsp.stat(source);
         if (!stat.size || stat.size > maxSize) throw new Error("素材大小不符合要求。 ");
@@ -88,7 +88,7 @@ function run(command, args, timeoutMs = 15 * 60 * 1000) {
 }
 
 async function probe(file) {
-  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,codec_name,width,height,pix_fmt,duration", "-of", "json", file], 30 * 1000);
+  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration,format_name:stream=codec_type,codec_name,width,height,pix_fmt,duration", "-of", "json", file], 30 * 1000);
   try { return JSON.parse(raw); }
   catch { throw new Error("无法识别媒体格式。 "); }
 }
@@ -138,28 +138,100 @@ async function processImage(source, target) {
   return stat.size;
 }
 
+function positiveDuration(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+// Read MP4 top-level boxes without loading the video into memory. A complete
+// moov box before mdat is required for playback before the whole file downloads.
+async function verifyFaststart(file, size) {
+  const handle = await fsp.open(file, "r");
+  let offset = 0, moov = null, mdat = null, ftyp = false, boxes = 0;
+  try {
+    while (offset < size) {
+      if (++boxes > 4096) throw new Error("视频 MP4 索引异常。 ");
+      const header = Buffer.alloc(16);
+      if ((await handle.read(header, 0, 8, offset)).bytesRead !== 8) throw new Error("视频 MP4 索引不完整。 ");
+      let length = header.readUInt32BE(0), headerLength = 8;
+      const type = header.toString("ascii", 4, 8);
+      if (length === 1) {
+        if ((await handle.read(header, 8, 8, offset + 8)).bytesRead !== 8) throw new Error("视频 MP4 索引不完整。 ");
+        const extended = header.readBigUInt64BE(8);
+        if (extended > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("视频 MP4 索引异常。 ");
+        length = Number(extended); headerLength = 16;
+      } else if (length === 0) length = size - offset;
+      if (length < headerLength || offset + length > size) throw new Error("视频 MP4 文件已截断。 ");
+      if (type === "ftyp") ftyp = true;
+      if (type === "moov" && length > headerLength && moov === null) moov = offset;
+      if (type === "mdat" && length > headerLength && mdat === null) mdat = offset;
+      offset += length;
+    }
+  } finally { await handle.close(); }
+  if (!ftyp || moov === null || mdat === null || moov > mdat) throw new Error("视频未通过 MP4 首屏索引校验，请重新处理后上传。 ");
+}
+
+async function verifyVideoDelivery(source, target) {
+  const stat = await fsp.stat(target);
+  if (!stat.isFile() || !stat.size || stat.size >= MAX_DELIVERY_BYTES) throw new Error("视频成品须小于200MB，请分段上传。 ");
+  const input = await probe(source);
+  const output = path.resolve(source) === path.resolve(target) ? input : await probe(target);
+  const inputVideo = (input.streams || []).find(stream => stream.codec_type === "video");
+  const inputAudio = (input.streams || []).find(stream => stream.codec_type === "audio");
+  const videos = (output.streams || []).filter(stream => stream.codec_type === "video");
+  const audios = (output.streams || []).filter(stream => stream.codec_type === "audio");
+  if (!inputVideo || videos.length !== 1 || videos[0].codec_name !== "h264" || videos[0].pix_fmt !== "yuv420p" ||
+      audios.length !== (inputAudio ? 1 : 0) || audios.some(stream => stream.codec_name !== "aac") ||
+      !(output.format?.format_name || "").split(",").includes("mp4")) {
+    throw new Error("视频成品须为 H264/yuv420p MP4，有声音时须保留 AAC 音轨。 ");
+  }
+  const duration = positiveDuration(output.format?.duration);
+  const videoDuration = positiveDuration(videos[0].duration);
+  const audioDuration = inputAudio ? positiveDuration(audios[0]?.duration) : null;
+  const sourceDuration = positiveDuration(input.format?.duration);
+  const sourceVideoDuration = positiveDuration(inputVideo.duration) || sourceDuration;
+  const sourceAudioDuration = inputAudio ? positiveDuration(inputAudio.duration) || sourceDuration : null;
+  const durations = [[sourceDuration || sourceVideoDuration, duration], [sourceVideoDuration, videoDuration]];
+  if (inputAudio) durations.push([sourceAudioDuration, audioDuration]);
+  if (durations.some(([before, after]) => !before || !after || Math.abs(before - after) >= 1)) {
+    throw new Error("视频成品未保留原画面或声音的完整时长，请重新处理后上传。 ");
+  }
+  await verifyFaststart(target, stat.size);
+  // Decode each track separately: a decodable video must not hide a broken AAC
+  // track. Check the head, middle and tail of each track's own full duration.
+  for (const [type, length] of [["v", videoDuration], ...(inputAudio ? [["a", audioDuration]] : [])]) {
+    const sampleLength = Math.min(2, length);
+    const points = [...new Set([0, Math.max(0, length / 2 - sampleLength / 2), Math.max(0, length - sampleLength)])];
+    for (const point of points) {
+      const decoded = await run("ffmpeg", [
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1", "-xerror", "-err_detect", "explode", "-ss", String(point), "-i", target,
+        "-map", `0:${type}:0`, "-threads", "1", "-t", String(sampleLength),
+        ...(type === "v" ? ["-progress", "pipe:1", "-f", "null", "-"] : ["-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"])
+      ], 60 * 1000);
+      if (type === "v" ? !/frame=\s*[1-9]\d*/.test(decoded) : !decoded.length) throw new Error("视频成品部分画面或声音无法解码，请重新上传。 ");
+    }
+  }
+  const after = await fsp.stat(target);
+  if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ino !== stat.ino) throw new Error("视频成品在校验期间发生变化，请重新上传。 ");
+  return { size: after.size, duration, videoDuration, audioDuration };
+}
+
 async function processVideo(source, target) {
+  if (path.resolve(source) === path.resolve(target)) throw new Error("视频处理必须保留独立原片。 ");
   const input = videoEncoding(await probe(source));
   const sourceSize = (await fsp.stat(source)).size;
   const mode = videoDeliveryMode(input, sourceSize);
   const sourceBitrate = Math.floor(sourceSize * 8 * 0.9 / input.duration / 1000 - input.audioBitrate);
-  const verifiedOutput = async () => {
-    const result = videoEncoding(await probe(target));
-    if (result.video.codec_name !== "h264" || result.audio && result.audio.codec_name !== "aac" || Math.abs(result.duration - input.duration) > Math.max(1, input.duration * 0.02)) {
-      throw new Error("生成的视频未通过格式或时长校验，请重新上传。 ");
-    }
-  };
   // 已兼容的原视频只转封装并把索引移到文件头，避免重复有损编码。
   if (mode === "copy") {
     try {
       await run("ffmpeg", [
-        "-nostdin", "-hide_banner", "-loglevel", "error", "-i", source,
+        "-nostdin", "-hide_banner", "-loglevel", "error", "-xerror", "-err_detect", "explode", "-i", source,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "-y", target
       ], 10 * 60 * 1000);
       const copied = (await fsp.stat(target)).size;
       if (copied > 0 && copied < MAX_DELIVERY_BYTES) {
-        await verifiedOutput();
-        return copied;
+        return (await verifyVideoDelivery(source, target)).size;
       }
     } catch { /* 不可转封装时回退转码；原件仍保持不变。 */ }
     await fsp.rm(target, { force: true });
@@ -168,16 +240,13 @@ async function processVideo(source, target) {
   const bitrate = Math.floor(Math.min(input.bitrate, sourceBitrate));
   const profile = videoEncodingProfile(bitrate);
   await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-i", source,
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-xerror", "-err_detect", "explode", "-i", source,
     "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${profile.maxDimension},iw)':h='min(${profile.maxDimension},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${profile.fps}`,
     "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-pix_fmt", "yuv420p", "-b:v", `${bitrate}k`,
     "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
     "-c:a", "aac", "-b:a", `${input.audioBitrate || 64}k`, "-movflags", "+faststart", "-y", target
   ], Math.min(5 * 60 * 60 * 1000, Math.max(30 * 60 * 1000, input.duration * 2 * 1000 + 15 * 60 * 1000)));
-  const stat = await fsp.stat(target);
-  if (!stat.size || stat.size >= MAX_DELIVERY_BYTES) throw new Error("视频处理后仍超过190MB，请分段上传。 ");
-  await verifiedOutput();
-  return stat.size;
+  return (await verifyVideoDelivery(source, target)).size;
 }
 
 async function processVideoPoster(video, target) {
@@ -199,5 +268,5 @@ async function processVideoPoster(video, target) {
 
 module.exports = {
   MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, MAX_DELIVERY_BYTES,
-  receiveUpload, videoEncoding, videoEncodingProfile, videoDeliveryMode, processImage, processVideo, processVideoPoster
+  receiveUpload, videoEncoding, videoEncodingProfile, videoDeliveryMode, verifyVideoDelivery, processImage, processVideo, processVideoPoster
 };

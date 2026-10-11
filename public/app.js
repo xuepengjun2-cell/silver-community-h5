@@ -1522,7 +1522,35 @@ const PROJECT_VIDEO_PART_RETRIES = 4;
 const PROJECT_VIDEO_UPLOAD_WORKERS = 3;
 const PROJECT_VIDEO_PART_TIMEOUT_MS = 180000;
 const PROJECT_VIDEO_UPLOAD_STATE_PREFIX = "silver_project_video_upload:";
+const PROJECT_VIDEO_DELIVERY_MAX_BYTES = 190 * 1024 * 1024;
 let projectUploadPollTimer = null;
+
+function projectUploadOutcome(data, type) {
+  if (type !== "video") return "published";
+  if (["processing", "queued", "receiving"].includes(data?.status)) return "processing";
+  if (["delivery_failed", "failed"].includes(data?.status)) return "failed";
+  if (!["completed", "ready"].includes(data?.status)) throw new Error("视频处理结果尚未确认，未计入相册，请刷新后台任务状态");
+  const media = data.media || data;
+  const size = Number(media.size);
+  if (!media.url || !media.poster || !Number.isSafeInteger(size) || size <= 0 || size >= PROJECT_VIDEO_DELIVERY_MAX_BYTES) {
+    throw new Error("视频成片地址、大小或封面未通过校验，请联系管理员核查");
+  }
+  return "published";
+}
+
+function projectUploadBlocksPromotion() {
+  return Boolean(state.projectUploading || state.projectUploadSessionsError || (state.projectUploadSessions || []).some(item => ["uploading", "processing", "queued", "receiving"].includes(item.status)));
+}
+
+function syncProjectUploadControls() {
+  const input = document.querySelector("#projectFileInput");
+  if (input) input.disabled = Boolean(state.projectUploading);
+  const promote = document.querySelector("#projectPromoteBtn");
+  if (promote) {
+    promote.disabled = projectUploadBlocksPromotion();
+    promote.textContent = promote.disabled ? "等待本批上传及视频校验完成" : "沉淀为精彩案例草稿";
+  }
+}
 
 function projectUploadSleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -1668,6 +1696,7 @@ async function uploadProjectMediaFile(projectId, file, onProgress) {
   const name = String(file.name || "file");
   const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : "bin";
   if (type === "video") {
+    if (file.size > 2 * 1024 * 1024 * 1024) throw new Error("视频原片单个不能超过2GB，请先分段");
     return uploadProjectVideoMultipart(projectId, file, onProgress);
   }
   const query = new URLSearchParams({ type, ext, title: name });
@@ -2031,9 +2060,10 @@ function projectUploadSessionsHtml(projectId) {
   if (!sessions.length && !state.projectUploadSessionsError) return "";
   const labels = {
     uploading: "等待续传", failed: "上传未完成", processing: "后台处理中",
-    delivery_failed: "处理失败，原片已保留"
+    delivery_failed: "处理失败，未公开，原片已保留"
   };
   return `<section class="project-processing-panel" aria-live="polite"><strong>视频后台任务</strong>
+    <p class="project-processing-note">只有成片大小、格式、完整时长和视频画面封面全部校验通过，才会进入可分享相册。原片传输结束后，仍需等待后台校验通过。</p>
     ${state.projectUploadSessionsError ? `<p>任务状态暂不可读：${esc(state.projectUploadSessionsError)}。请刷新页面后重试。</p>` : ""}
     ${sessions.map(item => `<div class="project-processing-row" data-project-session="${esc(item.sessionId)}">
       <span class="project-processing-name" title="${esc(item.title)}">${esc(item.title)}</span>
@@ -2064,6 +2094,7 @@ function scheduleProjectUploadPoll(projectId) {
     if (state.projectView === "manager" && state.currentProject?.id === projectId) {
       refreshProjectUploadSessions(projectId).catch(error => {
         state.projectUploadSessionsError = error.message || "读取失败";
+        syncProjectUploadControls();
         const panel = document.querySelector("#projectUploadSessions");
         if (panel) panel.innerHTML = projectUploadSessionsHtml(projectId);
         scheduleProjectUploadPoll(projectId);
@@ -2078,6 +2109,7 @@ async function refreshProjectUploadSessions(projectId) {
   if (state.projectView !== "manager" || state.currentProject?.id !== projectId) return;
   state.projectUploadSessions = data.sessions || [];
   state.projectUploadSessionsError = "";
+  syncProjectUploadControls();
   if (!state.projectUploading && state.projectUploadSessions.some(item => previous.has(item.sessionId) && item.status === "completed")) {
     await loadProjectManager(projectId);
     return;
@@ -2115,7 +2147,7 @@ function renderProjectManager(project) {
     <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span>${canManage ? `<strong>${projectAuditTotal(project, "view")}</strong><span>次查看</span><strong>${projectAuditTotal(project, "download")}</strong><span>次下载</span>` : ""}</div></section>
     <section class="project-manager-layout">
       ${metaPanelHtml}
-      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 ${canManage ? `<span class="project-upload-hint">图片 ≤50MB · 视频 ≤2GB</span>` : ""}</div>${canManage ? `<label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>视频上传后由后台检查格式、按需压缩并生成首帧；可离开页面，稍后回来看结果。鸿蒙微信/部分安卓微信相册单次最多 9 张</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress"></div><div id="projectUploadSessions">${projectUploadSessionsHtml(project.id)}</div>` : projectReadOnlyNote}<div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true, canManage)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
+      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 ${canManage ? `<span class="project-upload-hint">图片 ≤50MB · 视频原片 ≤2GB、≤120分钟</span>` : ""}</div>${canManage ? `<label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>视频标准：原片单个≤2GB、时长≤120分钟，超出请先分段。后台逐个处理为 MP4（H.264/AAC），保留完整时长并生成视频画面封面；成片小于200MB，后台预留余量。全部校验通过才会公开。原片上传完成后可离开页面，稍后查看处理结果。鸿蒙微信/部分安卓微信相册单次最多9张。</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress"></div><div id="projectUploadSessions">${projectUploadSessionsHtml(project.id)}</div>` : projectReadOnlyNote}<div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true, canManage)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
     </section>${metaModalHtml}${projectLightboxHtml(project)}${loginModal()}`;
 
   document.querySelector("#projectBackBtn")?.addEventListener("click", () => { history.pushState(null, "", "?view=projects"); loadProjectsView(); });
@@ -2127,11 +2159,13 @@ function renderProjectManager(project) {
     try { const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}`, { method: "PATCH", body: { title: f.get("title"), dateLabel: f.get("dateLabel"), city: f.get("city"), description: f.get("description") } }); state.currentProject = data.project; state.projectMetaEditOpen = false; renderProjectManager(data.project); } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "保存活动信息"; }
   });
   document.querySelector("#projectFileInput")?.addEventListener("change", async e => {
+    if (state.projectUploading) return;
     const files = [...e.target.files]; const progress = document.querySelector("#projectUploadProgress");
     let published = 0, queued = 0, failed = 0;
     e.target.value = "";
     if (!files.length) return;
     state.projectUploading = true;
+    syncProjectUploadControls();
     for (const file of files) {
       if (progress) progress.textContent = `正在上传本批 ${published + queued + failed + 1}/${files.length}：${file.name}`;
       try {
@@ -2139,17 +2173,19 @@ function renderProjectManager(project) {
           if (progress) progress.textContent = `正在上传：${file.name} · ${progressState.percent}%`;
         });
         state.currentProject = data.project || state.currentProject;
-        if (data.status === "processing") queued++;
-        else if (data.status === "delivery_failed") failed++;
+        const outcome = projectUploadOutcome(data, projectMediaFileType(file));
+        if (outcome === "processing") queued++;
+        else if (outcome === "failed") failed++;
         else published++;
       }
       catch (err) { failed++; alert(`${file.name}：${err.message}`); }
     }
     state.projectUploading = false;
+    syncProjectUploadControls();
     if (state.projectView !== "manager" || state.currentProject?.id !== project.id) return;
     await loadProjectManager(project.id);
     const currentProgress = document.querySelector("#projectUploadProgress");
-    if (currentProgress) currentProgress.textContent = `本批：${published} 项已入相册，${queued} 个视频后台处理中${failed ? `，${failed} 个待重试处理` : ""}。可继续上传或离开页面。`;
+    if (currentProgress) currentProgress.textContent = `本批：${published} 项已通过校验并入相册，${queued} 个视频后台处理中、尚未公开${failed ? `，${failed} 个未成功，请查看任务提示或重新选择同一文件重试` : ""}。已进入后台的任务可稍后回来查看。`;
   });
   document.querySelectorAll("[data-project-manager-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectManagerTab; state.projectLightboxIndex = null; renderProjectManager(project); }));
   bindProjectVideoThumbs();
@@ -2166,11 +2202,13 @@ function renderProjectManager(project) {
     try { const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/media/${btn.dataset.projectDeleteMedia}`, { method: "DELETE" }); state.currentProject = data.project; renderProjectManager(data.project); } catch (err) { alert(err.message); }
   }));
   document.querySelector("#projectPromoteBtn")?.addEventListener("click", async e => {
+    if (projectUploadBlocksPromotion()) { syncProjectUploadControls(); return; }
     const btn = e.currentTarget; btn.disabled = true; btn.textContent = "生成中…";
     try { const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/promote-case`, { method: "POST" }); state.currentProject = data.project; alert(data.message || "已生成案例草稿"); renderProjectManager(data.project); } catch (err) { alert(err.message); btn.disabled = false; btn.textContent = "沉淀为精彩案例草稿"; }
   });
   bindProjectShareEvents();
   bindAuthEvents();
+  syncProjectUploadControls();
 }
 
 function navigateProjectPreview(project, index, manager = false) {
