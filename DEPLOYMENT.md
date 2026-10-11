@@ -18,10 +18,11 @@
 
 1. 在开发机从最新 `origin/main` 建发布分支，基于服务器线上代码和当前 CDN 静态文件合并修改。
 2. 执行 `npm run check`、`npm run test:media`、`npm run test:identity`、`npm run test:concurrency`、`npm run test:sso` 和 `git diff --check`，并确认同SHA的GitHub Check成功。
-3. 推送分支并确认远端 commit；经验证后再做非强制快进到 `main`。
+3. 推送分支并确认远端 commit；经验证后合并到 `main`，等待目标 main SHA 的 Check 成功。
 4. 服务器先创建带时间戳的代码备份，再从 GitHub 明确 commit 生成临时发布目录。
 5. 通过仓库受控发布工具确认上传队列空闲后，停止 silver；仅替换白名单代码和静态文件，排除 `data/`、`uploads/`、`logs/`、`backups/`、`node_modules/`，保留原进程环境再启动。
-6. 验收 `/silver-api/health`、`/api/me`、原账号登录、活动/案例/相册分享及媒体访问；异常时只回滚代码备份，不回滚数据库和 TOS 素材。
+6. 必须单独发布 TOS 静态副本；运行目录的 `public/` 更新不会更新公网网页。使用下文静态工具，先脚本、后页面，逐对象核验源站和 CDN 的完整文件 SHA；包含真实首页与后台入口别名、页面版本参数所指向的脚本。
+7. 验收 `/silver-api/health`、`/api/me`、原账号登录、活动/案例/相册分享及媒体访问。后端健康和公网静态校验均通过才算部署完成；异常时只回滚本次代码或静态对象，不回滚数据库和客户素材。
 
 ## 免密入口
 
@@ -52,3 +53,14 @@ node deploy/release-from-github.cjs --base=<现网GitHub40位SHA> --sha=<目标m
 ```
 
 第一条仅预检。工具从GitHub同SHA取代码和远端执行器，核验CI、现网代码基线、依赖不变、空间/队列/PM2；私有备份后短暂停服务，仅替换白名单代码文件，再启动并核对健康JSON、代码哈希和五张业务表哈希。失败只回滚代码，从不回滚业务数据。密钥留在本机和服务器，不提交仓库。
+
+此工具只完成后端发布。公网静态站由独立 TOS 对象提供，继续执行：
+
+```sh
+node deploy/release-static-from-github.cjs --base=<静态现网GitHub40位SHA> --sha=<目标main40位SHA> --prefix=silver/ --tos-network=internal
+node deploy/release-static-from-github.cjs --base=<静态现网GitHub40位SHA> --sha=<目标main40位SHA> --prefix=silver/ --tos-network=internal --apply
+```
+
+静态工具默认仅预检，同样要求干净工作区、精确 main 与成功 CI，执行器及发布包来自该 GitHub SHA。仅覆盖 `silver/app.js`、`admin.js`、`styles.css`、`admin.css`、`index.html`、`admin.html` 与已核实的四个入口对象：`silver/` 为首页；`silver` 跳转到 `/silver/`；`silver/admin` 和 `silver/admin/` 跳转到 `/silver/admin.html`，保留查询参数和 hash。入口跳转修复旧对象的相对资源路径，不改变本地根路径开发。
+
+源站必须匹配 GitHub 静态基线或目标 SHA；三个历史入口只额外接受工具中锁定、已核对 Git 历史的旧 SHA，其他漂移拒绝。应用前私有备份原字节、元数据和 ACL，用 ETag 条件覆盖，逐项读回。最后验收源站、无查询参数的真实公网对象以及带版本参数的资源；失败只用条件写入回滚本次静态修改。客户图片、视频、数据库和后端进程不在静态工具写入范围。仅更改运行目录或仅查看 API 健康不能替代这一步。
