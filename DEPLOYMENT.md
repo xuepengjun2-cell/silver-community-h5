@@ -17,7 +17,7 @@
 ## 受控发布顺序
 
 1. 在开发机从最新 `origin/main` 建发布分支，基于服务器线上代码和当前 CDN 静态文件合并修改。
-2. 执行 `npm run check`、`npm run test:media`、`npm run test:identity`、`npm run test:concurrency`、`npm run test:sso` 和 `git diff --check`，并确认同SHA的GitHub Check成功。
+2. 执行 `npm run check`、`npm run test:media`、`npm run test:identity`、`npm run test:concurrency`、`npm run test:large-video`、`npm run test:sso` 和 `git diff --check`，并确认同SHA的GitHub Check成功。
 3. 推送分支并确认远端 commit；经验证后合并到 `main`，等待目标 main SHA 的 Check 成功。
 4. 服务器先创建带时间戳的代码备份，再从 GitHub 明确 commit 生成临时发布目录。
 5. 通过仓库受控发布工具确认上传队列空闲后，停止 silver；仅替换白名单代码和静态文件，排除 `data/`、`uploads/`、`logs/`、`backups/`、`node_modules/`，保留原进程环境再启动。
@@ -37,7 +37,7 @@
 标准与验收操作见 [VIDEO_UPLOAD_STANDARD.md](VIDEO_UPLOAD_STANDARD.md)。默认开启后台处理；`H5_AUTO_VIDEO_DELIVERY=0` 表示暂停新视频上传/处理，返回明确错误，不会恢复任何原片直发。H5 相册、原生小程序相册、后台案例和视频号自动导入都进入同一串行队列。图片与外部 SOP 参考链接保持各自流程。
 
 - 成片实际字节数严格 `<199229440`（190MiB，低于200MB），目标175MiB；MP4/H264/yuv420p、AAC（原片有声音时）、faststart、保留完整音画时长并生成真实首帧 JPEG。格式/大小/时长/头中尾解码、本地文件稳定性及 TOS 对象/封面检查都通过后才允许入库或返回 ready。
-- 相册和自动导入原片最多2GiB，后台案例最多300MiB，原生小程序接收最多190MiB。自动处理最长120分钟；超时长、异常文件或无法安全压入边界时失败并提示分段，不裁掉尾部或退回原片。
+- 相册和自动导入原片最多2GiB，后台案例最多300MiB，原生小程序接收最多190MiB。原视频时长≤120分钟，后台串行处理；超时长、异常文件或无法安全压入边界时失败并提示分段，不裁掉尾部或退回原片。
 - PM2必须为silver单fork实例。全平台接收/待处理最多6个任务、后台案例待处理最多3个；FFmpeg逐条执行。临时盘按“原片+190MiB成片+512MiB余量”检查，空间不足拒绝处理。
 - 自动导入 complete/retry 返回202 processing；采集器必须轮询 status，只有 completed（带实际成片media）才算成功。失败原片保留供同会话重试；旧completed若未通过现标准不可冒充新上传。
 - 新案例视频引用须匹配服务端通过现标准的ready资产；请求的size、poster、fingerprint不能作为证明。历史已发布素材原样编辑仍可保留；草稿发布、移动及相册沉淀须符合现标准，未达标需重新上传处理。

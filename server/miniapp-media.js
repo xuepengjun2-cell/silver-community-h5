@@ -23,16 +23,50 @@ async function receiveUpload(req, directory, type) {
     let invalid = false;
     let writing = null;
     let settled = false;
-    const fail = error => { if (!settled) { settled = true; reject(error); } };
     let parser;
+    let input;
+    let output;
+    let created = false;
+    const detach = () => {
+      req.removeListener("data", onData);
+      req.removeListener("aborted", onAbort);
+      req.removeListener("error", fail);
+      req.removeListener("close", onClose);
+    };
+    const fail = error => {
+      if (settled) return;
+      settled = true;
+      detach();
+      req.unpipe(parser);
+      // Wait for close before the caller releases its disk lease or removes
+      // staging. An open, unlinked partial file still consumes disk space.
+      Promise.resolve().then(async () => {
+        if (input) { input.unpipe(output); input.destroy(); }
+        if (parser) parser.destroy();
+        if (output) output.destroy();
+        if (writing) await writing.catch(() => {});
+        if (created) await fsp.rm(source, { force: true });
+      }).then(() => reject(error), cleanupError => reject(cleanupError));
+      req.resume();
+    };
+    const onAbort = () => fail(new Error("上传已中断，请重试。"));
+    const onClose = () => { if (req.complete === false) onAbort(); };
+    let total = 0;
+    const onData = chunk => {
+      total += chunk.length;
+      if (total > maxSize + 1024 * 1024) { fail(new Error("上传数据超出限制。")); req.destroy(); }
+    };
     try {
       parser = Busboy({ headers: req.headers, limits: { files: 10, fileSize: maxSize, fields: 1, fieldSize: 1024, parts: 10 } });
     } catch { return fail(new Error("上传格式错误，请从小程序重新选择素材。")); }
     parser.on("file", (name, file) => {
       count++;
       if (name !== "media" || count !== 1) { invalid = true; file.resume(); return; }
+      input = file;
+      file.on("error", fail);
       file.on("limit", () => { tooLarge = true; });
-      const output = fs.createWriteStream(source, { flags: "wx", mode: 0o600 });
+      output = fs.createWriteStream(source, { flags: "wx", mode: 0o600 });
+      output.on("open", () => { created = true; });
       writing = finished(output);
       writing.catch(() => {}); // 中途断线也要消费流的 reject，避免未处理 Promise 异常。
       output.on("error", fail);
@@ -43,23 +77,23 @@ async function receiveUpload(req, directory, type) {
     parser.on("fieldsLimit", () => { invalid = true; });
     parser.on("field", () => { invalid = true; });
     parser.on("error", fail);
-    let total = 0;
-    req.on("data", chunk => {
-      total += chunk.length;
-      if (total > maxSize + 1024 * 1024) { fail(new Error("上传数据超出限制。")); req.destroy(); }
-    });
-    req.on("aborted", () => fail(new Error("上传已中断，请重试。")));
+    req.on("data", onData);
+    req.on("aborted", onAbort);
+    req.on("error", fail);
+    req.on("close", onClose);
     parser.on("close", async () => {
+      if (settled) return;
       try {
         if (writing) await writing;
         if (tooLarge) throw new Error(`素材过大：${type === "video" ? "视频须小于200MB" : "照片须小于50MB"}。`);
         if (invalid || count !== 1) throw new Error("请一次上传一个素材文件。 ");
         const stat = await fsp.stat(source);
         if (!stat.size || stat.size > maxSize) throw new Error("素材大小不符合要求。 ");
-        if (!settled) { settled = true; resolve({ source, size: stat.size }); }
+        if (!settled) { settled = true; detach(); resolve({ source, size: stat.size }); }
       } catch (error) { fail(error); }
     });
-    req.pipe(parser);
+    if (req.aborted || req.destroyed) onAbort();
+    else req.pipe(parser);
   });
 }
 

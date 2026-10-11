@@ -54,7 +54,8 @@ async function boot({ seed = {}, tosDelay = 0, headDelay = 0, env = {} } = {}) {
     return { status: response.status, data };
   };
   return {
-    api, dir,
+    api, dir, port, pid: child.pid,
+    logs: () => log,
     login: async () => (await api("/login", { method: "POST", body: { username: "admin", password: "admin123" } })).data.token,
     persisted: () => JSON.parse(fs.readFileSync(dumpFile, "utf8")),
     stop: () => { child.kill(); fs.rmSync(dir, { recursive: true, force: true }); }

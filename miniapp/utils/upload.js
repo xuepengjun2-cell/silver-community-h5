@@ -23,7 +23,7 @@ async function prepareMedia(wxApi, source, type) {
   // 客户端先压缩以降低流量；最终格式、编码和大小仍由服务端验证/转为 MP4。
   const result = await callWx(wxApi, "compressVideo", { src: source, quality: "medium" });
   const info = await callWx(wxApi, "getFileInfo", { filePath: result.tempFilePath });
-  if (!info.size || info.size >= MAX_VIDEO) throw new Error("压缩后仍超过 190 MB，请分段上传这段视频；不会上传原片。");
+  if (!info.size || info.size >= MAX_VIDEO) throw new Error("压缩后仍达到上传限额，请分段上传这段视频。成片须小于 200 MB，后台预留处理余量，不会上传原片。");
   return { path: result.tempFilePath, size: info.size };
 }
 
@@ -52,8 +52,11 @@ function uploadFile(wxApi, { projectId, type, path, token, onProgress }) {
   });
 }
 
-async function uploadMedia(wxApi, { projectId, source, type, token, onProgress = () => {} }) {
+async function uploadMedia(wxApi, { projectId, source, type, token, onProgress = () => {}, onStage = () => {}, isCancelled = () => false }) {
+  onStage("preparing");
   const prepared = await prepareMedia(wxApi, source, type);
+  if (isCancelled()) throw new Error("已离开上传页面，本次素材尚未上传，请重新选择。");
+  onStage("uploading");
   const result = await uploadFile(wxApi, { projectId, type, path: prepared.path, token, onProgress });
   if (type === "image") return result;
   if (!result.jobId) throw new Error("视频未获得处理编号，请联系管理员核查。") ;
@@ -64,4 +67,8 @@ function getVideoJob(wxApi, { projectId, jobId, token }) {
   return api(wxApi, `/my/activity-projects/${projectId}/miniapp-media/${jobId}`, { token });
 }
 
-module.exports = { MAX_IMAGE, MAX_VIDEO, prepareMedia, uploadMedia, getVideoJob };
+function retryVideoJob(wxApi, { projectId, jobId, token }) {
+  return api(wxApi, `/my/activity-projects/${projectId}/miniapp-media/${jobId}/retry`, { method: "POST", token });
+}
+
+module.exports = { MAX_IMAGE, MAX_VIDEO, prepareMedia, uploadMedia, getVideoJob, retryVideoJob };
