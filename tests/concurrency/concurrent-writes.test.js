@@ -279,7 +279,13 @@ test("视频号采集器直传登记期间删除其他案例，不覆盖相邻�
     const complete = ctx.api(`/automation/cases/${CASE_T}/videos/upload-session/${init.data.sessionId}/complete`, { method: "POST", headers: auth, body: {} });
     await sleep(200);
     await ctx.api("/admin/cases/case_1111111111111111", { method: "DELETE", token });
-    assert.equal((await complete).status, 201);
+    assert.equal((await complete).status, 202);
+    let state = {};
+    for (let i = 0; i < 100 && !["completed", "delivery_failed"].includes(state.status); i++) {
+      await sleep(100);
+      state = (await ctx.api(`/automation/cases/${CASE_T}/videos/upload-session/${init.data.sessionId}/status`, { headers: auth })).data;
+    }
+    assert.equal(state.status, "completed", state.error);
     const cases = (await ctx.api("/admin/cases", { token })).data.cases;
     assert.deepEqual(cases.map(c => c.title).sort(), ["T", "Y"]);
     assert.equal(cases.find(c => c.title === "T").media.length, 1);

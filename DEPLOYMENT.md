@@ -17,10 +17,10 @@
 ## 受控发布顺序
 
 1. 在开发机从最新 `origin/main` 建发布分支，基于服务器线上代码和当前 CDN 静态文件合并修改。
-2. 执行 `npm run check`、`npm run test:sso` 和 `git diff --check`。
+2. 执行 `npm run check`、`npm run test:media`、`npm run test:identity`、`npm run test:concurrency`、`npm run test:sso` 和 `git diff --check`，并确认同SHA的GitHub Check成功。
 3. 推送分支并确认远端 commit；经验证后再做非强制快进到 `main`。
 4. 服务器先创建带时间戳的代码备份，再从 GitHub 明确 commit 生成临时发布目录。
-5. 仅同步代码和静态文件，排除 `data/`、`uploads/`、`logs/`、`backups/`、`node_modules/`，然后执行 `pm2 reload silver --update-env`。
+5. 通过仓库受控发布工具确认上传队列空闲后，停止 silver；仅替换白名单代码和静态文件，排除 `data/`、`uploads/`、`logs/`、`backups/`、`node_modules/`，保留原进程环境再启动。
 6. 验收 `/silver-api/health`、`/api/me`、原账号登录、活动/案例/相册分享及媒体访问；异常时只回滚代码备份，不回滚数据库和 TOS 素材。
 
 ## 免密入口
@@ -31,9 +31,24 @@
 
 `deploy/update.sh` 只做发布边界检查，发现运行目录被当成 Git 工作树时直接停止；它不会在服务器侧自行拉取未知代码。实际发布必须带明确 GitHub commit，并由受控发布机完成。
 
-## H5 新上传视频自动生成 MP4（受控功能）
+## 所有新上传视频的发布卡点
 
-- 代码默认不接管现有上传。只有在服务进程环境设置 `H5_AUTO_VIDEO_DELIVERY=1` 后，案例后台新上传和活动相册 H5 新上传才改走串行 FFmpeg 交付队列；历史案例、历史相册、视频号采集器直传和外部 SOP 链接不自动改写。
-- 发布前检查 FFmpeg/FFprobe、MySQL、TOS 和临时盘余量；至少留出“当前最大原片 + 190 MB 输出 + 512 MB 安全余量”。生产机只有 2 核，不能并发跑大视频，案例原片同时待处理最多 3 条。服务端会拒绝超过 300 MB 的后台案例上传、超过 2 GB 的 H5 相册上传，超 40 分钟或无法压入交付边界时提示分段。
-- 先发布并核验带新版本号的 H5 `app.js`/`admin.js`，再在隔离/受控环境开启开关；否则旧浏览器脚本会把后台返回的 `processing` 当作上传完成。各验一条案例 MOV、一条大相册 MOV：原片分片上传 → `processing` → MP4 入库 → CDN 可访问 → 下载权限/匿名分享 → iPhone、安卓、鸿蒙保存 → 检查本次新原片删除。任何一步失败都不要开启全量；转码失败的相册原片会保留并可通过同一会话重试。
-- 发现业务异常时将开关恢复为 `0` 并重载服务；待处理会话标为可重试，不回滚 MySQL/TOS，也不删除已生成的交付版。定位完成后恢复开关并由用户重新选择同一文件续办。历史素材另行排队迁移。
+标准与验收操作见 [VIDEO_UPLOAD_STANDARD.md](VIDEO_UPLOAD_STANDARD.md)。默认开启后台处理；`H5_AUTO_VIDEO_DELIVERY=0` 表示暂停新视频上传/处理，返回明确错误，不会恢复任何原片直发。H5 相册、原生小程序相册、后台案例和视频号自动导入都进入同一串行队列。图片与外部 SOP 参考链接保持各自流程。
+
+- 成片实际字节数严格 `<199229440`（190MiB，低于200MB），目标175MiB；MP4/H264/yuv420p、AAC（原片有声音时）、faststart、保留完整音画时长并生成真实首帧 JPEG。格式/大小/时长/头中尾解码、本地文件稳定性及 TOS 对象/封面检查都通过后才允许入库或返回 ready。
+- 相册和自动导入原片最多2GiB，后台案例最多300MiB，原生小程序接收最多190MiB。自动处理最长120分钟；超时长、异常文件或无法安全压入边界时失败并提示分段，不裁掉尾部或退回原片。
+- PM2必须为silver单fork实例。全平台接收/待处理最多6个任务、后台案例待处理最多3个；FFmpeg逐条执行。临时盘按“原片+190MiB成片+512MiB余量”检查，空间不足拒绝处理。
+- 自动导入 complete/retry 返回202 processing；采集器必须轮询 status，只有 completed（带实际成片media）才算成功。失败原片保留供同会话重试；旧completed若未通过现标准不可冒充新上传。
+- 新案例视频引用须匹配服务端通过现标准的ready资产；请求的size、poster、fingerprint不能作为证明。历史已发布素材原样编辑仍可保留；草稿发布、移动及相册沉淀须符合现标准，未达标需重新上传处理。
+- 先发布带版本参数的app.js/admin.js再验收：上传→processing（不可公开/保存）→completed/ready→成片和封面可读→登录下载/匿名相册分享。实际手机保存需继续用iPhone/安卓验收，后端通过不能替代设备验收。
+
+## 仓库受控发布工具
+
+本地检查和GitHub Check通过、main指向精确目标SHA且工作区干净后执行：
+
+```sh
+node deploy/release-from-github.cjs --base=<现网GitHub40位SHA> --sha=<目标main40位SHA>
+node deploy/release-from-github.cjs --base=<现网GitHub40位SHA> --sha=<目标main40位SHA> --apply
+```
+
+第一条仅预检。工具从GitHub同SHA取代码和远端执行器，核验CI、现网代码基线、依赖不变、空间/队列/PM2；私有备份后短暂停服务，仅替换白名单代码文件，再启动并核对健康JSON、代码哈希和五张业务表哈希。失败只回滚代码，从不回滚业务数据。密钥留在本机和服务器，不提交仓库。

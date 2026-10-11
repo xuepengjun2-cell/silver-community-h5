@@ -50,7 +50,7 @@ async function api(url, opts = {}) {
     body: opts.body && typeof opts.body !== "string" ? JSON.stringify(opts.body) : opts.body
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "请求失败");
+  if (!res.ok) { const error = new Error(data.error || "请求失败"); error.status = res.status; throw error; }
   return normalizeUrls(data);
 }
 
@@ -1709,6 +1709,40 @@ function renderCaseAdminDetail() {
   }));
 }
 
+const CASE_VIDEO_DELIVERY_MAX_BYTES = 190 * 1024 * 1024;
+
+function caseVideoDeliveryMedia(delivered) {
+  if (delivered?.status !== "ready") throw new Error("视频尚未通过后台校验，不能加入案例");
+  const size = Number(delivered.size);
+  if (!Number.isSafeInteger(size) || size <= 0 || size >= CASE_VIDEO_DELIVERY_MAX_BYTES) {
+    throw new Error("视频成片大小未通过校验，不能加入案例，请联系管理员");
+  }
+  if (!delivered.url || !delivered.poster) throw new Error("视频缺少成片地址或首帧封面，不能加入案例");
+  return { type: "video", url: toRelativeUpload(delivered.url), poster: delivered.poster, fingerprint: delivered.fingerprint || delivered.hash, size };
+}
+
+function caseUploadBlocksSave(c) {
+  return Boolean(c.uploadBusy || Object.values(c.videoUploadTasks || {}).some(task => !["ready", "failed"].includes(task.status)));
+}
+
+function caseVideoUploadTasksHtml(c) {
+  const labels = { pending: "等待核对处理结果", receiving: "原片上传中", queued: "等待后台处理", processing: "后台压缩及校验中", failed: "处理失败，未加入案例" };
+  return Object.entries(c.videoUploadTasks || {}).filter(([, task]) => task.status !== "ready").map(([key, task]) => `<div role="status"><strong>${esc(task.title)}</strong>：${esc(labels[task.status] || "等待核对处理结果")}${task.error ? `<p>${esc(task.error)}</p>` : ""}${task.jobId ? `<button class="btn secondary small" type="button" data-case-video-task="${esc(key)}">查询处理结果</button>` : ""}${task.status === "failed" ? `<p>重新选择同一原文件可重试；该视频尚未进入可发布素材。</p>` : ""}</div>`).join("");
+}
+
+function syncCaseUploadControls(c) {
+  const panel = document.querySelector("#cVideoUploadTasks");
+  if (panel) panel.innerHTML = caseVideoUploadTasksHtml(c);
+  const save = document.querySelector("#caseSaveBtn");
+  if (save) {
+    save.disabled = caseUploadBlocksSave(c);
+    save.textContent = save.disabled ? "等待上传和视频校验完成" : "💾 保存案例";
+  }
+  const back = document.querySelector("#caseBackBtn");
+  if (back) back.disabled = Boolean(c.uploadBusy);
+  document.querySelectorAll("#cMediaUpload, #cDocumentUpload, #cCoverUpload, #cLinkAdd, [data-case-video-task]").forEach(input => { input.disabled = Boolean(c.uploadBusy); });
+}
+
 	function renderCaseEditor() {
   const content = document.querySelector("#content");
   const c = state.caseEdit;
@@ -1778,7 +1812,9 @@ function renderCaseAdminDetail() {
 	              <label class="btn secondary small" style="cursor:pointer">+ 上传文档<input type="file" id="cDocumentUpload" accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain" multiple style="display:none"></label>
 	              <button class="btn secondary small" id="cLinkAdd">+ 视频号/抖音链接</button>
 	            </div>
-	            <p id="cUploadTip">可一次勾选多张图片、多个视频或文档,选完自动逐个上传。图片单张≤8MB;视频单个≤300MB;文档单个≤80MB(pdf/word/ppt/excel/csv/txt);视频号/抖音贴链接,前台点击跳转。</p>
+	            <p>视频标准：原片单个 ≤300MiB（约315MB）、时长 ≤120分钟，超出请先分段。后台逐个处理为 MP4（H.264/AAC），保留完整时长并生成视频画面封面；成片小于200MB，后台预留余量。全部校验通过才可加入案例，上传或处理中不能保存发布。</p>
+	            <p id="cUploadTip" aria-live="polite">可多选后逐个上传。图片单张≤8MB；文档单个≤80MB（pdf/word/ppt/excel/csv/txt）；视频号/抖音可添加链接。</p>
+	            <div id="cVideoUploadTasks" aria-live="polite">${caseVideoUploadTasksHtml(c)}</div>
 	          </div>
 	          ${mediaRows ? `<div class="case-edit-media-sort-list">${mediaRows}</div>` : `<p class="case-edit-media-empty">还没有素材,用上方按钮添加</p>`}
 	        </div></div>
@@ -1786,6 +1822,7 @@ function renderCaseAdminDetail() {
 	    </div>`;
 
   hydrateCaseAdminVideoThumbs();
+  syncCaseUploadControls(c);
 
   const saveDraftFromForm = () => {
     c.title = document.querySelector("#cTitle").value.trim();
@@ -1804,9 +1841,10 @@ function renderCaseAdminDetail() {
 	    });
 	  };
 
-  document.querySelector("#caseBackBtn").addEventListener("click", () => { state.caseEdit = null; renderCasesAdmin(); });
+  document.querySelector("#caseBackBtn").addEventListener("click", () => { if (c.uploadBusy) return; state.caseEdit = null; renderCasesAdmin(); });
 
   document.querySelector("#caseSaveBtn").addEventListener("click", async () => {
+    if (caseUploadBlocksSave(c)) { syncCaseUploadControls(c); return; }
     saveDraftFromForm();
     if (!c.title) { flash("请填写案例标题", "error"); renderCaseEditor(); return; }
     const payload = {
@@ -1830,24 +1868,27 @@ function renderCaseAdminDetail() {
   const readAsDataUrl = f => new Promise((ok, no) => { const r = new FileReader(); r.onload = e => ok(e.target.result); r.onerror = no; r.readAsDataURL(f); });
 
   document.querySelector("#cCoverUpload").addEventListener("change", async e => {
+    if (c.uploadBusy) return;
     const f = e.target.files[0]; if (!f) return;
     saveDraftFromForm();
+    c.uploadBusy = true;
+    syncCaseUploadControls(c);
     try {
       const data = await uploadImageFile(f);
-      c.cover = toRelativeUpload(data.url); renderCaseEditor();
-    } catch(err) { flash(err.message, "error"); renderCaseEditor(); }
+      c.cover = toRelativeUpload(data.url);
+    } catch(err) { flash(err.message, "error"); }
+    finally { c.uploadBusy = false; saveDraftFromForm(); renderCaseEditor(); }
   });
   const coverClear = document.querySelector("#cCoverClear");
-  if (coverClear) coverClear.addEventListener("click", () => { saveDraftFromForm(); c.cover = ""; renderCaseEditor(); });
+  if (coverClear) coverClear.addEventListener("click", () => { if (c.uploadBusy) return; saveDraftFromForm(); c.cover = ""; renderCaseEditor(); });
 
 	  const uploadOneImage = async f => {
 	    const data = await uploadImageFile(f);
 	    c.media.push({ type:"image", url: toRelativeUpload(data.url) });
 	  };
 		  const uploadOneVideo = async f => {
-		    if (f.size > 300 * 1024 * 1024) throw new Error("案例视频单个不能超过300MB，请先分段");
+		    if (f.size > 300 * 1024 * 1024) throw new Error("案例原片单个不能超过300MiB（约315MB），请先分段");
 		    const ext = (f.name.split(".").pop() || "mp4").toLowerCase();
-		    const toVideoMedia = ({ url, poster, fingerprint, size }) => ({ type: "video", url, poster, fingerprint, size });
 		    const hasVideo = candidate => {
 		      if (!candidate || candidate.type !== "video") return false;
 		      return (c.media || []).some(item =>
@@ -1856,37 +1897,49 @@ function renderCaseAdminDetail() {
 		      );
 		    };
 		    const storageKey = `silver_case_video_job:${state.user?.id || ""}:${c.id || "draft"}:${f.name}:${f.size}:${f.lastModified || 0}`;
+		    c.videoUploadTasks ||= {};
+		    const task = c.videoUploadTasks[storageKey] = { title: f.name, status: "pending" };
 		    let savedJobId = "";
 		    try { savedJobId = localStorage.getItem(storageKey) || ""; } catch {}
 		    let delivered = null;
 		    if (savedJobId) {
-		      try { delivered = await api(`/api/admin/video-jobs/${encodeURIComponent(savedJobId)}`); }
-		      catch { try { localStorage.removeItem(storageKey); } catch {} }
+		      try { task.jobId = savedJobId; delivered = await api(`/api/admin/video-jobs/${encodeURIComponent(savedJobId)}`); }
+		      catch (error) {
+          if (error.status !== 404) throw new Error(`原视频任务暂时无法查询，请稍后查询处理结果：${error.message}`);
+          task.jobId = "";
+          try { localStorage.removeItem(storageKey); } catch {}
+        }
 		    }
 		    if (!delivered || delivered.status === "failed") {
+		      task.status = "receiving";
 		      const res = await fetch(apiUrl(`/api/admin/upload-video?ext=${encodeURIComponent(ext)}&delivery=1`), {
 	        method: "POST",
 	        credentials: SILVER_PUBLIC_MODE ? "include" : "same-origin",
 	        body: f
 	      });
 	      delivered = await res.json().catch(() => ({}));
-		      if (!res.ok) throw new Error(delivered.error || `视频上传失败 HTTP ${res.status}`);
+		      if (!res.ok) { task.status = "failed"; throw new Error(delivered.error || `视频上传失败 HTTP ${res.status}`); }
 		      if (delivered.jobId) try { localStorage.setItem(storageKey, delivered.jobId); } catch {}
 		    }
+		    task.jobId = delivered.jobId || task.jobId;
+		    task.status = delivered.status || "pending";
 		    if (delivered.jobId && delivered.status !== "ready") {
 		      const deadline = Date.now() + 40 * 60 * 1000;
 		      while (Date.now() < deadline) {
 		        await new Promise(resolve => setTimeout(resolve, 5000));
 		        delivered = await api(`/api/admin/video-jobs/${encodeURIComponent(delivered.jobId)}`);
+		        task.status = delivered.status || "pending";
 		        const tip = document.querySelector("#cUploadTip");
-		        if (tip) tip.textContent = `后台正在生成 MP4 交付版：${f.name}（请保持页面打开）`;
+		        if (tip) tip.textContent = `后台正在压缩并校验成片大小、完整时长和封面：${f.name}。未通过前不可保存发布，请保持页面打开。`;
 		        if (delivered.status === "ready") break;
 		        if (delivered.status === "failed") throw new Error(delivered.error || "视频转码失败，请重新上传");
 		      }
 		      if (delivered.status !== "ready") throw new Error("视频仍在后台处理，请稍后查询任务状态，不要重复上传");
 		    }
-		    if (!delivered.url) throw new Error("视频处理成功但缺少交付地址，请联系管理员核查");
-		    const mediaItem = toVideoMedia({ url: toRelativeUpload(delivered.url), poster: delivered.poster, fingerprint: delivered.fingerprint || delivered.hash, size: delivered.size });
+		    let mediaItem;
+		    try { mediaItem = caseVideoDeliveryMedia(delivered); }
+		    catch (error) { task.status = "failed"; task.error = error.message; throw error; }
+		    task.status = "ready";
 		    if (hasVideo(mediaItem)) throw new Error("该视频素材已存在，已跳过重复上传");
 		    c.media.push(mediaItem);
 		  };
@@ -1903,9 +1956,12 @@ function renderCaseAdminDetail() {
 	  };
 
 	  document.querySelector("#cMediaUpload").addEventListener("change", async e => {
+    if (c.uploadBusy) return;
     const files = [...e.target.files]; if (!files.length) return;
     e.target.value = "";
     saveDraftFromForm();
+    c.uploadBusy = true;
+    syncCaseUploadControls(c);
     const tip = document.querySelector("#cUploadTip");
     let done = 0;
     for (const f of files) {
@@ -1915,16 +1971,45 @@ function renderCaseAdminDetail() {
         if (isVideo) await uploadOneVideo(f);
         else await uploadOneImage(f);
         done++;
-      } catch(err) { flash(`${f.name}: ${err.message}`, "error"); }
+      } catch(err) {
+        const task = c.videoUploadTasks?.[`silver_case_video_job:${state.user?.id || ""}:${c.id || "draft"}:${f.name}:${f.size}:${f.lastModified || 0}`];
+        if (task) { task.error = err.message; if (!task.jobId) task.status = "failed"; }
+        flash(`${f.name}: ${err.message}`, "error");
+      }
     }
-	    flash(`✅ 已上传 ${done}/${files.length} 个素材`);
+	    c.uploadBusy = false;
+    saveDraftFromForm();
+	    flash(`本批 ${done}/${files.length} 个素材已通过上传及校验；其余未加入案例，请查看任务提示。`, done === files.length ? "success" : "error");
 	    renderCaseEditor();
 	  });
 
+  document.querySelectorAll("[data-case-video-task]").forEach(button => button.addEventListener("click", async () => {
+    if (c.uploadBusy) return;
+    saveDraftFromForm();
+    const task = c.videoUploadTasks?.[button.dataset.caseVideoTask];
+    if (!task?.jobId) return;
+    c.uploadBusy = true;
+    syncCaseUploadControls(c);
+    try {
+      const delivered = await api(`/api/admin/video-jobs/${encodeURIComponent(task.jobId)}`);
+      task.status = delivered.status || "pending";
+      task.error = delivered.error || "";
+      if (delivered.status === "ready") {
+        const media = caseVideoDeliveryMedia(delivered);
+        if (!(c.media || []).some(item => item.type === "video" && (item.url === media.url || (media.fingerprint && item.fingerprint === media.fingerprint)))) c.media.push(media);
+        flash("视频校验完成，已加入案例素材");
+      }
+    } catch (error) { task.error = error.message; if (task.status === "ready") task.status = "failed"; }
+    finally { c.uploadBusy = false; renderCaseEditor(); }
+  }));
+
 	  document.querySelector("#cDocumentUpload").addEventListener("change", async e => {
+	    if (c.uploadBusy) return;
 	    const files = [...e.target.files]; if (!files.length) return;
 	    e.target.value = "";
 	    saveDraftFromForm();
+	    c.uploadBusy = true;
+    syncCaseUploadControls(c);
 	    const tip = document.querySelector("#cUploadTip");
 	    let done = 0;
 	    for (const f of files) {
@@ -1932,11 +2017,14 @@ function renderCaseAdminDetail() {
 	      try { await uploadOneDocument(f); done++; }
 	      catch(err) { flash(`${f.name}: ${err.message}`, "error"); }
 	    }
-	    flash(`✅ 已上传 ${done}/${files.length} 个文档`);
+	    c.uploadBusy = false;
+    saveDraftFromForm();
+	    flash(`已上传 ${done}/${files.length} 个文档`, done === files.length ? "success" : "error");
 	    renderCaseEditor();
 	  });
 
 	  document.querySelector("#cLinkAdd").addEventListener("click", () => {
+    if (c.uploadBusy) return;
     saveDraftFromForm();
     const url = prompt("粘贴视频号/抖音/其他视频链接(https:// 开头):");
     if (!url) return;
@@ -1946,13 +2034,16 @@ function renderCaseAdminDetail() {
   });
 
   document.querySelectorAll("[data-m-del]").forEach(b => b.addEventListener("click", () => {
+    if (c.uploadBusy) return;
     saveDraftFromForm(); c.media.splice(Number(b.dataset.mDel), 1); renderCaseEditor();
   }));
   document.querySelectorAll("[data-m-up]").forEach(b => b.addEventListener("click", () => {
+    if (c.uploadBusy) return;
     saveDraftFromForm(); const i = Number(b.dataset.mUp);
     [c.media[i-1], c.media[i]] = [c.media[i], c.media[i-1]]; renderCaseEditor();
   }));
   document.querySelectorAll("[data-m-down]").forEach(b => b.addEventListener("click", () => {
+    if (c.uploadBusy) return;
     saveDraftFromForm(); const i = Number(b.dataset.mDown);
     [c.media[i+1], c.media[i]] = [c.media[i], c.media[i+1]]; renderCaseEditor();
   }));
