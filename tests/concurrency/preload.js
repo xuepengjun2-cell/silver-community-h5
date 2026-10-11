@@ -34,7 +34,7 @@ const originalLoad = Module._load;
 Module._load = function load(request, parent, isMain) {
   if (request === "mysql2/promise") return fakeMysql;
   const loaded = originalLoad.apply(this, arguments);
-  if (/server[\\/]miniapp-media$/.test(request) && !loaded.__harness) {
+  if (/server[\\/]miniapp-media$/.test(request) && process.env.REAL_MEDIA_PROCESSING !== "1" && !loaded.__harness) {
     const copy = async (source, target) => { if (process.env.FAKE_MEDIA_FAIL === "1") throw new Error("test: transcoding rejected source"); fs.copyFileSync(source, target); return fs.statSync(target).size; };
     loaded.processImage = copy;
     loaded.processVideo = copy;

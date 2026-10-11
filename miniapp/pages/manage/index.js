@@ -1,30 +1,89 @@
-const { api, getSession, clearSession } = require("../../utils/auth");
+const { api, getSession, isSessionCurrent, clearSession } = require("../../utils/auth");
 const { parseAlbumOptions, albumPath, displayName, saveEligibility, videoPosterSources } = require("../../utils/album");
-const { uploadMedia, getVideoJob } = require("../../utils/upload");
+const { uploadMedia, getVideoJob, retryVideoJob } = require("../../utils/upload");
 const { privacyErrorMessage } = require("../../utils/errors");
+const JOB_ID = /^miniapp_[a-f0-9]{24}$/;
 
 Page({
   data: {
     loading: true, error: "", project: null, photos: 0, videos: 0, tiles: [],
     editing: false, title: "", dateLabel: "", city: "", description: "",
-    busy: false, progress: "", jobId: "", playingIndex: -1
+    busy: false, progress: "", jobId: "", jobStatus: "", retrying: false, playingIndex: -1
   },
   onLoad(options) {
     const parsed = parseAlbumOptions(options);
     if (!parsed) return this.setData({ loading: false, error: "活动编号无效。" });
+    this.destroyed = false;
+    this.pageActive = true;
     this.projectId = parsed.id;
     this.load();
   },
-  onShow() { if (this.projectId && !this.data.loading) this.load(); },
-  onUnload() { if (this.pollTimer) clearTimeout(this.pollTimer); },
+  onShow() {
+    if (this.destroyed) return;
+    this.pageActive = true;
+    if (this.projectId && (!this.data.loading || !isSessionCurrent(wx, this.loadingSession))) this.load();
+    this.resumeVideoJob(true);
+  },
+  onHide() { this.pageActive = false; this.stopVideoPolling(); },
+  onUnload() { this.destroyed = true; this.pageActive = false; this.stopVideoPolling(); },
+  videoJobKey(session) {
+    return session && session.user.id && this.projectId
+      ? `silver.video-job.v1.${encodeURIComponent(session.user.id)}.${this.projectId}` : "";
+  },
+  sessionCurrent(session) { return !this.destroyed && isSessionCurrent(wx, session); },
+  stopVideoPolling() {
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    this.pollTimer = null;
+    this.pollInFlight = null;
+    this.pollEpoch = (this.pollEpoch || 0) + 1;
+  },
+  syncShareMenu() {
+    if (this.destroyed) return;
+    const method = this.data.busy || this.data.jobId ? "hideShareMenu" : "showShareMenu";
+    if (typeof wx[method] === "function") wx[method]({ menus: ["shareAppMessage"] });
+  },
+  restoreVideoJob(session) {
+    const key = this.videoJobKey(session);
+    if (this.videoScope !== key || this.videoSessionToken !== (session && session.token)) {
+      this.stopVideoPolling();
+      this.videoScope = key;
+      this.videoSessionToken = session && session.token;
+      this.uploadEpoch = (this.uploadEpoch || 0) + 1;
+      this.retryEpoch = (this.retryEpoch || 0) + 1;
+      this.selecting = false;
+      this.setData({ busy: false, jobId: "", jobStatus: "", retrying: false, progress: "" });
+    }
+    const saved = key && wx.getStorageSync(key);
+    if (!saved || !JOB_ID.test(saved.jobId || "")) { this.syncShareMenu(); return; }
+    const status = saved.status === "failed" ? "failed" : "processing";
+    this.setData({ jobId: saved.jobId, jobStatus: status,
+      progress: status === "failed" ? `视频未发布：${saved.error || "处理失败，请重试"}` : "视频已上传，后台正在校验并生成小于 200 MB 的 MP4，请等待完成。" });
+    this.syncShareMenu();
+  },
+  rememberVideoJob(session, jobId, status, error = "") {
+    const key = this.videoJobKey(session);
+    if (key) wx.setStorageSync(key, { jobId, status, error });
+  },
+  resumeVideoJob(checkFailed = false) {
+    if (!this.projectId || this.destroyed || this.pageActive === false) return;
+    const session = getSession(wx);
+    if (!session) return;
+    this.restoreVideoJob(session);
+    if (this.data.retrying) return;
+    if (this.data.jobId && (checkFailed || this.data.jobStatus !== "failed") && !this.pollTimer && !this.pollInFlight) this.pollJob(this.data.jobId);
+  },
   async load() {
     const session = getSession(wx);
     if (!session) return wx.redirectTo({ url: "/pages/login/index" });
+    this.loadingSession = session;
+    this.resumeVideoJob();
     this.setData({ loading: true, error: "" });
     try {
       const { project } = await api(wx, `/my/activity-projects/${this.projectId}`, { token: session.token });
+      if (!this.sessionCurrent(session)) return;
       this.showProject(project);
     } catch (error) {
+      if (!this.sessionCurrent(session)) return;
       if (error.statusCode === 401) { clearSession(wx); return wx.redirectTo({ url: "/pages/login/index" }); }
       this.setData({ loading: false, error: error.message });
     }
@@ -55,7 +114,7 @@ Page({
   onField(event) { this.setData({ [event.currentTarget.dataset.field]: event.detail.value }); },
   onDate(event) { this.setData({ dateLabel: event.detail.value }); },
   async onSave() {
-    if (!this.data.project || !this.data.project.canManage) return;
+    if (this.data.busy || !this.data.project || !this.data.project.canManage) return;
     const session = getSession(wx);
     if (!session) return wx.redirectTo({ url: "/pages/login/index" });
     this.setData({ busy: true });
@@ -70,7 +129,16 @@ Page({
     finally { this.setData({ busy: false }); }
   },
   async choose(type) {
-    if (this.data.busy || !this.data.project || !this.data.project.canManage) return;
+    if (this.destroyed || this.selecting || this.data.busy || this.data.retrying || !this.data.project || !this.data.project.canManage) return;
+    const session = getSession(wx);
+    if (!session) return wx.redirectTo({ url: "/pages/login/index" });
+    this.restoreVideoJob(session);
+    if (type === "video" && this.data.jobId && this.data.jobStatus !== "failed") return wx.showToast({ title: "上一段视频仍在后台处理，请等待完成。", icon: "none" });
+    this.selecting = true;
+    const epoch = this.uploadEpoch = (this.uploadEpoch || 0) + 1;
+    const current = () => this.sessionCurrent(session) && this.uploadEpoch === epoch;
+    this.setData({ busy: true });
+    this.syncShareMenu();
     try {
       const result = await new Promise((resolve, reject) => wx.chooseMedia({
         count: type === "image" ? 9 : 1,
@@ -79,48 +147,137 @@ Page({
         maxDuration: 60,
         success: resolve, fail: reject
       }));
-      const session = getSession(wx);
-      if (!session) return wx.redirectTo({ url: "/pages/login/index" });
-      this.setData({ busy: true });
+      if (!current()) return;
+      const scope = this.videoJobKey(session);
       for (let i = 0; i < result.tempFiles.length; i++) {
+        if (!current()) return;
         this.setData({ progress: `处理第 ${i + 1}/${result.tempFiles.length} 个${type === "image" ? "照片" : "视频"}…` });
         const uploaded = await uploadMedia(wx, {
           projectId: this.projectId, source: result.tempFiles[i].tempFilePath,
           type, token: session.token,
-          onProgress: percent => this.setData({ progress: `上传中 ${percent}%` })
+          isCancelled: () => !current(),
+          onStage: stage => { if (current()) this.setData({ progress: stage === "preparing" ? `${type === "video" ? "正在手机上压缩视频" : "正在压缩照片"}，请保持页面打开…` : "正在上传压缩后的素材，请保持页面打开…" }); },
+          onProgress: percent => { if (current()) this.setData({ progress: `上传中 ${percent}%` }); }
         });
         if (type === "video") {
-          this.setData({ jobId: uploaded.jobId, progress: "已上传，后台正在调整格式并压缩 MP4…" });
-          this.pollJob(uploaded.jobId);
-        } else if (uploaded.project) this.showProject(uploaded.project);
+          // 即使上传响应在页面离开后到达，也保存任务，返回时继续查询，避免重复传原片。
+          this.rememberVideoJob(session, uploaded.jobId, "processing");
+          if (current()) {
+            this.stopVideoPolling();
+            this.videoScope = scope;
+            this.setData({ jobId: uploaded.jobId, jobStatus: "processing", progress: "已上传，后台正在生成并校验 MP4；处理完成前请勿分享。" });
+            this.resumeVideoJob();
+          }
+        } else if (current() && uploaded.project) this.showProject(uploaded.project);
       }
-      if (type === "image") wx.showToast({ title: "照片已上传", icon: "success" });
+      if (current() && type === "image") wx.showToast({ title: "照片已上传", icon: "success" });
     } catch (error) {
+      if (!current()) return;
       if (!/cancel/i.test(error.errMsg || "")) wx.showModal({ title: "上传未完成", content: privacyErrorMessage(error) || error.message || "请稍后重试。", showCancel: false });
-      this.setData({ progress: "" });
-    } finally { this.setData({ busy: false }); }
+      if (this.data.jobId) this.restoreVideoJob(getSession(wx));
+      else this.setData({ progress: "" });
+    } finally {
+      if (this.uploadEpoch === epoch) this.selecting = false;
+      if (current()) {
+        this.setData({ busy: false });
+        if (type === "image" && this.data.jobId) this.restoreVideoJob(getSession(wx));
+        this.syncShareMenu();
+      }
+    }
   },
   onPhoto() { this.choose("image"); },
   onVideo() { this.choose("video"); },
-  async pollJob(jobId) {
-    if (!this.projectId) return;
+  async pollJob(jobId, epoch = this.pollEpoch || 0) {
+    if (!this.projectId || this.destroyed || this.pageActive === false || this.data.jobId !== jobId || this.pollInFlight) return;
+    const session = getSession(wx), scope = this.videoJobKey(session);
+    if (!session || scope !== this.videoScope) return;
+    const current = () => this.sessionCurrent(session) && this.pageActive !== false && epoch === (this.pollEpoch || 0) && this.data.jobId === jobId && this.videoScope === scope;
+    const schedule = delay => { this.pollTimer = setTimeout(() => { this.pollTimer = null; this.pollJob(jobId, epoch); }, delay); };
+    this.pollInFlight = { epoch, jobId };
     try {
-      const session = getSession(wx);
-      if (!session) return;
       const result = await getVideoJob(wx, { projectId: this.projectId, jobId, token: session.token });
+      if (!current()) return;
+      this.pollFailures = 0;
       if (result.status === "ready") {
-        this.setData({ progress: "视频交付版已生成，可以分享给客户。", jobId: "" });
+        const saved = scope && wx.getStorageSync(scope);
+        if (saved && saved.jobId === jobId) wx.removeStorageSync(scope);
+        this.setData({ progress: "视频交付版已生成，可以分享给客户。", jobId: "", jobStatus: "" });
+        this.syncShareMenu();
         this.load();
         return;
       }
       if (result.status === "failed") {
-        this.setData({ progress: `视频未发布：${result.error || "处理失败"}`, jobId: "" });
+        this.rememberVideoJob(session, jobId, "failed", result.error);
+        this.setData({ progress: `视频未发布：${result.error || "处理失败"}`, jobStatus: "failed" });
         return;
       }
-      this.pollTimer = setTimeout(() => this.pollJob(jobId), 3000);
-    } catch (error) { this.setData({ progress: `检查处理状态失败：${error.message}` }); }
+      this.rememberVideoJob(session, jobId, "processing");
+      this.setData({ jobStatus: "processing", progress: result.status === "queued" ? "视频正在后台排队，完成校验后才能分享。" : "后台正在生成并校验小于 200 MB 的 MP4，请等待完成。" });
+      schedule(3000);
+    } catch (error) {
+      if (!current()) return;
+      if (error.statusCode === 401) {
+        clearSession(wx);
+        wx.redirectTo({ url: "/pages/login/index" });
+        return;
+      }
+      if ([403, 404].includes(error.statusCode)) {
+        this.rememberVideoJob(session, jobId, "failed", error.message);
+        this.setData({ progress: `无法访问视频任务：${error.message}，请重新登录或联系管理员。`, jobStatus: "failed" });
+        return;
+      }
+      this.pollFailures = (this.pollFailures || 0) + 1;
+      const delay = Math.min(30000, 3000 * 2 ** Math.min(this.pollFailures - 1, 4));
+      this.setData({ progress: `暂时无法查询处理状态，将自动重试：${error.message}` });
+      schedule(delay);
+    } finally {
+      if (this.pollInFlight && this.pollInFlight.epoch === epoch && this.pollInFlight.jobId === jobId) this.pollInFlight = null;
+    }
   },
-  onView() { wx.navigateTo({ url: albumPath(this.projectId) }); },
+  async onRetryVideo() {
+    if (this.destroyed || this.data.busy || this.data.retrying || !this.data.jobId || this.data.jobStatus !== "failed") return;
+    const session = getSession(wx), jobId = this.data.jobId, scope = this.videoJobKey(session);
+    if (!session || scope !== this.videoScope) return;
+    const epoch = this.retryEpoch = (this.retryEpoch || 0) + 1;
+    const current = () => this.sessionCurrent(session) && this.retryEpoch === epoch && this.data.jobId === jobId;
+    this.setData({ retrying: true });
+    this.stopVideoPolling();
+    try {
+      await retryVideoJob(wx, { projectId: this.projectId, jobId, token: session.token });
+      const saved = scope && wx.getStorageSync(scope);
+      if (saved && saved.jobId === jobId) this.rememberVideoJob(session, jobId, "processing");
+      if (!current()) return;
+      this.setData({ jobStatus: "processing", progress: "已重新排队，复用已上传的视频，无需再次上传。" });
+    } catch (error) {
+      if (current()) {
+        this.rememberVideoJob(session, jobId, "failed", error.message);
+        this.setData({ progress: `视频未发布：${error.message}` });
+      }
+    } finally {
+      if (current()) {
+        this.setData({ retrying: false });
+        if (this.data.jobStatus !== "failed") this.resumeVideoJob();
+      }
+    }
+  },
+  onDiscardVideo() {
+    if (this.destroyed || this.data.busy || this.data.retrying || !this.data.jobId || this.data.jobStatus !== "failed") return;
+    const session = getSession(wx), jobId = this.data.jobId, scope = this.videoJobKey(session);
+    if (!this.sessionCurrent(session) || scope !== this.videoScope) return;
+    wx.showModal({ title: "放弃本次失败视频？", content: "仅清除此设备的失败任务记录，不删除已发布的照片和视频。放弃后可以分享相册中已有的内容。", confirmText: "放弃本次", success: result => {
+      if (!result.confirm || !this.sessionCurrent(session) || this.data.jobId !== jobId || this.data.jobStatus !== "failed" || this.data.busy || this.data.retrying) return;
+      const saved = scope && wx.getStorageSync(scope);
+      if (saved && saved.jobId === jobId) wx.removeStorageSync(scope);
+      this.stopVideoPolling();
+      this.retryEpoch = (this.retryEpoch || 0) + 1;
+      this.setData({ jobId: "", jobStatus: "", progress: "已放弃本次失败视频，可以分享相册中已发布的内容。" });
+      this.syncShareMenu();
+    } });
+  },
+  onView() {
+    if (this.data.busy || this.data.jobId) return wx.showToast({ title: "素材处理完成后再预览分享。", icon: "none" });
+    wx.navigateTo({ url: albumPath(this.projectId) });
+  },
   onPreview(event) {
     const index = Number(event.currentTarget.dataset.index);
     const media = (this.data.project.media || [])[index];

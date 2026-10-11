@@ -1,4 +1,4 @@
-const http = require("http");
+const { createUploadServer } = require("./server/upload-transport");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -1304,12 +1304,16 @@ function getAuthedUser(req) {
   return user || null;
 }
 
-function saveMiniappJobs() {
-  const snapshot = JSON.stringify([..._miniappJobs.values()]);
+function saveMiniappJobs(readyJob) {
   const write = _miniappJobWrites.then(async () => {
+    // Snapshot when this serialized write starts, never enqueue stale state.
+    const snapshot = JSON.stringify([..._miniappJobs.values()].map(job => job.id === readyJob?.id ? readyJob : job));
     const temp = `${MINIAPP_JOBS_FILE}.tmp`;
     await fs.promises.writeFile(temp, snapshot, { mode: 0o600 });
     await fs.promises.rename(temp, MINIAPP_JOBS_FILE);
+    // Only expose ready after its durable job record exists. A failed write
+    // leaves processing in memory so the worker catch retains the source.
+    if (readyJob) Object.assign(_miniappJobs.get(readyJob.id), readyJob);
   });
   _miniappJobWrites = write.catch(() => {});
   return write;
@@ -1350,8 +1354,7 @@ function enqueueMiniappVideo(job) {
         await verifyPublishedVideo({ type: "video", url: job.url, poster: job.poster, size, fingerprint });
         job.deliveryStandard = 1;
         committed = true;
-        job.status = "ready";
-        job.error = "";
+        await saveMiniappJobs({ ...job, status: "ready", error: "", updatedAt: now() });
         return;
       }
       const sameOwner = current => {
@@ -1371,18 +1374,13 @@ function enqueueMiniappVideo(job) {
       assertTosObjectSize(await client.headObject({ bucket, key: projectTosObjectKey(poster) }), posterSize);
       const media = { type: "video", url, poster, title: "活动视频", caption: "", size, fingerprint, createdAt: now() };
       await verifyPublishedVideo(media);
-      const result = commitActivityProject(job.projectId, current => {
-        const list = sameOwner(current).media || [];
-        const duplicate = list.find(item => item.type === "video" && (item.url === url || item.fingerprint === fingerprint));
-        return { ...current, media: duplicate ? list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item) : [...list, media], updatedAt: now() };
-      });
-      if (!result) throw new Error("活动相册已删除，视频不再发布。");
+      // A SQL failure must not leave an unpersisted video visible in cache.
+      // Keep uploaded objects conservatively if a DB commit was attempted.
       committed = true;
-      await writeDb(result.db);
+      await publishNativeProjectVideo(job.projectId, media, sameOwner);
       Object.assign(job, { url, poster, size, fingerprint, deliveryStandard: 1 });
       committed = true;
-      job.status = "ready";
-      job.error = "";
+      await saveMiniappJobs({ ...job, status: "ready", error: "", updatedAt: now() });
     } catch (error) {
       job.status = "failed";
       job.error = String(error.message || "视频处理失败").slice(0, 240);
@@ -1494,6 +1492,15 @@ async function resumeMiniappJobs() {
     }
   } catch (error) { if (error.code !== "ENOENT") throw error; }
   for (const job of _miniappJobs.values()) {
+    if (job.status === "receiving") {
+      // HTTP bodies cannot resume after a process restart. The partial source
+      // must not become retryable media or retain a global queue slot.
+      job.status = "failed";
+      job.error = "上传中断，请重新选择视频。 ";
+      job.updatedAt = now();
+      await fs.promises.rm(path.join(MINIAPP_STAGE_DIR, job.id), { recursive: true, force: true });
+      continue;
+    }
     if (!["queued", "processing"].includes(job.status)) continue;
     if (!H5_AUTO_VIDEO_DELIVERY) {
       job.status = "failed";
@@ -2074,6 +2081,63 @@ function commitActivityProject(projectId, update) {
   if (!next) return { db, project: list[idx], changed: false };
   list[idx] = normalizeActivityProject(next, list[idx]);
   return { db, project: list[idx], changed: true };
+}
+
+function publishNativeProjectVideo(projectId, media, assertOwner) {
+  const run = _writeQueue.then(async () => {
+    const merge = current => {
+      assertOwner(current);
+      const list = current.media || [];
+      const duplicate = list.find(item => item.type === "video" && (item.url === media.url || item.fingerprint === media.fingerprint));
+      return { ...current, media: duplicate ? list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item) : [...list, media], updatedAt: now() };
+    };
+    const current = (readDb().activityProjects || []).find(item => item.id === projectId);
+    const candidate = normalizeActivityProject(merge(current), current);
+    const conn = await pool.getConnection();
+    let inTransaction = false;
+    const upsert = project => conn.query(
+      `INSERT INTO activity_projects (id, owner_id, status, created_at, updated_at, doc) VALUES (?,?,?,?,?,?)
+       ON DUPLICATE KEY UPDATE owner_id=VALUES(owner_id), status=VALUES(status), created_at=VALUES(created_at), updated_at=VALUES(updated_at), doc=VALUES(doc)`,
+      [project.id, project.ownerId || "", project.status || "published", project.createdAt || "", project.updatedAt || "", JSON.stringify(project)]
+    );
+    const rememberCommitted = project => {
+      // The next ordinary persist must compare against what SQL actually
+      // contains, including a video removed again before that persist starts.
+      if (!_persistedSnapshot) return;
+      const rows = (_persistedSnapshot.activityProjects || []).filter(row => row.id !== projectId);
+      if (project) rows.push(JSON.parse(JSON.stringify(project)));
+      _persistedSnapshot.activityProjects = rows;
+    };
+    try {
+      await conn.beginTransaction(); inTransaction = true;
+      await upsert(candidate);
+      await conn.commit(); inTransaction = false;
+      rememberCommitted(candidate);
+      try {
+        // Requests may have edited title/photos or deleted/transferred this
+        // album during SQL I/O. Merge only this video into the latest row.
+        const latest = (readDb().activityProjects || []).find(item => item.id === projectId);
+        assertOwner(latest);
+        return commitActivityProject(projectId, merge);
+      } catch (error) {
+        // If ownership/deletion changed, undo just this SQL candidate before
+        // releasing the write queue. Never restore an old cache snapshot.
+        const latest = (readDb().activityProjects || []).find(item => item.id === projectId);
+        const restored = latest ? JSON.parse(JSON.stringify(latest)) : null;
+        await conn.beginTransaction(); inTransaction = true;
+        if (restored) await upsert(restored);
+        else await conn.query("DELETE FROM activity_projects WHERE id = ?", [projectId]);
+        await conn.commit(); inTransaction = false;
+        rememberCommitted(restored);
+        throw error;
+      }
+    } catch (error) {
+      if (inTransaction) await conn.rollback();
+      throw error;
+    } finally { conn.release(); }
+  });
+  _writeQueue = run.catch(() => {});
+  return run;
 }
 
 function publicProject(project, db, options = {}) {
@@ -4829,7 +4893,7 @@ function handleStatic(req, res, pathname) {
   serveFile(res, filePath);
 }
 
-const server = http.createServer(async (req, res) => {
+const server = createUploadServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
     if (url.pathname.startsWith("/api/")) {
