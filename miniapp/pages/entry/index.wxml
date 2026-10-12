@@ -53,5 +53,5 @@
       <button class="entry-secondary" disabled="{{busy}}" bindtap="onApplyClose">取消申请</button>
     </view>
   </view>
-  <view class="notice entry-notice">客户从分享卡片直接进入对应相册，不经过本登录页；符合交付格式的照片和视频可免登录保存。</view>
+  <view class="notice entry-notice">客户从分享卡片直接进入对应照片相册，不经过本登录页；JPG、PNG 照片可免登录保存。</view>
 </view>

@@ -1,9 +1,21 @@
 const config = require("../config");
-const { api } = require("./auth");
 const { isTimeout } = require("./errors");
 
 const MAX_IMAGE = 50 * 1024 * 1024;
-const MAX_VIDEO = 190 * 1024 * 1024;
+const IMAGE_EXTENSIONS = /\.(?:jpe?g|png|webp|gif|bmp|heic|heif)$/i;
+
+function requireImage(type) {
+  if (type !== "image") throw new Error("本小程序仅支持上传照片。");
+}
+
+function isImageSelection(file) {
+  if (!file || typeof file.tempFilePath !== "string" || !file.tempFilePath.trim()) return false;
+  if (file.fileType !== undefined && file.fileType !== "image") return false;
+  const source = file.tempFilePath.split(/[?#]/)[0];
+  if (/\.[a-z0-9]+$/i.test(source)) return IMAGE_EXTENSIONS.test(source);
+  // 微信临时文件可能不带扩展名，此时必须由选择器确认类型；实际格式再由图片压缩 API 验证。
+  return file.fileType === "image";
+}
 
 function callWx(wxApi, method, options) {
   return new Promise((resolve, reject) => wxApi[method]({
@@ -14,23 +26,19 @@ function callWx(wxApi, method, options) {
 }
 
 async function prepareMedia(wxApi, source, type) {
-  if (type === "image") {
-    const result = await callWx(wxApi, "compressImage", { src: source, quality: 75 });
-    const info = await callWx(wxApi, "getFileInfo", { filePath: result.tempFilePath });
-    if (!info.size || info.size > MAX_IMAGE) throw new Error("图片压缩后仍超过 50 MB，请选择更小的照片。");
-    return { path: result.tempFilePath, size: info.size };
-  }
-  // 客户端先压缩以降低流量；最终格式、编码和大小仍由服务端验证/转为 MP4。
-  const result = await callWx(wxApi, "compressVideo", { src: source, quality: "medium" });
+  requireImage(type);
+  if (typeof source !== "string" || !source.trim()) throw new Error("照片文件无效，请重新选择。");
+  const result = await callWx(wxApi, "compressImage", { src: source, quality: 75 });
+  if (typeof result.tempFilePath !== "string" || !result.tempFilePath) throw new Error("照片压缩失败，请重新选择。");
   const info = await callWx(wxApi, "getFileInfo", { filePath: result.tempFilePath });
-  if (!info.size || info.size >= MAX_VIDEO) throw new Error("压缩后仍达到上传限额，请分段上传这段视频。成片须小于 200 MB，后台预留处理余量，不会上传原片。");
+  if (!Number.isFinite(info.size) || info.size <= 0 || info.size > MAX_IMAGE) throw new Error("图片压缩后仍超过 50 MB 或文件无效，请选择更小的照片。");
   return { path: result.tempFilePath, size: info.size };
 }
 
-function uploadFile(wxApi, { projectId, type, path, token, onProgress }) {
+function uploadFile(wxApi, { projectId, path, token, onProgress }) {
   return new Promise((resolve, reject) => {
     const task = wxApi.uploadFile({
-      url: `${config.apiBase}/my/activity-projects/${projectId}/miniapp-media?type=${type}`,
+      url: `${config.apiBase}/my/activity-projects/${projectId}/miniapp-media?type=image`,
       filePath: path,
       name: "media",
       timeout: config.transferTimeoutMs,
@@ -44,7 +52,7 @@ function uploadFile(wxApi, { projectId, type, path, token, onProgress }) {
       },
       fail(error) {
         reject(new Error(isTimeout(error)
-          ? "网络较慢，上传超时。请连接 Wi-Fi 后重试，较长的视频请分段上传。"
+          ? "网络较慢，照片上传超时。请连接 Wi-Fi 后重试。"
           : error.errMsg || "上传中断，请检查网络。"));
       }
     });
@@ -53,22 +61,13 @@ function uploadFile(wxApi, { projectId, type, path, token, onProgress }) {
 }
 
 async function uploadMedia(wxApi, { projectId, source, type, token, onProgress = () => {}, onStage = () => {}, isCancelled = () => false }) {
+  requireImage(type);
+  if (isCancelled()) throw new Error("已离开上传页面，请重新选择照片。");
   onStage("preparing");
   const prepared = await prepareMedia(wxApi, source, type);
   if (isCancelled()) throw new Error("已离开上传页面，本次素材尚未上传，请重新选择。");
   onStage("uploading");
-  const result = await uploadFile(wxApi, { projectId, type, path: prepared.path, token, onProgress });
-  if (type === "image") return result;
-  if (!result.jobId) throw new Error("视频未获得处理编号，请联系管理员核查。") ;
-  return result;
+  return uploadFile(wxApi, { projectId, path: prepared.path, token, onProgress });
 }
 
-function getVideoJob(wxApi, { projectId, jobId, token }) {
-  return api(wxApi, `/my/activity-projects/${projectId}/miniapp-media/${jobId}`, { token });
-}
-
-function retryVideoJob(wxApi, { projectId, jobId, token }) {
-  return api(wxApi, `/my/activity-projects/${projectId}/miniapp-media/${jobId}/retry`, { method: "POST", token });
-}
-
-module.exports = { MAX_IMAGE, MAX_VIDEO, prepareMedia, uploadMedia, getVideoJob, retryVideoJob };
+module.exports = { MAX_IMAGE, isImageSelection, prepareMedia, uploadMedia };

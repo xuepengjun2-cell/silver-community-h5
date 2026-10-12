@@ -24,7 +24,7 @@
       <view wx:if="{{!projects.length}}" class="state">{{canCreateProjects ? '暂无活动相册。点击“新建活动”开始上传。' : '还没有可查看的活动相册。'}}</view>
       <view wx:for="{{projects}}" wx:key="id" class="card item">
         <image wx:if="{{item.cover}}" class="thumb" src="{{item.cover}}" mode="aspectFill"/>
-        <view class="item-main"><view class="item-title">{{item.title}}</view><view class="muted">{{item.dateLabel || '日期待填写'}} · {{item.city || '地区待填写'}}</view><view class="muted">{{item.media.length}} 个素材 · {{item.canManage ? '可管理' : '只读'}} · {{item.shareEnabled && item.status === 'published' ? '可分享' : '未开放分享'}}</view><view wx:if="{{item.ownerName}}" class="muted">创建者：{{item.ownerName}}</view></view>
+        <view class="item-main"><view class="item-title">{{item.title}}</view><view class="muted">{{item.dateLabel || '日期待填写'}} · {{item.city || '地区待填写'}}</view><view class="muted">{{item.photoCount}} 张照片 · {{item.canManage ? '可管理' : '只读'}} · {{item.shareEnabled && item.status === 'published' ? '可分享' : '未开放分享'}}</view><view wx:if="{{item.ownerName}}" class="muted">创建者：{{item.ownerName}}</view></view>
         <view class="item-actions"><button class="button button-primary" data-id="{{item.id}}" bindtap="onManage">{{item.canManage ? '管理 / 上传' : '查看相册'}}</button><button wx:if="{{item.shareEnabled && item.status === 'published'}}" class="button button-secondary" data-id="{{item.id}}" bindtap="onView">客户相册</button></view>
       </view>
     </block>

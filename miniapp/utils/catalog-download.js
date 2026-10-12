@@ -1,6 +1,7 @@
 const config = require("../config");
 const { api, getSession } = require("./auth");
 const { mediaUrl } = require("./urls");
+const { photoUrl, documentUrl, fileExtension } = require("./catalog");
 const { saveDownloadedMedia } = require("./save");
 const { isTimeout } = require("./errors");
 
@@ -69,26 +70,25 @@ async function openSopPdf(wxApi, id, onProgress) {
 
 async function saveCaseMedia(wxApi, caseId, media, onProgress) {
   const { token } = loggedIn(wxApi);
-  if (!media || !["image", "video"].includes(media.type) || !Number.isSafeInteger(media.index)) {
+  if (!media || media.type !== "image" || !Number.isSafeInteger(media.index) || media.index < 0 || !photoUrl(media.url) || !/^(?:jpe?g|png)$/i.test(fileExtension(media.url))) {
     throw new Error("该素材暂不支持保存到相册。");
   }
   // 下载授权与审计由服务端完成；分享卡片和图片预览不提升下载权限。
   const result = await api(wxApi, `/public/cases/${encodeURIComponent(caseId)}/download?i=${media.index}&format=json`, { token });
   const url = mediaUrl(result.url);
   if (!url || url !== media.url) throw new Error("素材已更新，请刷新案例后重试。");
-  if (media.type === "video" && !/\.mp4(?:\?|$)/i.test(url)) throw new Error("该视频还没有可保存的 MP4 版本，请联系主办方。");
-  if (media.type === "image" && !/\.(?:jpe?g|png)(?:\?|$)/i.test(url)) throw new Error("这张图片暂不支持保存到相册。");
-  await saveDownloadedMedia(wxApi, media.type, url, onProgress);
+  if (!photoUrl(url) || !/^(?:jpe?g|png)$/i.test(fileExtension(url))) throw new Error("这张图片暂不支持保存到相册。");
+  await saveDownloadedMedia(wxApi, "image", url, onProgress);
 }
 
 async function openCaseDocument(wxApi, caseId, media, onProgress) {
   const { token } = loggedIn(wxApi);
-  if (!media || media.type !== "document" || !Number.isSafeInteger(media.index)) throw new Error("文档编号无效。");
+  if (!media || media.type !== "document" || !Number.isSafeInteger(media.index) || media.index < 0 || !documentUrl(media.url)) throw new Error("文档编号或格式无效。");
   const result = await api(wxApi, `/public/cases/${encodeURIComponent(caseId)}/download?i=${media.index}&format=json`, { token });
   const url = mediaUrl(result.url);
   if (!url || url !== media.url) throw new Error("文档已更新，请刷新案例后重试。");
-  const ext = (url.split("?")[0].match(/\.(pdf|docx?|pptx?|xlsx?)$/i) || [])[1];
-  if (!ext) throw new Error("该文档格式暂不支持在小程序中打开。");
+  const ext = fileExtension(url);
+  if (!documentUrl(url)) throw new Error("该文档格式暂不支持在小程序中打开。");
   const temp = await new Promise((resolve, reject) => {
     const task = wxApi.downloadFile({
       url, timeout: config.transferTimeoutMs,

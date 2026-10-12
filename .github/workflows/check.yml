@@ -29,7 +29,7 @@ jobs:
         run: npm run test:media
       - name: Check account and upload concurrency
         run: npm run test:concurrency
-      - name: Check native near-limit video with real HTTP and FFmpeg
+      - name: Check retained backend large-file protocol with real HTTP and FFmpeg
         run: npm run test:large-video
       - name: Check existing SSO
         run: npm run test:sso

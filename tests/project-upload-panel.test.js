@@ -34,17 +34,18 @@ test("任务面板只保留处理中和需要处理的任务", () => {
   assert.doesNotMatch(html, /成片\.mp4|处理完成|刷新素材/);
 });
 
-test("H5 与小程序生成相同的轻量相册封面，保留原片和可信回退地址", () => {
+test("H5 独立保留轻量视频封面和可信回退，不依赖原生小程序能力", () => {
   const begin = appSource.indexOf("function projectVideoPosterSources(media) {");
   const finish = appSource.indexOf("\nfunction projectVideoPosterHtml", begin);
   const sources = vm.runInNewContext(`${appSource.slice(begin, finish)}; projectVideoPosterSources`);
-  const native = require("../miniapp/utils/album").videoPosterSources;
-  for (const media of [
-    { type: "video", url: "https://proj2.likeduoduiyi.cn/silver-project-videos/old.mp4", size: 700 * 1024 * 1024 },
-    { type: "video", url: "https://proj2.likeduoduiyi.cn/silver-project-videos/new.mp4", poster: "https://proj2.likeduoduiyi.cn/silver-project-images/first.jpg" },
-    { type: "video", url: "https://evil.example/x.mp4", poster: "https://evil.example/first.jpg" },
-    { type: "video", url: "https://proj2.likeduoduiyi.cn/silver-project-videos/signed.mp4?sig=keep" }
-  ]) assert.deepEqual(JSON.parse(JSON.stringify(sources(media))), native(media));
+  const source = "https://proj2.likeduoduiyi.cn/silver-project-videos/old.mp4";
+  const fallback = "https://proj2.likeduoduiyi.cn/silver-project-images/first.jpg";
+  for (const [media, expected] of [
+    [{ type: "video", url: source, size: 700 * 1024 * 1024 }, { poster: `${source}?x-tos-process=video/snapshot,t_1000,w_640,f_jpg`, fallbackPoster: "" }],
+    [{ type: "video", url: source, poster: fallback }, { poster: `${source}?x-tos-process=video/snapshot,t_1000,w_640,f_jpg`, fallbackPoster: fallback }],
+    [{ type: "video", url: "https://evil.example/x.mp4", poster: "https://evil.example/first.jpg" }, { poster: "", fallbackPoster: "" }],
+    [{ type: "video", url: `${source}?sig=keep`, poster: fallback }, { poster: fallback, fallbackPoster: "" }]
+  ]) assert.deepEqual(JSON.parse(JSON.stringify(sources(media))), expected);
 });
 
 test("H5 封面失败时只回退一次，全部失败后仍可点击播放", () => {

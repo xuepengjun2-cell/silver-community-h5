@@ -1,7 +1,18 @@
 const { api, getSession, validateSession, isSessionCurrent, logout, clearSession } = require("../../utils/auth");
-const { albumPath } = require("../../utils/album");
+const { albumPath, trustedMediaUrl } = require("../../utils/album");
 const { cardView, catalogPath, sharePayload, filterCatalogCards } = require("../../utils/catalog");
 const { PUBLIC_HOME, loginPath } = require("../../utils/navigation");
+
+function projectCard(project) {
+  const photos = (Array.isArray(project.media) ? project.media : []).filter(item => trustedMediaUrl(item));
+  return {
+    id: project.id, title: project.title, dateLabel: project.dateLabel, city: project.city,
+    ownerName: project.ownerName, canManage: project.canManage === true,
+    status: project.status, shareEnabled: project.shareEnabled === true,
+    photoCount: photos.length,
+    cover: trustedMediaUrl({ type: "image", url: project.cover }) || (photos[0] && photos[0].url) || ""
+  };
+}
 
 Page({
   data: {
@@ -41,7 +52,7 @@ Page({
       const activityCards = (activities.activities || []).map(item => cardView(item, "activities"));
       if (this.exiting || session && !isSessionCurrent(wx, session)) return;
       this.setData({
-        projects: mine.projects || [],
+        projects: (mine.projects || []).map(projectCard),
         canCreateProjects: mine.canCreate === true,
         activities: activityCards,
         visibleActivities: filterCatalogCards(activityCards, this.data.activityQuery),

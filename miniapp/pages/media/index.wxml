@@ -1,16 +1,15 @@
 <view class="page media-page">
-  <view wx:if="{{loading}}" class="state">正在打开素材…</view>
+  <view wx:if="{{loading}}" class="state">正在打开照片…</view>
   <view wx:elif="{{error}}" class="state">
     <view class="state-title">暂时看不到这个素材</view>
     <view class="muted">{{error}}</view>
-    <button class="button button-secondary back-error" bindtap="onBack">返回活动相册</button>
+    <button class="button button-secondary back-error" bindtap="onBack">返回照片相册</button>
   </view>
   <block wx:else>
-    <view class="eyebrow">{{media.type === 'video' ? '活动视频' : '活动照片'}} · {{index + 1}} / {{count}}</view>
+    <view class="eyebrow">活动照片 · {{position}} / {{count}}</view>
     <view class="title media-title">{{name}}</view>
     <view class="stage">
-      <video wx:if="{{media.type === 'video'}}" id="albumVideo" class="stage-video" src="{{media.url}}" poster="{{poster}}" controls="true" show-fullscreen-btn="true" object-fit="contain" bindplay="onVideoPlay"/>
-      <image wx:else class="stage-image" src="{{media.url}}" mode="widthFix"/>
+      <image class="stage-image" src="{{media.url}}" mode="widthFix"/>
     </view>
     <button class="button {{canSave && !busy ? 'button-primary' : 'button-disabled'}} save-button" disabled="{{busy || !canSave}}" bindtap="onSave">
       {{busy ? '正在下载 ' + progress + '%' : canSave ? '保存到手机相册' : '暂无可保存版本'}}
@@ -22,8 +21,8 @@
       <button class="button button-secondary" open-type="share">分享给朋友</button>
     </view>
     <view class="media-nav">
-      <button class="button button-secondary" disabled="{{index === 0}}" bindtap="onPrevious">上一张</button>
-      <button class="button button-secondary" disabled="{{index + 1 >= count}}" bindtap="onNext">下一张</button>
+      <button class="button button-secondary" disabled="{{previousIndex < 0 || busy}}" bindtap="onPrevious">上一张</button>
+      <button class="button button-secondary" disabled="{{nextIndex < 0 || busy}}" bindtap="onNext">下一张</button>
     </view>
   </block>
 </view>

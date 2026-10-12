@@ -1,26 +1,30 @@
 const { transferTimeoutMs } = require("../config");
 const { getProject, recordDownloadIntent } = require("./api");
-const { saveEligibility, saveSource, trustedMediaUrl } = require("./album");
+const { saveEligibility, trustedMediaUrl } = require("./album");
 const { privacyErrorMessage, isTimeout } = require("./errors");
+const { photoUrl, fileExtension } = require("./catalog");
+
+function downloadablePhotoUrl(url) {
+  return /^(?:jpe?g|png)$/i.test(fileExtension(url)) ? photoUrl(url) : "";
+}
 
 function downloadFile(wxApi, url, onProgress) {
+  const source = downloadablePhotoUrl(url);
+  if (!source) return Promise.reject(new Error("这个图片地址在本小程序中不可用。"));
   return new Promise((resolve, reject) => {
     const task = wxApi.downloadFile({
-      url,
+      url: source,
       timeout: transferTimeoutMs,
       success(result) {
         if (result.statusCode !== 200 || !result.tempFilePath) {
-          return reject(new Error("视频或照片下载未完成，请稍后重试。"));
+          return reject(new Error("照片下载未完成，请稍后重试。"));
         }
         resolve(result.tempFilePath);
       },
       fail(error) {
-        const detail = String(error && error.errMsg || "");
-        reject(new Error(/exceed|limit|200\s*mb|too large/i.test(detail)
-          ? "视频超过微信单次下载限制，请主办方上传小于 200 MB 的 MP4 版本。"
-          : isTimeout(error)
-            ? "网络较慢，下载超时。请连接 Wi-Fi 后重试。"
-            : "下载失败，请检查网络或稍后重试。"));
+        reject(new Error(isTimeout(error)
+          ? "网络较慢，下载超时。请连接 Wi-Fi 后重试。"
+          : "下载失败，请检查网络或稍后重试。"));
       }
     });
     if (task && typeof task.onProgressUpdate === "function") {
@@ -31,10 +35,9 @@ function downloadFile(wxApi, url, onProgress) {
   });
 }
 
-function saveLocalFile(wxApi, type, filePath) {
+function saveLocalFile(wxApi, filePath) {
   return new Promise((resolve, reject) => {
-    const method = type === "video" ? "saveVideoToPhotosAlbum" : "saveImageToPhotosAlbum";
-    wxApi[method]({ filePath, success: resolve, fail: reject });
+    wxApi.saveImageToPhotosAlbum({ filePath, success: resolve, fail: reject });
   });
 }
 
@@ -66,15 +69,17 @@ function cleanTempFile(wxApi, filePath) {
 }
 
 async function saveDownloadedMedia(wxApi, type, url, onProgress) {
+  // 调用方先复核相册或案例权限；此层仍拒绝所有非图片及伪装扩展。
+  if (type !== "image" || !downloadablePhotoUrl(url)) throw new Error("这个素材在本小程序中不可用，请选择 JPG 或 PNG 照片。");
   let tempFilePath = "";
   try {
     tempFilePath = await downloadFile(wxApi, url, onProgress);
     try {
-      await saveLocalFile(wxApi, type, tempFilePath);
+      await saveLocalFile(wxApi, tempFilePath);
     } catch (error) {
       if (!isPermissionDenied(error)) throw error;
       if (!await askForAlbumAccess(wxApi)) throw new Error("未取得相册权限，尚未保存。您可以稍后再试。");
-      await saveLocalFile(wxApi, type, tempFilePath);
+      await saveLocalFile(wxApi, tempFilePath);
     }
   } catch (error) {
     if (error instanceof Error) throw error;
@@ -91,13 +96,13 @@ async function saveMedia(wxApi, { projectId, index, media, onProgress }) {
   const project = await getProject(wxApi, projectId);
   const fresh = Array.isArray(project.media) ? project.media[index] : null;
   if (!fresh || fresh.type !== media.type || fresh.url !== media.url ||
-      saveSource(fresh).url !== saveSource(media).url || !saveEligibility(fresh).ok) {
+      !saveEligibility(fresh).ok) {
     throw new Error("素材已更新，请返回相册重新打开。");
   }
   // 现有服务端按这个接口记录下载。不能直接用其签名 TOS 地址下载：
   // 个人小程序只配置我们可验证的 CDN 域名，避免重定向到未登记的 TOS 域名。
   await recordDownloadIntent(wxApi, projectId, index, fresh.type);
-  await saveDownloadedMedia(wxApi, fresh.type, trustedMediaUrl(saveSource(fresh)), onProgress);
+  await saveDownloadedMedia(wxApi, fresh.type, trustedMediaUrl(fresh), onProgress);
 }
 
 module.exports = { downloadFile, isPermissionDenied, saveDownloadedMedia, saveMedia };

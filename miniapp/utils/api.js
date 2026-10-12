@@ -27,6 +27,7 @@ async function getProject(wxApi, id) {
 }
 
 async function recordDownloadIntent(wxApi, id, index, expectedType) {
+  if (expectedType !== "image") throw new Error("这个素材在本小程序中不可用，请选择照片。");
   if (!parseAlbumOptions({ id, i: String(index) })) throw new Error("素材编号无效");
   const data = await request(wxApi, `/public/activity-projects/${id}/download?i=${index}`);
   if (data.type !== expectedType || !data.url) throw new Error("素材信息已变化，请返回相册重新打开。");
