@@ -30,7 +30,7 @@ function fakeWx(options = {}) {
         const data = Uint8Array.from(Buffer.from("%PDF-1.3\nexample")).buffer;
         return request.success({ statusCode: options.pdfDenied ? 403 : 200, data });
       }
-      request.success({ statusCode: options.denied ? 401 : 200, data: options.denied ? { error: "请先登录" } : { url: options.resultUrl || image.url } });
+      request.success({ statusCode: options.denied ? 401 : 200, data: options.denied ? { error: "请先登录" } : options.content || { url: options.resultUrl || image.url } });
     },
     downloadFile(request) {
       calls.push(["download", request.url, request.header]);
@@ -72,16 +72,26 @@ test("未登录和未开放 SOP 下载时均不保存文件", async () => {
   assert.equal(denied.calls.some(call => call[0] === "write-pdf"), false);
 });
 
-test("精彩案例照片和视频先鉴权记账，再保存到系统相册", async () => {
+test("精彩案例照片先按原始素材下标鉴权记账，再保存到系统相册", async () => {
   const photo = fakeWx();
-  await saveCaseMedia(photo, caseId, image);
-  assert.match(photo.calls[0][1], /\/cases\/case_ead7a3aa8b0aa2d9\/download\?i=0&format=json$/);
+  await saveCaseMedia(photo, caseId, { ...image, index: 3 });
+  assert.match(photo.calls[0][1], /\/cases\/case_ead7a3aa8b0aa2d9\/download\?i=3&format=json$/);
   assert.equal(photo.calls[0][2].Authorization, "Bearer test-token");
   assert.equal(photo.calls[1][1], image.url);
   assert.ok(photo.calls.some(call => call[0] === "save-image"));
-  const movie = fakeWx({ resultUrl: video.url });
-  await saveCaseMedia(movie, caseId, video);
-  assert.ok(movie.calls.some(call => call[0] === "save-video"));
+});
+
+test("已登录账号也无法保存视频或伪装的图片、文档，校验失败前不发任何网络请求", async () => {
+  for (const media of [video, { ...video, type: "image" }, { ...image, url: `${video.url}?file=.jpg` }, { ...image, index: -1 }]) {
+    const wxApi = fakeWx({ resultUrl: media.url });
+    await assert.rejects(saveCaseMedia(wxApi, caseId, media), /不支持/);
+    assert.equal(wxApi.calls.length, 0);
+  }
+  for (const media of [video, { ...video, type: "document" }, { index: 3, type: "document", url: `${video.url}?file=.pdf` }]) {
+    const wxApi = fakeWx({ resultUrl: media.url });
+    await assert.rejects(openCaseDocument(wxApi, caseId, media), /无效/);
+    assert.equal(wxApi.calls.length, 0);
+  }
 });
 
 test("案例游客、过期登录和素材地址变更均不会下载 CDN 文件", async () => {
@@ -123,7 +133,7 @@ test("案例图片可匿名放大浏览，但游客和已登录账号均不能�
   } finally { delete global.wx; }
 });
 
-test("游客点击案例照片或视频保存只提示登录，不请求下载和系统保存", async () => {
+test("游客点击案例保存只提示登录，不请求下载和系统保存", async () => {
   const calls = [];
   global.wx = {
     showModal(options) { calls.push(["login", options.title, options.content]); },
@@ -142,25 +152,38 @@ test("游客点击案例照片或视频保存只提示登录，不请求下载�
   } finally { delete global.wx; }
 });
 
-test("案例视频在竖屏播放器内打开，且全屏保持竖屏", () => {
+test("图文详情不存在播放、全屏或外部链接入口，保留图片和 PDF 下载", () => {
   const wxml = fs.readFileSync(path.join(__dirname, "../pages/catalog/index.wxml"), "utf8");
-  assert.match(wxml, /id="caseVideo\{\{item\.index\}\}" class="case-video"[^>]*direction="0"[^>]*object-fit="contain"[^>]*show-fullscreen-btn="false"/);
-  assert.match(wxml, /bindtap="onCaseFullscreen">竖屏全屏播放/);
+  assert.doesNotMatch(wxml, /<video\b|onVideo|onCaseFullscreen|视频|外部平台|外部链接/);
   assert.match(wxml, /bindtap="onCaseSave"/);
   assert.match(wxml, /bindtap="onSopPdf"/);
   assert.ok(wxml.indexOf("bindtap=\"onCaseSave\"") < wxml.indexOf("class=\"case-image\""), "保存入口在预览图之前");
-  const calls = [];
-  global.wx = { createVideoContext(id, page) {
-    calls.push(["context", id, page]);
-    return { requestFullScreen(options) { calls.push(["fullscreen", options]); } };
-  } };
   const page = catalogPage();
-  page.allMedia = [video];
-  page.onCaseFullscreen({ currentTarget: { dataset: { index: 1 } } });
-  assert.equal(page.data.playingIndex, 1);
-  assert.deepEqual(calls.map(call => call[0]), ["context", "fullscreen"]);
-  assert.equal(calls[0][1], "caseVideo1");
-  assert.equal(calls[0][2], page);
-  assert.deepEqual(calls[1][1], { direction: 0 });
-  delete global.wx;
+  assert.equal(page.onVideo, undefined);
+  assert.equal(page.onCaseFullscreen, undefined);
+  assert.equal(page.data.activityVideos, undefined);
+});
+
+test("旧案例直达对游客及已登录账号都只展示图文，不把其他素材地址写入页面或分享数据", async () => {
+  const original = {
+    id: caseId, title: "混排案例", cover: video.url,
+    media: [video, { ...image, delivery: { url: video.url }, poster: video.url }, { type: "link", url: "https://example.com/watch" }]
+  };
+  for (const guest of [true, false]) {
+    global.wx = fakeWx({ guest, content: { case: original } });
+    global.wx.setNavigationBarTitle = () => {};
+    try {
+      const page = catalogPage();
+      page.type = "cases"; page.id = caseId;
+      await page.load();
+      assert.equal(page.data.error, "");
+      assert.deepEqual(page.data.media.map(entry => entry.index), [1]);
+      assert.deepEqual(page.data.mediaTabs.map(tab => tab.key), ["image"]);
+      assert.doesNotMatch(JSON.stringify(page.data), /mp4|watch|delivery|poster/);
+      assert.doesNotMatch(JSON.stringify(page.onShareAppMessage()), /mp4|watch/);
+      assert.equal(page.onShareAppMessage().imageUrl, image.url);
+      page.onTab({ currentTarget: { dataset: { tab: "video" } } });
+      assert.equal(page.data.activeTab, "image");
+    } finally { delete global.wx; }
+  }
 });

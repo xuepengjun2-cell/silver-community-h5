@@ -1,48 +1,58 @@
 const { getProject } = require("../../utils/api");
 const { saveMedia } = require("../../utils/save");
 const { apiBase } = require("../../config");
-const { parseAlbumOptions, albumPath, mediaPath, saveEligibility, displayName, trustedMediaUrl, videoPosterSources } = require("../../utils/album");
+const { parseAlbumOptions, albumPath, mediaPath, saveEligibility, displayName, trustedMediaUrl } = require("../../utils/album");
 
 Page({
   data: {
-    loading: true, error: "", project: null, media: null, index: 0,
-    name: "", count: 0, canSave: false, reason: "", busy: false, progress: 0
+    loading: true, error: "", project: null, media: null, index: 0, position: 0,
+    name: "", count: 0, previousIndex: -1, nextIndex: -1,
+    canSave: false, reason: "", busy: false, progress: 0
   },
   onLoad(options) {
     const parsed = parseAlbumOptions(options);
     if (!parsed || parsed.index === null) {
-      return this.setData({ loading: false, error: "素材链接无效，请返回活动相册。" });
+      return this.setData({ loading: false, error: "素材链接无效，请返回照片相册。" });
     }
     this.projectId = parsed.id;
     this.index = parsed.index;
     this.loadMedia();
   },
   onShow() {
-    // 客户从单素材分享卡片进入时，同样不显示通往主办方登录页的“返回首页”。
+    // 客户从单照片分享卡片进入时，同样不显示通往主办方登录页的“返回首页”。
     if (typeof wx.hideHomeButton === "function") wx.hideHomeButton();
   },
   async loadMedia() {
-    this.setData({ loading: true, error: "" });
+    this.photoIndices = [];
+    this.setData({ loading: true, error: "", project: null, media: null, canSave: false, count: 0, position: 0, previousIndex: -1, nextIndex: -1 });
     try {
-      const project = await getProject(wx, this.projectId);
-      const media = (project.media || [])[this.index];
-      if (!media || !trustedMediaUrl(media)) throw new Error("素材不存在或已经移除。");
-      const eligibility = saveEligibility(media);
-      wx.setNavigationBarTitle({ title: media.type === "video" ? "保存活动视频" : "保存活动照片" });
+      const source = await getProject(wx, this.projectId);
+      const allMedia = Array.isArray(source.media) ? source.media : [];
+      const original = allMedia[this.index];
+      if (!trustedMediaUrl(original)) throw new Error("这个素材在本小程序中不可用，请返回照片相册。");
+      const eligibility = saveEligibility(original);
+      this.photoIndices = allMedia.map((item, index) => trustedMediaUrl(item) ? index : -1).filter(index => index >= 0);
+      const position = this.photoIndices.indexOf(this.index);
+      const project = { id: source.id, title: String(source.title || "") };
+      const media = {
+        type: "image", url: trustedMediaUrl(original), title: String(original.title || ""), size: Number(original.size) || 0
+      };
+      wx.setNavigationBarTitle({ title: "保存活动照片" });
       this.setData({
-        loading: false, project, media, poster: videoPosterSources(media).poster, index: this.index, count: project.media.length,
-        name: displayName(media, this.index), canSave: eligibility.ok, reason: eligibility.reason
+        loading: false, project, media, index: this.index, position: position + 1, count: this.photoIndices.length,
+        previousIndex: position > 0 ? this.photoIndices[position - 1] : -1,
+        nextIndex: position + 1 < this.photoIndices.length ? this.photoIndices[position + 1] : -1,
+        name: displayName(original, this.index), canSave: eligibility.ok, reason: eligibility.reason
       });
-      if (media.type === "image") this.recordView();
+      this.recordView();
     } catch (error) {
-      this.setData({ loading: false, error: error.message || "素材暂时无法打开。" });
+      this.setData({ loading: false, error: error.message || "照片暂时无法打开。" });
     }
   },
-  onVideoPlay() { this.recordView(); },
   recordView() {
-    if (this.viewTracked) return;
-    this.viewTracked = true;
-    // 观看统计属于辅助信息；不能因此影响游客看素材或保存。
+    if (!trustedMediaUrl(this.data.media) || this.viewedIndex === this.index) return;
+    this.viewedIndex = this.index;
+    // 观看统计属于辅助信息；不能因此影响游客看照片或保存。
     wx.request({
       url: `${apiBase}/audit-events`,
       method: "POST",
@@ -71,13 +81,16 @@ Page({
   onBack() {
     wx.redirectTo({ url: this.projectId ? albumPath(this.projectId) : "/pages/entry/index" });
   },
-  onPrevious() { this.goTo(this.index - 1); },
-  onNext() { this.goTo(this.index + 1); },
+  onPrevious() { this.goTo(this.data.previousIndex); },
+  onNext() { this.goTo(this.data.nextIndex); },
   goTo(index) {
-    if (index < 0 || index >= this.data.count) return;
+    if (this.data.busy || !Number.isSafeInteger(index) || !(this.photoIndices || []).includes(index)) return;
     wx.redirectTo({ url: mediaPath(this.projectId, index) });
   },
   onShareAppMessage() {
-    return { title: `${this.data.name}｜${this.data.project && this.data.project.title || "活动相册"}`, path: mediaPath(this.projectId, this.index) };
+    if (!this.data.media) {
+      return { title: "照片相册", path: this.projectId ? albumPath(this.projectId) : "/pages/entry/index" };
+    }
+    return { title: `${this.data.name}｜${this.data.project.title || "照片相册"}`, path: mediaPath(this.projectId, this.index) };
   }
 });

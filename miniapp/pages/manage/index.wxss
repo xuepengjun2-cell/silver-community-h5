@@ -12,8 +12,7 @@
 .picker { color: #61584e; }
 .description { height: 150rpx; }
 .tile { display: flex; overflow: hidden; margin-bottom: 20rpx; }
-.tile-cover, .tile-video { width: 200rpx; height: 200rpx; flex-shrink: 0; background: #ebe3db; }
-.tile-video { display: flex; justify-content: center; align-items: center; }
+.tile-cover { width: 200rpx; height: 200rpx; flex-shrink: 0; background: #ebe3db; }
 .tile-details { padding: 22rpx; min-width: 0; }
 .tile-name { font-size: 30rpx; overflow-wrap: anywhere; }
 .remove { color: #ad321d; background: transparent; font-size: 27rpx; margin: 18rpx 0 0; padding: 0; text-align: left; }

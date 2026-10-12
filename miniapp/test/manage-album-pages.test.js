@@ -20,7 +20,7 @@ test("上传和下载的网络超时为 10 分钟，不用微信默认的 60 秒
   assert.equal(appConfig.networkTimeout.downloadFile, 10 * 60 * 1000);
 });
 
-test("主办方拍摄视频可到 60 秒；隐私指引未声明时提示真实原因", async () => {
+test("主办方只选择图片；隐私指引未声明时提示真实原因", async () => {
   const modals = [];
   let chooseOptions;
   const storage = new Map([[SESSION_KEY, { token: "test-token", user: { role: "operator" } }]]);
@@ -34,8 +34,8 @@ test("主办方拍摄视频可到 60 秒；隐私指引未声明时提示真实�
   };
   const manage = pageAt("../pages/manage/index.js");
   manage.data.project = { canManage: true };
-  await manage.choose("video");
-  assert.equal(chooseOptions.maxDuration, 60);
+  await manage.choose("image");
+  assert.deepEqual(chooseOptions.mediaType, ["image"]);
   assert.match(modals[0].content, /用户隐私保护指引/);
   delete global.wx;
 });

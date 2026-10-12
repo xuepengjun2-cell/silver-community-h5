@@ -1,33 +1,13 @@
 const { api, getSession } = require("../../utils/auth");
-const { mediaUrl } = require("../../utils/urls");
-const { catalogPath, catalogCover, sharePayload } = require("../../utils/catalog");
+const { catalogPath, catalogCover, sharePayload, caseMedia, activityMedia, catalogItemView, photoUrl } = require("../../utils/catalog");
 const { openSopPdf, saveCaseMedia, openCaseDocument } = require("../../utils/catalog-download");
 const { loginPath } = require("../../utils/navigation");
 
 const CASE_GROUPS = [
   { key: "image", label: "照片" },
-  { key: "video", label: "视频" },
-  { key: "document", label: "文档" },
-  { key: "link", label: "外部链接" }
+  { key: "document", label: "文档" }
 ];
 const PAGE_SIZE = 12;
-
-function caseMedia(item) {
-  return (item.media || []).map((entry, index) => ({
-    ...entry,
-    index,
-    url: mediaUrl(entry.url),
-    poster: mediaUrl(entry.poster),
-    title: entry.title || entry.caption || `${{ image: "照片", video: "视频", document: "文档", link: "外部素材" }[entry.type] || "素材"} ${index + 1}`
-  })).filter(entry => entry.url && CASE_GROUPS.some(group => group.key === entry.type));
-}
-
-function activityMedia(item) {
-  return [
-    ...(item.images || []).map((url, index) => ({ type: "image", url: mediaUrl(url), title: `活动照片 ${index + 1}`, index })),
-    ...(item.videos || []).map((url, index) => ({ type: "video", url: mediaUrl(url), title: `参考视频 ${index + 1}`, index }))
-  ].filter(entry => entry.url);
-}
 
 function sections(plan) {
   return [
@@ -42,8 +22,8 @@ function sections(plan) {
 Page({
   data: {
     loading: true, error: "", item: null, type: "", cover: "", media: [],
-    mediaTabs: [], activeTab: "", shownMedia: [], hasMore: false, playingIndex: -1,
-    highlights: [], schedule: [], planSections: [], facts: [], activityImages: [], activityVideos: [],
+    mediaTabs: [], activeTab: "", shownMedia: [], hasMore: false,
+    highlights: [], schedule: [], planSections: [], facts: [], activityImages: [],
     loggedIn: false, canDownloadSop: false, pdfBusy: false, savingIndex: -1, downloadProgress: 0
   },
   onLoad(options) {
@@ -63,15 +43,16 @@ Page({
     try {
       const session = this.guestMode ? null : getSession(wx);
       const result = await api(wx, `/public/${this.type}/${encodeURIComponent(this.id)}`, { token: session && session.token });
-      const item = result.activity || result.case;
-      if (!item) throw new Error("该内容暂时无法查看。");
+      const original = result.activity || result.case;
+      if (!original) throw new Error("该内容暂时无法查看。");
+      const item = catalogItemView(original, this.type);
       wx.setNavigationBarTitle({ title: item.title || "活动详情" });
-      const media = this.type === "cases" ? caseMedia(item) : activityMedia(item);
+      const media = this.type === "cases" ? caseMedia(original) : activityMedia(original);
       const tabs = CASE_GROUPS.map(group => ({ ...group, count: media.filter(entry => entry.type === group.key).length }))
         .filter(group => group.count > 0);
       const activeTab = tabs[0] && tabs[0].key || "";
       const cover = catalogCover(item, this.type);
-      this.rawItem = item;
+      this.shareItem = item;
       this.allMedia = media;
       this.setData({
         loading: false, type: this.type, item, cover, media,
@@ -86,15 +67,15 @@ Page({
           { label: "推荐地点", value: item.location || "同城场地" }
         ],
         activityImages: media.filter(entry => entry.type === "image"),
-        activityVideos: media.filter(entry => entry.type === "video"),
-        playingIndex: -1, loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false)
+        loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false)
       });
     } catch (error) { this.setData({ loading: false, error: error.message || "加载失败" }); }
   },
   onTab(event) {
     const activeTab = event.currentTarget.dataset.tab;
+    if (!CASE_GROUPS.some(group => group.key === activeTab)) return;
     const subset = this.allMedia.filter(entry => entry.type === activeTab);
-    this.setData({ activeTab, shownMedia: subset.slice(0, PAGE_SIZE), hasMore: subset.length > PAGE_SIZE, playingIndex: -1 });
+    this.setData({ activeTab, shownMedia: subset.slice(0, PAGE_SIZE), hasMore: subset.length > PAGE_SIZE });
   },
   onMore() {
     const subset = this.allMedia.filter(entry => entry.type === this.data.activeTab);
@@ -103,24 +84,9 @@ Page({
   },
   onImage(event) {
     const current = event.currentTarget.dataset.url;
-    const images = this.allMedia.filter(entry => entry.type === "image").map(entry => entry.url);
+    const images = (this.allMedia || []).filter(entry => entry.type === "image").map(entry => photoUrl(entry.url)).filter(Boolean);
     // 案例保存统一经过 onCaseSave 的服务端鉴权和审计，原生菜单不能绕过。
     if (images.includes(current)) wx.previewImage({ current, urls: images, showmenu: this.type !== "cases" });
-  },
-  onVideo(event) { this.setData({ playingIndex: Number(event.currentTarget.dataset.index) }); },
-  onCaseFullscreen(event) {
-    const index = Number(event.currentTarget.dataset.index);
-    const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
-    if (!media || media.type !== "video") return;
-    const enterFullscreen = () => {
-      try {
-        const video = wx.createVideoContext(`caseVideo${index}`, this);
-        if (!video || typeof video.requestFullScreen !== "function") throw new Error("不支持全屏播放");
-        video.requestFullScreen({ direction: 0 });
-      } catch (_) { wx.showToast({ title: "无法进入全屏，请在页面内观看", icon: "none" }); }
-    };
-    if (this.data.playingIndex === index) enterFullscreen();
-    else this.setData({ playingIndex: index }, enterFullscreen);
   },
   onDownloadError(error) {
     const message = error && error.message || "下载失败，请稍后重试。";
@@ -150,7 +116,7 @@ Page({
     if (!this.data.loggedIn) return this.onDownloadError(new Error("请先登录平台账号，再下载精彩案例素材。"));
     const index = Number(event.currentTarget.dataset.index);
     const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
-    if (!media) return;
+    if (!media || media.type !== "image") return;
     this.setData({ savingIndex: index, downloadProgress: 0 });
     try {
       await saveCaseMedia(wx, this.id, media, progress => this.setData({ downloadProgress: progress }));
@@ -163,12 +129,12 @@ Page({
     if (!this.data.loggedIn) return this.onDownloadError(new Error("请先登录平台账号，再下载精彩案例文档。"));
     const index = Number(event.currentTarget.dataset.index);
     const media = this.allMedia && this.allMedia.find(entry => entry.index === index);
-    if (!media) return;
+    if (!media || media.type !== "document") return;
     this.setData({ savingIndex: index, downloadProgress: 0 });
     try { await openCaseDocument(wx, this.id, media, progress => this.setData({ downloadProgress: progress })); }
     catch (error) { this.onDownloadError(error); }
     finally { this.setData({ savingIndex: -1, downloadProgress: 0 }); }
   },
   onLogin() { wx.navigateTo({ url: loginPath(catalogPath(this.type, this.id)) }); },
-  onShareAppMessage() { return sharePayload(this.rawItem || this.data.item || { id: this.id }, this.type); }
+  onShareAppMessage() { return sharePayload(this.shareItem || this.data.item || { id: this.id }, this.type); }
 });

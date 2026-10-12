@@ -1,5 +1,6 @@
-// Real HTTP + real FFmpeg, with isolated fake MySQL/TOS. WeChat's device-side
-// compressVideo/uploadFile APIs are bridged here, not claimed as phone evidence.
+// Regression for the existing backend multipart protocol with real HTTP/FFmpeg
+// and isolated fake MySQL/TOS. The personal miniapp no longer provides video
+// upload; this test protects retained server processing and customer files.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -13,8 +14,7 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const exec = promisify(execFile);
 const { withServer, sleep } = require("./support/video-api-server");
-const { uploadMedia, MAX_VIDEO } = require("../miniapp/utils/upload");
-const { verifyVideoDelivery } = require("../server/miniapp-media");
+const { verifyVideoDelivery, MAX_VIDEO_BYTES: MAX_VIDEO } = require("../server/miniapp-media");
 
 async function makeVideo(file, bitrate, input) {
   await exec("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error",
@@ -70,7 +70,7 @@ function multipart(ctx, { id, token, file, extraBytes = 0, abortAfter = 0, progr
   });
 }
 
-test("native large file real transfer and delivery gate", { timeout: 180000 }, async t => {
+test("retained backend large-file transfer and delivery gate", { timeout: 180000 }, async t => {
   const root = await fsp.mkdtemp(path.join(os.tmpdir(), "silver-native-large-"));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const original = path.join(root, "original.mp4"), compressed = path.join(root, "compressed.mp4");
@@ -95,20 +95,11 @@ test("native large file real transfer and delivery gate", { timeout: 180000 }, a
       }
       throw Error(`job did not finish: ${JSON.stringify(job)}; ${ctx.logs().slice(-2000)}`);
     };
-    await t.test(">200MB original is prepared first, only near-190MiB compressed path is transferred; not public before ready", async () => {
-      const calls = [], progress = [];
-      const wx = {
-        compressVideo(options) { calls.push({ method: "compressVideo", src: options.src }); options.success({ tempFilePath: compressed }); },
-        getFileInfo(options) { options.success({ size: fs.statSync(options.filePath).size }); },
-        uploadFile(options) {
-          calls.push({ method: "uploadFile", filePath: options.filePath });
-          let onProgress = () => {};
-          multipart(ctx, { id, token, file: options.filePath, progress: percent => onProgress({ progress: percent }) }).then(options.success, error => options.fail({ errMsg: error.message }));
-          return { onProgressUpdate(fn) { onProgress = fn; } };
-        }
-      };
-      const uploaded = await uploadMedia(wx, { projectId: id, source: original, type: "video", token, onProgress: p => progress.push(p) });
-      assert.deepEqual(calls, [{ method: "compressVideo", src: original }, { method: "uploadFile", filePath: compressed }]);
+    await t.test("near-190MiB multipart transfers completely and stays private until ready", async () => {
+      const progress = [];
+      const response = await multipart(ctx, { id, token, file: compressed, progress: percent => progress.push(percent) });
+      assert.equal(response.statusCode, 202, response.data);
+      const uploaded = JSON.parse(response.data);
       assert.ok(uploaded.jobId); assert.ok(progress.includes(100));
       assert.equal((await project()).media.length, 0, "100% transport must not publish unprocessed video");
       const job = await waitJob(uploaded.jobId, ["ready", "failed"]);

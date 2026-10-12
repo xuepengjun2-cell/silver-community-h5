@@ -1,10 +1,9 @@
 const { getProject } = require("../../utils/api");
-const { parseAlbumOptions, albumPath, mediaPath, trustedMediaUrl, videoPosterSources, displayName } = require("../../utils/album");
+const { parseAlbumOptions, albumPath, mediaPath, trustedMediaUrl, displayName } = require("../../utils/album");
 
 Page({
   data: {
-    loading: true, error: "", project: null, tiles: [], shown: [], tab: "all",
-    imageCount: 0, videoCount: 0, cover: ""
+    loading: true, error: "", project: null, tiles: [], imageCount: 0, cover: ""
   },
   onLoad(options) {
     const parsed = parseAlbumOptions(options);
@@ -22,44 +21,35 @@ Page({
   },
   onPullDownRefresh() { this.loadAlbum().finally(() => wx.stopPullDownRefresh()); },
   async loadAlbum() {
-    this.setData({ loading: true, error: "" });
+    this.setData({ loading: true, error: "", project: null, tiles: [], imageCount: 0, cover: "" });
     try {
-      const project = await getProject(wx, this.projectId);
-      const tiles = (project.media || []).map((media, index) => ({
-        index, type: media.type, name: displayName(media, index),
-        imageUrl: media.type === "image" ? trustedMediaUrl(media) :
-          videoPosterSources(media).poster,
-        fallbackImageUrl: videoPosterSources(media).fallbackPoster
-      })).filter(item => item.type === "image" || item.type === "video");
-      const imageCount = tiles.filter(item => item.type === "image").length;
-      const videoCount = tiles.length - imageCount;
-      const firstImage = tiles.find(item => item.imageUrl);
-      const cover = trustedMediaUrl({ type: "image", url: project.cover }) || firstImage && firstImage.imageUrl || "";
-      wx.setNavigationBarTitle({ title: project.title || "活动相册" });
-      this.setData({ project, tiles, shown: tiles, imageCount, videoCount, cover, loading: false, tab: "all" });
+      const source = await getProject(wx, this.projectId);
+      // index 始终采用原始数组序号，保证旧照片链接和下载审计对应同一张图片。
+      const tiles = (Array.isArray(source.media) ? source.media : []).map((media, index) => ({
+        index, type: "image", name: displayName(media, index), imageUrl: trustedMediaUrl(media)
+      })).filter(item => item.imageUrl);
+      const project = {
+        id: source.id, title: String(source.title || ""), dateLabel: String(source.dateLabel || ""),
+        city: String(source.city || ""), description: String(source.description || "")
+      };
+      const cover = trustedMediaUrl({ type: "image", url: source.cover }) || tiles[0] && tiles[0].imageUrl || "";
+      wx.setNavigationBarTitle({ title: project.title || "照片相册" });
+      this.setData({ project, tiles, imageCount: tiles.length, cover, loading: false });
     } catch (error) {
       this.setData({ loading: false, error: error.message || "相册暂时无法打开。" });
     }
   },
-  onTab(event) {
-    const tab = event.currentTarget.dataset.tab;
-    const shown = tab === "all" ? this.data.tiles : this.data.tiles.filter(item => item.type === tab);
-    this.setData({ tab, shown });
-  },
   onMedia(event) {
-    wx.navigateTo({ url: mediaPath(this.projectId, Number(event.currentTarget.dataset.index)) });
+    const index = Number(event.currentTarget.dataset.index);
+    if (!this.data.tiles.some(item => item.index === index)) return;
+    wx.navigateTo({ url: mediaPath(this.projectId, index) });
   },
   onRetry() { this.loadAlbum(); },
-  onPosterError(event) {
-    const { index, url } = event.currentTarget.dataset;
-    const tile = this.data.tiles.find(item => item.index === Number(index));
-    if (!tile || tile.type !== "video" || tile.imageUrl !== url) return;
-    const updated = { ...tile, imageUrl: tile.fallbackImageUrl || "", fallbackImageUrl: "" };
-    const replace = item => item.index === updated.index ? updated : item;
-    this.setData({ tiles: this.data.tiles.map(replace), shown: this.data.shown.map(replace) });
-  },
   onShareAppMessage() {
     const project = this.data.project;
-    return { title: project ? `${project.title}｜活动相册` : "活动相册", path: albumPath(this.projectId) };
+    return {
+      title: project ? `${project.title}｜照片相册` : "照片相册",
+      path: this.projectId ? albumPath(this.projectId) : "/pages/entry/index"
+    };
   }
 });

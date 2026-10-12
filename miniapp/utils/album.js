@@ -1,6 +1,5 @@
 const config = require("../config");
 const PROJECT_ID = /^project_[a-f0-9]{16}$/;
-const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 
 function parseShareInput(input) {
   const value = String(input || "").trim();
@@ -35,54 +34,37 @@ function mediaPath(id, index) {
 }
 
 function trustedMediaUrl(media) {
-  if (!media || !["image", "video"].includes(media.type)) return "";
-  const prefix = media.type === "video" ? config.videoBase : config.imageBase;
+  if (!media || media.type !== "image") return "";
   const url = String(media.url || "");
-  return url.startsWith(prefix) && url.length > prefix.length && !/[\s#]/.test(url) ? url : "";
-}
-
-function isMp4(media) {
-  return /\.mp4(?:\?|$)/i.test(String(media && media.url || ""));
-}
-
-function videoPosterSources(media) {
-  if (!media || media.type !== "video") return { poster: "", fallbackPoster: "" };
-  const fallbackPoster = trustedMediaUrl({ type: "image", url: media.poster });
-  const source = trustedMediaUrl(media);
-  // CDN 按处理参数分别缓存；仅请求小幅 JPEG，不预加载整段视频。
-  // 不改写签名 URL；截帧地址只用于封面，不用于播放或保存。
-  const poster = source && isMp4(media) && !source.includes("?")
-    ? `${source}?x-tos-process=video/snapshot,t_1000,w_640,f_jpg`
-    : fallbackPoster;
-  return { poster, fallbackPoster: poster !== fallbackPoster ? fallbackPoster : "" };
+  if (!url.startsWith(config.imageBase) || /[\s#\\]/.test(url)) return "";
+  const path = url.slice(config.imageBase.length).split("?")[0];
+  // 保留后台支持的图片预览格式，不接受目录跳转或编码后的路径分隔符。
+  if (!path || !/\.(?:jpe?g|png|webp|gif|svg)$/i.test(path) || /%(?:2e|2f|5c|3f|23)/i.test(path) ||
+      /\.(?:mp4|m4v|mov|webm|avi|mkv|flv|m3u8|ts)(?:[./]|$)/i.test(path) ||
+      path.split("/").some(part => !part || part === "." || part === "..")) return "";
+  return url;
 }
 
 function saveSource(media) {
-  if (media && media.type === "video" && media.delivery && media.delivery.url) {
-    const candidate = { type: "video", url: media.delivery.url, size: media.delivery.size };
-    if (trustedMediaUrl(candidate) && isMp4(candidate) && Number(candidate.size) > 0) return candidate;
-  }
-  return media;
+  return media && media.type === "image" ? media : null;
 }
 
 function saveEligibility(media) {
-  if (!trustedMediaUrl(media)) return { ok: false, reason: "这个素材尚未接入相册保存服务，请联系活动主办方。" };
-  if (media.type === "image") {
-    if (!/\.(?:jpe?g|png)(?:\?|$)/i.test(media.url)) return { ok: false, reason: "这张照片还不是可保存的 JPG 或 PNG，请联系活动主办方转换后再试。" };
-    return { ok: true, reason: "" };
+  if (!media || media.type !== "image") return { ok: false, reason: "这个素材在本小程序中不可用，请返回照片相册。" };
+  if (!trustedMediaUrl(media)) {
+    return { ok: false, reason: "这张照片尚未接入 JPG 或 PNG 图片保存服务，请联系活动主办方。" };
   }
-  const source = saveSource(media);
-  if (!isMp4(source)) return { ok: false, reason: "原视频不是 MP4，请主办方上传可保存的 MP4 版本。" };
-  if (!Number.isFinite(Number(source.size)) || Number(source.size) <= 0) return { ok: false, reason: "视频大小尚未确认，请联系活动主办方补全交付文件。" };
-  if (Number(source.size) > MAX_VIDEO_BYTES) return { ok: false, reason: "视频超过 200 MB，请主办方上传压缩后的 MP4 版本。" };
+  if (!/\.(?:jpe?g|png)(?:\?|$)/i.test(media.url)) {
+    return { ok: false, reason: "这张图片可预览，请主办方转换为 JPG 或 PNG 后再保存。" };
+  }
   return { ok: true, reason: "" };
 }
 
 function displayName(media, index) {
-  return String(media && media.title || "").trim() || `${media && media.type === "video" ? "视频" : "照片"} ${index + 1}`;
+  return String(media && media.title || "").trim() || `照片 ${index + 1}`;
 }
 
 module.exports = {
-  MAX_VIDEO_BYTES, parseShareInput, parseAlbumOptions, albumPath, mediaPath,
-  trustedMediaUrl, isMp4, videoPosterSources, saveSource, saveEligibility, displayName
+  parseShareInput, parseAlbumOptions, albumPath, mediaPath,
+  trustedMediaUrl, saveSource, saveEligibility, displayName
 };
