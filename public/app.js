@@ -6,7 +6,7 @@ const app = document.querySelector("#app");
 // 分享链接跟随当前访问域名，避免从新域名进入后又跳回已受限的旧域名。
 // 站点部署在 /silver/ 路径下，因此只固定路径，不固定域名。
 const SILVER_FRONT_BASE = `${window.location.origin}/silver`;
-const SILVER_API_BASE = "https://apip2.kkhuacai08.cn/silver-api";
+const SILVER_API_BASE = "https://apip2.opensplendid.com/silver-api";
 const AUTH_TOKEN_KEY = "silver_auth_token";
 
 const state = {

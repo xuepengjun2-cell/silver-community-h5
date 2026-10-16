@@ -24,7 +24,7 @@
 
 - 网页平台：https://proj2.likeduoduiyi.cn/silver/
 - 总部后台：https://proj2.likeduoduiyi.cn/silver/admin
-- API 健康：https://apip2.kkhuacai08.cn/silver-api/health
+- API 健康：https://apip2.opensplendid.com/silver-api/health
 - 生产数据以服务器 MySQL 为准；网页、后台和正式小程序共用现有账号及相册 API。不要将本地 JSON 种子数据覆盖到生产库。
 - `data/db.json` 是空库时的历史迁移源，`data/seed-activities.json` 是初始化及隔离测试数据；均不是生产实时数据副本。
 

@@ -10,7 +10,7 @@
 
 - PM2 进程：`silver`
 - Node 服务端口：`5174`
-- 公网 API：`https://apip2.kkhuacai08.cn/silver-api/`
+- 公网 API：`https://apip2.opensplendid.com/silver-api/`
 - 公网静态站：`https://proj2.likeduoduiyi.cn/silver/`（新域名启用后可通过 `https://deruichi.cn/silver/` 访问同一份静态对象）
 - 数据库：由 `/etc/silver-community.env` 注入，严禁提交到 GitHub
 
