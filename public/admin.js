@@ -5,7 +5,7 @@
 const adminApp = document.querySelector("#adminApp");
 const SILVER_PUBLIC_MODE = location.hostname === "proj2.likeduoduiyi.cn";
 const SILVER_FRONT_BASE = SILVER_PUBLIC_MODE ? "https://proj2.likeduoduiyi.cn/silver" : "";
-const SILVER_API_BASE = SILVER_PUBLIC_MODE ? "https://apip2.kkhuacai08.cn/silver-api" : "";
+const SILVER_API_BASE = SILVER_PUBLIC_MODE ? "https://apip2.opensplendid.com/silver-api" : "";
 const AUTH_TOKEN_KEY = "silver_auth_token";
 
 const state = {

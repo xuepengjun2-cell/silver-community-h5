@@ -397,7 +397,7 @@ async function main(args = process.argv.slice(2)) {
     processInfo(true);
     const conn = await database(env);
     try { assertRowsEqual(await rows(conn), buildExpectedRows(snapshot, state.entries)); } finally { await conn.end(); }
-    for (const apiBase of ["http://127.0.0.1:5174/api", "https://apip2.kkhuacai08.cn/silver-api"]) {
+    for (const apiBase of ["http://127.0.0.1:5174/api", "https://apip2.opensplendid.com/silver-api"]) {
       const response = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(10000) }), health = await response.json();
       if (response.status !== 200 || health.ok !== true || health.database !== "ok" || health.service !== "silver") stop("Health verification failed");
       for (const projectId of new Set(state.entries.map(e => e.projectId))) {

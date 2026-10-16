@@ -145,7 +145,7 @@ async function idle(conn) {
 async function healthy() {
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      for (const url of ["http://127.0.0.1:5174/api/health", "https://apip2.kkhuacai08.cn/silver-api/health"]) {
+      for (const url of ["http://127.0.0.1:5174/api/health", "https://apip2.opensplendid.com/silver-api/health"]) {
         const response = await fetch(url, { signal: AbortSignal.timeout(3000), redirect: "error" });
         if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) throw Error();
         const body = await response.json(); if (body.ok !== true || body.service !== "silver" || body.database !== "ok") throw Error();
