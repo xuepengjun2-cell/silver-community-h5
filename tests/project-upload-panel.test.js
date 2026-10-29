@@ -13,7 +13,11 @@ const rendererSource = appSource.slice(start, end);
 
 function render(sessions) {
   return vm.runInNewContext(`${rendererSource}; projectUploadSessionsHtml`, {
-    state: { projectUploadSessions: sessions, projectUploadSessionsError: "" },
+    state: {
+      projectUploadSessions: sessions, projectUploadSessionsError: "",
+      projectUploadTaskMessages: {}, projectUploadTaskActions: {},
+      projectUploadTransfer: null, projectUploadBatchNotice: null
+    },
     esc: value => String(value)
   })("project-test");
 }
@@ -30,7 +34,10 @@ test("任务面板只保留处理中和需要处理的任务", () => {
   ]);
   assert.match(html, /处理中\.mp4/);
   assert.match(html, /待优化\.mp4/);
-  assert.match(html, /重试处理/);
+  assert.match(html, /重新处理/);
+  assert.match(html, /data-project-task-action="resume"[^>]*data-project-task-id="retry"/);
+  assert.match(html, /<details class="project-task-details"><summary>查看处理详情<\/summary>/);
+  assert.doesNotMatch(html, /<details[^>]* open/);
   assert.doesNotMatch(html, /成片\.mp4|处理完成|刷新素材/);
 });
 

@@ -30,6 +30,21 @@ class TosClient {
   async deleteObject({ key }) { fs.rmSync(file(key), { force: true }); return {}; }
   async createMultipartUpload() { return { data: { UploadId: "fake-upload" } }; }
   async abortMultipartUpload() { return {}; }
+  async listParts({ key }) {
+    const metadata = `${file(key)}.parts.json`;
+    return { data: { Parts: fs.existsSync(metadata) ? JSON.parse(fs.readFileSync(metadata, "utf8")) : [] } };
+  }
+  async completeMultipartUpload({ key }) {
+    const parts = (await this.listParts({ key })).data.Parts.slice().sort((a, b) => Number(a.PartNumber) - Number(b.PartNumber));
+    if (!parts.length) throw new Error("test: no multipart parts");
+    const bodies = parts.map(part => {
+      const body = fs.readFileSync(`${file(key)}.part-${part.PartNumber}`);
+      if (body.length !== Number(part.Size) || !part.ETag) throw new Error("test: incomplete multipart fixture");
+      return body;
+    });
+    fs.writeFileSync(file(key), Buffer.concat(bodies));
+    return { data: {} };
+  }
   getPreSignedUrl({ key }) { return `http://127.0.0.1:${serverPort}/${encodeURIComponent(key)}?sig=fake`; }
 }
 
