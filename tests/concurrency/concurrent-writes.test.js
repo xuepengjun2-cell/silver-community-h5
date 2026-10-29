@@ -159,7 +159,7 @@ test("H5 大视频后台生成 MP4 期间新建相册，不覆盖其他相册", 
   assert.equal((await ctx.api(`/my/activity-projects/${a}/media/upload-session/${init.data.sessionId}/complete?delivery=1`, { method: "POST", token, body: {} })).status, 202);
   const pending = await ctx.api(`/my/activity-projects/${a}/media/upload-sessions`, { token });
   assert.equal(pending.status, 200);
-  assert.equal(pending.data.sessions.find(item => item.sessionId === init.data.sessionId)?.status, "processing");
+  assert.ok(["queued", "processing"].includes(pending.data.sessions.find(item => item.sessionId === init.data.sessionId)?.status));
   await sleep(300);
   await createAlbum(ctx, token, "C");
   let status = {};

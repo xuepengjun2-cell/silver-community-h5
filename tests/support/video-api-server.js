@@ -22,13 +22,18 @@ function prepareCopy() {
   return dir;
 }
 
-async function boot({ seed = {}, tosDelay = 0, headDelay = 0, env = {} } = {}) {
+async function boot({ seed = {}, tosDelay = 0, headDelay = 0, env = {}, beforeStart } = {}) {
   const dir = prepareCopy();
   const seedFile = path.join(dir, "seed.json");
   const dumpFile = path.join(dir, "dump.json");
   fs.writeFileSync(seedFile, JSON.stringify(seed));
+  // Deterministic recovery fixtures may place source objects before startup
+  // dispatch runs; ordinary callers retain the unchanged empty-storage setup.
+  if (beforeStart) await beforeStart({ dir });
   const port = 20000 + Math.floor(Math.random() * 20000);
-  const child = spawn(process.execPath, ["--require", path.join(__dirname, "../concurrency/preload.js"), "server.js"], {
+  // Bring the fixture's signed-GET HTTP service up before startup recovery can
+  // request a source URL. Unlike real TOS, this service gets an ephemeral port.
+  const child = spawn(process.execPath, ["--require", path.join(__dirname, "../concurrency/fake-tos.js"), "--require", path.join(__dirname, "../concurrency/preload.js"), "server.js"], {
     cwd: dir,
     env: {
       ...process.env, PORT: String(port), FAKE_DB_SEED: seedFile, FAKE_DB_DUMP: dumpFile,

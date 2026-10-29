@@ -147,7 +147,7 @@ test("相册上传、续传或后台处理中不能沉淀发布，状态读取�
 });
 
 test("相册实际批量上传事件：原片传完进入 processing 仍不统计成功，批次中不能再次上传或提前沉淀", async () => {
-  const { context } = loadPage("app.js", ["state", "renderProjectManager"]);
+  const { context } = loadPage("app.js", ["state", "renderProjectManager", "projectUploadProgressHtml"]);
   const nodes = Object.fromEntries(["projectFileInput", "projectPromoteBtn", "projectUploadProgress", "projectUploadSessions"].map(id => [`#${id}`, element()]));
   context.document.querySelector = selector => nodes[selector] || null;
   context.document.querySelectorAll = () => [];
@@ -161,8 +161,14 @@ test("相册实际批量上传事件：原片传完进入 processing 仍不统�
   context.page.renderProjectManager(project);
   let release;
   const gate = new Promise(resolve => { release = resolve; });
-  let uploads = 0, promotions = 0;
-  context.uploadProjectMediaFile = async () => { uploads++; await gate; return { status: "processing", sessionId: "working" }; };
+  let uploads = 0, promotions = 0, alerts = 0;
+  context.alert = () => { alerts++; };
+  context.uploadProjectMediaFile = async (projectId, file, onProgress) => {
+    uploads++;
+    onProgress({ percent: 100 });
+    await gate;
+    return { status: "processing", sessionId: "working" };
+  };
   context.api = async () => { promotions++; return {}; };
   context.loadProjectManager = async () => {
     context.page.state.projectUploadSessions = [{ status: "processing", title: "原片.mp4" }];
@@ -170,14 +176,21 @@ test("相册实际批量上传事件：原片传完进入 processing 仍不统�
   };
   const change = () => nodes["#projectFileInput"].handlers.change({ target: { files: [{ name: "原片.mp4", type: "video/mp4", size: 500000000 }], value: "file" } });
   const running = change();
+  assert.match(nodes["#projectUploadProgress"].innerHTML, /value="100"/);
+  assert.match(nodes["#projectUploadProgress"].innerHTML, /上传到 100% 后，视频将自动进入后台转换/);
+  assert.equal(project.media.length, 0, "原片上传 100% 不能冒充后台成片成功");
   assert.equal(nodes["#projectFileInput"].disabled, true);
   assert.equal(nodes["#projectPromoteBtn"].disabled, true);
   await nodes["#projectPromoteBtn"].handlers.click({ currentTarget: nodes["#projectPromoteBtn"] });
   await change();
   assert.equal(uploads, 1); assert.equal(promotions, 0);
   release(); await running;
-  assert.match(nodes["#projectUploadProgress"].textContent, /0 项已通过校验并入相册/);
-  assert.match(nodes["#projectUploadProgress"].textContent, /1 个视频后台处理中、尚未公开/);
+  const summary = context.page.projectUploadProgressHtml(project.id);
+  assert.match(summary, /0 项已进入相册/);
+  assert.match(summary, /1 个视频已交给后台自动处理/);
+  assert.equal(project.media.length, 0, "processing 状态不进入已发布素材");
+  assert.equal(context.page.state.projectUploadTransfer, null, "传输进度结束，后台进度单独显示");
+  assert.equal(alerts, 0, "后台接管任务不弹出错误或成功提醒打断操作");
   assert.equal(nodes["#projectFileInput"].disabled, false);
   assert.equal(nodes["#projectPromoteBtn"].disabled, true);
 });

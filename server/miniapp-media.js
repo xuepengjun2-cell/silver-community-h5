@@ -97,32 +97,122 @@ async function receiveUpload(req, directory, type) {
   });
 }
 
-function run(command, args, timeoutMs = 15 * 60 * 1000) {
+function videoAbortError() {
+  const error = new Error("视频处理已停止，原片已保留。 ");
+  error.name = "AbortError";
+  error.code = "VIDEO_TASK_ABORTED";
+  return error;
+}
+
+function checkVideoAbort(options = {}) {
+  if (options.signal?.aborted) throw videoAbortError();
+}
+
+function reportVideoProgress(options, phase, percent = null) {
+  if (typeof options?.onProgress !== "function") return;
+  // Progress is advisory; a disconnected UI must not break a valid delivery.
+  try {
+    const result = options.onProgress({ phase, percent });
+    if (result && typeof result.catch === "function") result.catch(() => {});
+  } catch {}
+}
+
+function run(command, args, timeoutMs = 15 * 60 * 1000, options = {}) {
   return new Promise((resolve, reject) => {
+    if (options.signal?.aborted) return reject(videoAbortError());
+    const progressDuration = Number(options.progressDuration);
+    const reportTime = command === "ffmpeg" && typeof options.onProgress === "function" &&
+      Number.isFinite(progressDuration) && progressDuration > 0;
+    const mediaArgs = reportTime && !args.includes("-progress")
+      ? ["-progress", "pipe:1", "-nostats", ...args] : args;
     // The shared production host must keep serving requests while FFmpeg runs.
     const lowered = process.platform === "linux" && command === "ffmpeg";
     const actualCommand = lowered ? "nice" : command;
-    const actualArgs = lowered ? ["-n", "19", "ionice", "-c", "3", command, ...args] : args;
-    const child = spawn(actualCommand, actualArgs, { stdio: ["ignore", "pipe", "pipe"] });
+    const actualArgs = lowered ? ["-n", "19", "ionice", "-c", "3", command, ...mediaArgs] : mediaArgs;
+    // A dedicated process group lets cancellation stop this job's wrappers and
+    // FFmpeg only, never another conversion or the shared Node server.
+    const ownGroup = process.platform !== "win32";
+    const child = spawn(actualCommand, actualArgs, { stdio: ["ignore", "pipe", "pipe"], detached: ownGroup });
     let stderr = "";
     let stdout = "";
+    let progressLine = "";
+    let lastPercent = -1;
     let settled = false;
+    let stoppingError = null;
+    let killTimer = null;
     const finish = (error, result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
+      options.signal?.removeEventListener("abort", onAbort);
       error ? reject(error) : resolve(result);
     };
-    const timer = setTimeout(() => { child.kill("SIGKILL"); finish(new Error("视频处理超时，请尝试较短的片段。")); }, timeoutMs);
-    child.stdout.on("data", chunk => { if (stdout.length < 64 * 1024) stdout += chunk; });
+    const signalChild = signal => {
+      try {
+        if (ownGroup && Number.isInteger(child.pid) && child.pid > 0) process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) {
+        if (error.code !== "ESRCH") {
+          try { child.kill(signal); } catch {}
+        }
+      }
+    };
+    const stop = (error, force = false) => {
+      if (settled || stoppingError) return;
+      stoppingError = error;
+      signalChild(force ? "SIGKILL" : "SIGTERM");
+      if (!force && !settled) killTimer = setTimeout(() => signalChild("SIGKILL"), 1500);
+      // Wait for close before rejecting: callers must not release their space
+      // lease or remove staging while a child still has an output file open.
+    };
+    const onAbort = () => stop(videoAbortError());
+    const timer = setTimeout(() => {
+      const error = new Error("视频处理超时，请尝试较短的片段。");
+      error.code = "VIDEO_TASK_TIMEOUT";
+      stop(error, true);
+    }, timeoutMs);
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    // Close the small race between the initial check and listener registration.
+    if (options.signal?.aborted) onAbort();
+    child.stdout.on("data", chunk => {
+      if (stdout.length < 64 * 1024) stdout += chunk;
+      if (!reportTime || stoppingError) return;
+      progressLine = (progressLine + chunk.toString()).slice(-64 * 1024);
+      const lines = progressLine.split(/\r?\n/);
+      progressLine = lines.pop();
+      for (const line of lines) {
+        const match = line.match(/^out_time_(?:us|ms)=(\d+)$/);
+        if (!match) continue;
+        // FFmpeg's historical out_time_ms field is also measured in microseconds.
+        const percent = Math.min(99, Math.max(0, Number(match[1]) / 1000000 / progressDuration * 100));
+        if (percent <= lastPercent) continue;
+        lastPercent = percent;
+        reportVideoProgress(options, options.phase || "converting", percent);
+      }
+    });
     child.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-4000); });
-    child.on("error", error => finish(new Error(`${command} 不可用：${error.message}`)));
-    child.on("close", code => finish(code === 0 ? null : new Error(`${command} 处理失败：${stderr.slice(-500)}`), stdout));
+    child.on("error", error => {
+      const unavailable = new Error(`${command} 不可用：${error.message}`);
+      unavailable.code = "MEDIA_TOOL_UNAVAILABLE";
+      finish(stoppingError || unavailable);
+    });
+    child.on("close", (code, signal) => {
+      let error = stoppingError;
+      if (!error && code !== 0) {
+        const detail = stderr.trim().slice(-500) || "未返回诊断信息";
+        error = new Error(`${command} 处理失败（退出码：${code ?? "无"}${signal ? `，信号：${signal}` : ""}）：${detail}`);
+        error.code = "MEDIA_PROCESS_FAILED";
+      }
+      if (error) { error.exitCode = code; error.signal = signal || null; }
+      finish(error, stdout);
+    });
   });
 }
 
-async function probe(file) {
-  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration,format_name:stream=codec_type,codec_name,width,height,pix_fmt,duration", "-of", "json", file], 30 * 1000);
+async function probe(file, options = {}) {
+  checkVideoAbort(options);
+  const raw = await run("ffprobe", ["-v", "error", "-show_entries", "format=duration,format_name:stream=codec_type,codec_name,width,height,pix_fmt,duration", "-of", "json", file], 30 * 1000, { signal: options.signal });
   try { return JSON.parse(raw); }
   catch { throw new Error("无法识别媒体格式。 "); }
 }
@@ -179,11 +269,13 @@ function positiveDuration(value) {
 
 // Read MP4 top-level boxes without loading the video into memory. A complete
 // moov box before mdat is required for playback before the whole file downloads.
-async function verifyFaststart(file, size) {
+async function verifyFaststart(file, size, options = {}) {
+  checkVideoAbort(options);
   const handle = await fsp.open(file, "r");
   let offset = 0, moov = null, mdat = null, ftyp = false, boxes = 0;
   try {
     while (offset < size) {
+      checkVideoAbort(options);
       if (++boxes > 4096) throw new Error("视频 MP4 索引异常。 ");
       const header = Buffer.alloc(16);
       if ((await handle.read(header, 0, 8, offset)).bytesRead !== 8) throw new Error("视频 MP4 索引不完整。 ");
@@ -205,11 +297,12 @@ async function verifyFaststart(file, size) {
   if (!ftyp || moov === null || mdat === null || moov > mdat) throw new Error("视频未通过 MP4 首屏索引校验，请重新处理后上传。 ");
 }
 
-async function verifyVideoDelivery(source, target) {
+async function verifyVideoDelivery(source, target, options = {}) {
+  checkVideoAbort(options);
   const stat = await fsp.stat(target);
   if (!stat.isFile() || !stat.size || stat.size >= MAX_DELIVERY_BYTES) throw new Error("视频成品须小于200MB，请分段上传。 ");
-  const input = await probe(source);
-  const output = path.resolve(source) === path.resolve(target) ? input : await probe(target);
+  const input = await probe(source, options);
+  const output = path.resolve(source) === path.resolve(target) ? input : await probe(target, options);
   const inputVideo = (input.streams || []).find(stream => stream.codec_type === "video");
   const inputAudio = (input.streams || []).find(stream => stream.codec_type === "audio");
   const videos = (output.streams || []).filter(stream => stream.codec_type === "video");
@@ -230,70 +323,88 @@ async function verifyVideoDelivery(source, target) {
   if (durations.some(([before, after]) => !before || !after || Math.abs(before - after) >= 1)) {
     throw new Error("视频成品未保留原画面或声音的完整时长，请重新处理后上传。 ");
   }
-  await verifyFaststart(target, stat.size);
+  await verifyFaststart(target, stat.size, options);
   // Decode each track separately: a decodable video must not hide a broken AAC
   // track. Check the head, middle and tail of each track's own full duration.
   for (const [type, length] of [["v", videoDuration], ...(inputAudio ? [["a", audioDuration]] : [])]) {
     const sampleLength = Math.min(2, length);
     const points = [...new Set([0, Math.max(0, length / 2 - sampleLength / 2), Math.max(0, length - sampleLength)])];
     for (const point of points) {
+      checkVideoAbort(options);
       const decoded = await run("ffmpeg", [
         "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1", "-xerror", "-err_detect", "explode", "-ss", String(point), "-i", target,
         "-map", `0:${type}:0`, "-threads", "1", "-t", String(sampleLength),
         ...(type === "v" ? ["-progress", "pipe:1", "-f", "null", "-"] : ["-ac", "1", "-ar", "8000", "-f", "s16le", "pipe:1"])
-      ], 60 * 1000);
+      ], 60 * 1000, { signal: options.signal });
       if (type === "v" ? !/frame=\s*[1-9]\d*/.test(decoded) : !decoded.length) throw new Error("视频成品部分画面或声音无法解码，请重新上传。 ");
     }
   }
   const after = await fsp.stat(target);
+  checkVideoAbort(options);
   if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ino !== stat.ino) throw new Error("视频成品在校验期间发生变化，请重新上传。 ");
   return { size: after.size, duration, videoDuration, audioDuration };
 }
 
-async function processVideo(source, target) {
+async function processVideo(source, target, options = {}) {
+  checkVideoAbort(options);
   if (path.resolve(source) === path.resolve(target)) throw new Error("视频处理必须保留独立原片。 ");
-  const input = videoEncoding(await probe(source));
+  reportVideoProgress(options, "probing");
+  const input = videoEncoding(await probe(source, options));
   const sourceSize = (await fsp.stat(source)).size;
+  checkVideoAbort(options);
   const mode = videoDeliveryMode(input, sourceSize);
   const sourceBitrate = Math.floor(sourceSize * 8 * 0.9 / input.duration / 1000 - input.audioBitrate);
   // 已兼容的原视频只转封装并把索引移到文件头，避免重复有损编码。
   if (mode === "copy") {
     try {
       await run("ffmpeg", [
-        "-nostdin", "-hide_banner", "-loglevel", "error", "-xerror", "-err_detect", "explode", "-i", source,
+        "-nostdin", "-hide_banner", "-loglevel", "warning", "-threads", "1", "-xerror", "-err_detect", "explode", "-i", source,
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", "-movflags", "+faststart", "-y", target
-      ], 10 * 60 * 1000);
+      ], 10 * 60 * 1000, { ...options, phase: "converting", progressDuration: input.duration });
+      checkVideoAbort(options);
       const copied = (await fsp.stat(target)).size;
       if (copied > 0 && copied < MAX_DELIVERY_BYTES) {
-        return (await verifyVideoDelivery(source, target)).size;
+        reportVideoProgress(options, "verifying");
+        return (await verifyVideoDelivery(source, target, options)).size;
       }
-    } catch { /* 不可转封装时回退转码；原件仍保持不变。 */ }
+    } catch (error) {
+      // Stopping the job must never accidentally start a fresh encoder.
+      if (error.code === "VIDEO_TASK_ABORTED" || options.signal?.aborted) throw error;
+      /* 不可转封装时回退转码；原件仍保持不变。 */
+    }
+    checkVideoAbort(options);
     await fsp.rm(target, { force: true });
   }
   // 原片码率已低时不盲目把小文件放大；交付大小上限仍由最终校验决定。
   const bitrate = Math.floor(Math.min(input.bitrate, sourceBitrate));
   const profile = videoEncodingProfile(bitrate);
+  reportVideoProgress(options, "converting", 0);
   await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-xerror", "-err_detect", "explode", "-i", source,
+    "-nostdin", "-hide_banner", "-loglevel", "warning", "-filter_threads", "1", "-threads", "1", "-xerror", "-err_detect", "explode", "-i", source,
     "-map", "0:v:0", "-map", "0:a:0?", "-vf", `scale=w='min(${profile.maxDimension},iw)':h='min(${profile.maxDimension},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=${profile.fps}`,
     "-c:v", "libx264", "-preset", "veryfast", "-threads", "1", "-pix_fmt", "yuv420p", "-b:v", `${bitrate}k`,
     "-maxrate", `${bitrate}k`, "-bufsize", `${bitrate * 2}k`,
     "-c:a", "aac", "-b:a", `${input.audioBitrate || 64}k`, "-movflags", "+faststart", "-y", target
-  ], Math.min(5 * 60 * 60 * 1000, Math.max(30 * 60 * 1000, input.duration * 2 * 1000 + 15 * 60 * 1000)));
-  return (await verifyVideoDelivery(source, target)).size;
+  ], Math.min(5 * 60 * 60 * 1000, Math.max(30 * 60 * 1000, input.duration * 2 * 1000 + 15 * 60 * 1000)), { ...options, phase: "converting", progressDuration: input.duration });
+  checkVideoAbort(options);
+  reportVideoProgress(options, "verifying");
+  return (await verifyVideoDelivery(source, target, options)).size;
 }
 
-async function processVideoPoster(video, target) {
+async function processVideoPoster(video, target, options = {}) {
+  checkVideoAbort(options);
+  reportVideoProgress(options, "poster");
   // Decode the first actual video frame; never use a fake generic cover.
   await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-loglevel", "error", "-i", video,
-    "-map", "0:v:0", "-frames:v", "1",
+    "-nostdin", "-hide_banner", "-loglevel", "error", "-filter_threads", "1", "-threads", "1", "-i", video,
+    "-map", "0:v:0", "-frames:v", "1", "-threads", "1",
     "-vf", "scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
     "-q:v", "4", "-y", target
-  ], 2 * 60 * 1000);
+  ], 2 * 60 * 1000, { signal: options.signal });
   const stat = await fsp.stat(target);
+  checkVideoAbort(options);
   if (!stat.size || stat.size > 3 * 1024 * 1024) throw new Error("视频首帧封面生成失败，请重试。 ");
-  const info = await probe(target);
+  const info = await probe(target, options);
   if (!(info.streams || []).some(stream => stream.codec_name === "mjpeg" && stream.width > 0 && stream.height > 0)) {
     throw new Error("视频首帧封面未通过格式校验，请重试。 ");
   }

@@ -7,6 +7,7 @@ const { MAX_VIDEO_BYTES: MINIAPP_MAX_VIDEO_BYTES, receiveUpload: receiveMiniappU
 const { ensureWorkingSpace, receiveRawVideo, downloadVideo } = require("./server/video-delivery-io");
 const { trustedObjectKey, assertDeliveryMetadata, canonicalVideoReferences } = require("./server/video-publication");
 const { createVideoSpaceReservations } = require("./server/video-space");
+const { createProjectVideoTasks } = require("./server/project-video-tasks");
 const videoSpace = createVideoSpaceReservations();
 const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
 const { exchangeWechatCode, identityError, identityFingerprint, validateApplication } = require("./server/wechat-identity");
@@ -120,6 +121,8 @@ let _miniappJobWrites = Promise.resolve();
 let _miniappQueue = Promise.resolve();
 const _projectDeliveryQueued = new Set();
 const _projectCompleting = new Set();
+const _projectDeliveryTickets = new Map();
+let _projectVideoTasks;
 
 function videoProcessingPaused(req, res) {
   if (H5_AUTO_VIDEO_DELIVERY) return false;
@@ -353,6 +356,47 @@ async function updateProjectUploadSession(sessionId, fields) {
     now(),
     sessionId
   ]);
+}
+
+function projectVideoTasks() {
+  if (_projectVideoTasks) return _projectVideoTasks;
+  _projectVideoTasks = createProjectVideoTasks({
+    read: readProjectUploadSession,
+    update: updateProjectUploadSession,
+    getStorage: getCaseVideoTosClient,
+    assertSize: assertTosObjectSize,
+    preparing: _projectCompleting,
+    enabled: () => H5_AUTO_VIDEO_DELIVERY,
+    pendingCount: videoQueuePendingCount,
+    enqueue: enqueueProjectVideoDelivery,
+    removeQueued: id => { _projectDeliveryTickets.delete(id); _projectDeliveryQueued.delete(id); },
+    listQueued: async () => {
+      const [rows] = await pool.query("SELECT id FROM project_upload_sessions WHERE status IN ('queued','processing') ORDER BY created_at ASC LIMIT 1000");
+      return rows;
+    },
+    listUploading: async () => {
+      const cutoff = new Date(Date.now() - PROJECT_UPLOAD_SESSION_TTL_MS).toISOString();
+      const [rows] = await pool.query("SELECT id FROM project_upload_sessions WHERE status = 'uploading' AND updated_at >= ? ORDER BY created_at ASC LIMIT 1000", [cutoff]);
+      return rows;
+    },
+    canManage: (session, actor) => {
+      const project = (readDb().activityProjects || []).find(item => item.id === session.project_id);
+      const uploader = (readDb().users || []).find(item => item.id === session.owner_id && item.status === 'active');
+      if (!projectCanManage(uploader, project)) return false;
+      if (actor === undefined) return true;
+      const resolved = typeof actor === 'function' ? actor() : actor;
+      const current = resolved && (readDb().users || []).find(item => item.id === resolved.id && item.status === 'active');
+      return Boolean(current && projectCanManage(current, project) && (session.owner_id === current.id || current.role === 'admin'));
+    },
+    canControl: (session, actor) => {
+      const project = (readDb().activityProjects || []).find(item => item.id === session.project_id);
+      const resolved = typeof actor === 'function' ? actor() : actor;
+      const current = resolved && (readDb().users || []).find(item => item.id === resolved.id && item.status === 'active');
+      return Boolean(current && projectCanManage(current, project) && (session.owner_id === current.id || current.role === 'admin'));
+    },
+    log: error => console.error('[project-video-task]', error.code || error.name || 'Error', String(error.message || '').replace(/https?:\/\/\S+/g, '[URL omitted]').slice(0, 300))
+  });
+  return _projectVideoTasks;
 }
 
 async function cleanupStaleProjectUploadSessions() {
@@ -1406,16 +1450,21 @@ function enqueueMiniappVideo(job) {
 
 function enqueueProjectVideoDelivery(sessionId) {
   if (_projectDeliveryQueued.has(sessionId)) return;
+  const ticket = {};
+  _projectDeliveryTickets.set(sessionId, ticket);
   _projectDeliveryQueued.add(sessionId);
   _miniappQueue = _miniappQueue.catch(() => {}).then(async () => {
+    if (_projectDeliveryTickets.get(sessionId) !== ticket) return;
     const staging = path.join(MINIAPP_STAGE_DIR, `h5_${sessionId}`);
     const uploadedKeys = [];
     let publicationAttempted = false;
     let releaseSpace = () => {};
+    let execution = null;
     try {
-      const session = await readProjectUploadSession(sessionId);
-      if (!session || session.status !== "processing") return;
-      if (!H5_AUTO_VIDEO_DELIVERY) throw new Error("视频处理已暂停，原片保留，恢复后可重试。");
+      execution = await projectVideoTasks().begin(sessionId);
+      if (!execution) return;
+      const { session, signal, onProgress } = execution;
+      const assertActive = () => projectVideoTasks().assertActive(sessionId, signal);
       const assertCanPublish = current => {
         const uploader = (readDb().users || []).find(item => item.id === session.owner_id && item.status === "active");
         if (!current || !projectCanManage(uploader, current)) throw new Error("活动相册或上传权限已变更，原片暂不发布。");
@@ -1430,33 +1479,40 @@ function enqueueProjectVideoDelivery(sessionId) {
       const source = path.join(staging, "source");
       const target = path.join(staging, "delivery.mp4");
       const posterFile = path.join(staging, "poster.jpg");
-      await downloadVideo(client.getPreSignedUrl({ bucket, key: session.object_key, method: "GET", expires: 7200 }), source, Number(session.file_size), H5_PROJECT_VIDEO_MAX_BYTES);
-      const size = await processMiniappVideo(source, target);
+      await downloadVideo(client.getPreSignedUrl({ bucket, key: session.object_key, method: "GET", expires: 7200 }), source, Number(session.file_size), H5_PROJECT_VIDEO_MAX_BYTES, { signal, onProgress });
+      await assertActive();
+      const size = await processMiniappVideo(source, target, { signal, onProgress });
       const fingerprint = await hashFileSHA256(target);
-      const posterSize = await processVideoPoster(target, posterFile);
+      await assertActive();
+      const posterSize = await processVideoPoster(target, posterFile, { signal, onProgress });
       const filename = `project_${session.project_id}_${session.id}_${fingerprint.slice(0, 16)}.mp4`;
       const posterName = `project_${session.project_id}_${session.id}_${fingerprint.slice(0, 16)}_poster.jpg`;
+      await assertActive();
+      onProgress({ phase: 'uploading', percent: null });
       const url = await uploadProjectFileToTos(target, filename, "video", "video/mp4");
       uploadedKeys.push(projectTosObjectKey(url));
+      await assertActive();
       const poster = await uploadProjectFileToTos(posterFile, posterName, "image", "image/jpeg");
       uploadedKeys.push(projectTosObjectKey(poster));
       assertTosObjectSize(await client.headObject({ bucket, key: projectTosObjectKey(poster) }), posterSize);
       const media = { type: "video", url, poster, title: cleanString(session.title), caption: "", size, fingerprint, createdAt: now() };
       // All object checks precede cache mutation; failed validation cannot publish media.
       await verifyPublishedVideo(media);
-      const result = commitActivityProject(session.project_id, current => {
-        const list = assertCanPublish(current).media || [];
-        const duplicate = list.find(item => item.type === "video" && (item.url === url || item.fingerprint === fingerprint));
-        return { ...current, media: duplicate ? list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item) : [...list, media], updatedAt: now() };
+      await projectVideoTasks().publish(sessionId, signal, async () => {
+        const result = commitActivityProject(session.project_id, current => {
+          const list = assertCanPublish(current).media || [];
+          const duplicate = list.find(item => item.type === "video" && (item.url === url || item.fingerprint === fingerprint));
+          return { ...current, media: duplicate ? list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item) : [...list, media], updatedAt: now() };
+        });
+        if (!result) throw new Error("活动相册已删除，原片暂不发布。");
+        publicationAttempted = true;
+        await writeDb(result.db);
+        if (!await projectMediaPersisted(session.project_id, url, poster)) throw new Error("交付文件或首帧尚未写入数据库，原片暂时保留。");
+        await updateProjectUploadSession(sessionId, { status: "completed", media_url: url, error: null });
       });
-      if (!result) throw new Error("活动相册已删除，原片暂不发布。");
-      publicationAttempted = true;
-      await writeDb(result.db);
-      if (!await projectMediaPersisted(session.project_id, url, poster)) throw new Error("交付文件或首帧尚未写入数据库，原片暂时保留。");
-      await updateProjectUploadSession(sessionId, { status: "completed", media_url: url, error: null });
       await client.deleteObject({ bucket, key: session.object_key }).catch(error => console.error("[project-video-source-cleanup]", sessionId, error.message));
     } catch (error) {
-      console.error("[project-video-delivery]", sessionId, error && (error.stack || error.message || error));
+      if (error.code !== 'VIDEO_TASK_ABORTED') console.error("[project-video-delivery]", sessionId, error && (error.stack || error.message || error));
       if (!publicationAttempted) {
         try {
           const { client, bucket } = getCaseVideoTosClient();
@@ -1465,22 +1521,22 @@ function enqueueProjectVideoDelivery(sessionId) {
           for (const key of uploadedKeys) if (!refs.some(item => projectTosObjectKey(item.url) === key || projectTosObjectKey(item.poster) === key)) await client.deleteObject({ bucket, key });
         } catch (cleanupError) { console.error("[project-video-delivery-orphan]", cleanupError); }
       }
-      await updateProjectUploadSession(sessionId, { status: "delivery_failed", error: String(error.message || "转码失败").slice(0, 1000) }).catch(() => {});
+      await projectVideoTasks().fail(sessionId, error, execution?.control).catch(() => {});
     } finally {
       releaseSpace();
       await fs.promises.rm(staging, { recursive: true, force: true }).catch(error => console.error("[project-video-staging-cleanup]", error));
-      _projectDeliveryQueued.delete(sessionId);
+      if (_projectDeliveryTickets.get(sessionId) === ticket) {
+        _projectDeliveryTickets.delete(sessionId);
+        _projectDeliveryQueued.delete(sessionId);
+      }
+      if (execution) projectVideoTasks().finish(sessionId, execution.control);
+      else void projectVideoTasks().dispatch().catch(error => console.error('[project-video-dispatch]', error.message));
     }
   });
 }
 
 async function resumeProjectVideoDeliveries() {
-  const [rows] = await pool.query("SELECT id FROM project_upload_sessions WHERE status = 'processing' ORDER BY created_at ASC LIMIT 1000");
-  if (!H5_AUTO_VIDEO_DELIVERY) {
-    for (const row of rows) await updateProjectUploadSession(row.id, { status: "delivery_failed", error: "后台压缩已暂停；原片仍保留，可在恢复后重试。" });
-    return;
-  }
-  for (const row of rows) enqueueProjectVideoDelivery(row.id);
+  await projectVideoTasks().dispatch();
 }
 
 async function resumeMiniappJobs() {
@@ -3575,7 +3631,7 @@ async function handleApi(req, res, pathname) {
     if (!projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能查看这个相册的上传任务" });
     const columns = "id, owner_id, title, filename, status, error, created_at, updated_at";
     const [active] = await pool.query(
-      `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status IN ('uploading','failed','processing','delivery_failed') ORDER BY created_at DESC LIMIT 50`,
+      `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status IN ('uploading','failed','queued','processing','paused','delivery_failed') ORDER BY created_at DESC LIMIT 50`,
       [projectId]
     );
     const [completed] = await pool.query(
@@ -3587,7 +3643,7 @@ async function handleApi(req, res, pathname) {
       .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
     return sendJson(res, 200, { sessions: visible.map(item => ({
       sessionId: item.id, title: item.title || item.filename, status: item.status,
-      error: item.error || "", updatedAt: item.updated_at
+      error: item.error || "", updatedAt: item.updated_at, progress: projectVideoTasks().getProgress(item)
     })) });
   }
 
@@ -3617,14 +3673,22 @@ async function handleApi(req, res, pathname) {
         mediaUrl: session.media_url || ""
       });
     }
-    if (["processing", "delivery_failed"].includes(session.status)) {
-      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "" });
+    if (["queued", "processing", "delivery_failed"].includes(session.status)) {
+      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectVideoTasks().getProgress(session) });
     }
-    if (session.status === "aborted") return sendJson(res, 409, { error: "上传会话已取消", status: session.status });
+    if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出", status: session.status });
     try {
       const { client, bucket } = getCaseVideoTosClient();
-      const listed = await client.listParts({ bucket, key: session.object_key, uploadId: session.upload_id, maxParts: 10000 });
-      const parts = listed?.data?.Parts || listed?.Parts || [];
+      let parts;
+      let head = null;
+      try { head = await client.headObject({ bucket, key: session.object_key }); } catch {}
+      if (head) {
+        assertTosObjectSize(head, session.file_size);
+        parts = Array.from({length:Number(session.part_count)},(_,index)=>({ PartNumber:index+1, Size:index+1<Number(session.part_count)?Number(session.part_size):Number(session.file_size)-(Number(session.part_count)-1)*Number(session.part_size) }));
+      } else {
+        const listed = await client.listParts({ bucket, key: session.object_key, uploadId: session.upload_id, maxParts: 10000 });
+        parts = listed?.data?.Parts || listed?.Parts || [];
+      }
       const completedParts = parts.map(part => Number(part.PartNumber)).filter(Number.isInteger).sort((a, b) => a - b);
       const uploadedBytes = parts.reduce((total, part) => total + Math.max(0, Number(part.Size) || 0), 0);
       return sendJson(res, 200, {
@@ -3641,6 +3705,32 @@ async function handleApi(req, res, pathname) {
     } catch (error) {
       console.error("[project-video-multipart-status]", error && (error.stack || error.message || error));
       return sendJson(res, 502, { error: "视频上传进度读取失败，请稍后重试" });
+    }
+  }
+
+  const projectVideoTaskAction = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/media\/upload-session\/([^/]+)\/(pause|resume|dismiss)$/);
+  if (req.method === 'POST' && projectVideoTaskAction) {
+    const user = requireRole(req, res, ['admin','operator','member']);
+    if (!user) return;
+    req.resume();
+    const projectId = decodeURIComponent(projectVideoTaskAction[1]);
+    const sessionId = decodeURIComponent(projectVideoTaskAction[2]);
+    const session = await readProjectUploadSession(sessionId);
+    if (!session || session.project_id !== projectId) return sendJson(res,404,{error:'上传任务不存在'});
+    const project = (readDb().activityProjects || []).find(item=>item.id===projectId);
+    if (!projectCanManage(user,project) || (session.owner_id!==user.id && user.role!=='admin')) return sendJson(res,403,{error:'仅上传者或总部管理员可以管理此任务'});
+    try {
+      const tasks=projectVideoTasks();
+      const action=projectVideoTaskAction[3];
+      const actor=()=>getAuthedUser(req);
+      const result=action==='resume' ? await tasks.prepare(sessionId,{actor,resume:true}) : await tasks[action](sessionId,actor);
+      const status=result.status;
+      const response={ok:true,sessionId,status,progress:tasks.getProgress({...result,id:sessionId})};
+      if(status==='uploading')Object.assign(response,{fileSize:Number(result.file_size),partSize:Number(result.part_size),partCount:Number(result.part_count),completedParts:result.completedParts||[],uploadedBytes:Number(result.uploadedBytes)||0});
+      return sendJson(res,['queued','processing'].includes(status)?202:200,response);
+    } catch(error) {
+      console.error('[project-video-task-action]',error.code||error.name,String(error.message||'').replace(/https?:\/\/\S+/g,'[URL omitted]').slice(0,300));
+      return sendJson(res,error.httpStatus||502,{error:error.httpStatus?error.message:'任务暂未更新，请稍后重试',code:error.code||'VIDEO_TASK_UPDATE_FAILED'});
     }
   }
 
@@ -3667,63 +3757,15 @@ async function handleApi(req, res, pathname) {
     if (new URL(req.url, "http://localhost").searchParams.get("delivery") !== "1") {
       return sendJson(res, 409, { error: "后台视频处理已升级，请刷新页面后重试；已上传的分片会保留。" });
     }
-    if (session.status === "processing") return sendJson(res, 202, { ok: true, sessionId, status: "processing" });
-    if (videoQueueBusy(req, res)) return;
-    if (session.status === "delivery_failed" && !H5_AUTO_VIDEO_DELIVERY) return sendJson(res, 409, { error: "视频转码暂未启用，请联系管理员重试。" });
+    if (["queued", "processing"].includes(session.status)) return sendJson(res, 202, { ok: true, sessionId, status: session.status, progress:projectVideoTasks().getProgress(session) });
     if (session.status === "completed") return sendJson(res, 409, { error: "交付文件未找到，请联系管理员核查。" });
-    if (session.status === "aborted") return sendJson(res, 409, { error: "上传会话已取消" });
-
-    const { client, bucket } = getCaseVideoTosClient();
-    let objectCompleted = false;
-    if (_projectCompleting.has(sessionId)) return sendJson(res, 409, { error: "此视频正在合并，请稍后查询处理进度。" });
-    _projectCompleting.add(sessionId);
+    if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出" });
     try {
-      const latestSession = await readProjectUploadSession(sessionId);
-      if (latestSession?.status === "processing") return sendJson(res, 202, { ok: true, sessionId, status: "processing" });
-      if (latestSession?.status === "completed") return sendJson(res, 200, { ok: true, sessionId, status: "completed", completed: true });
-      if (!latestSession || latestSession.status === "aborted") return sendJson(res, 409, { error: "上传会话不可用，请刷新后重试。" });
-      let objectReady = false;
-      let headResult = null;
-      try {
-        headResult = await client.headObject({ bucket, key: session.object_key });
-      } catch {}
-      if (headResult) {
-        assertTosObjectSize(headResult, session.file_size);
-        objectReady = true;
-      }
-      if (!objectReady) {
-        const listed = await client.listParts({ bucket, key: session.object_key, uploadId: session.upload_id, maxParts: 10000 });
-        const parts = listed?.data?.Parts || listed?.Parts || [];
-        const expectedCount = Number(session.part_count);
-        if (parts.length !== expectedCount) return sendJson(res, 409, { error: `视频仍有分片未上传（已收到${parts.length}/${expectedCount}片）` });
-        const byNumber = new Map(parts.map(part => [Number(part.PartNumber), part]));
-        for (let partNumber = 1; partNumber <= expectedCount; partNumber++) {
-          const part = byNumber.get(partNumber);
-          if (!part || !part.ETag) return sendJson(res, 409, { error: `视频第${partNumber}片未上传完成` });
-          const expectedSize = partNumber < expectedCount
-            ? Number(session.part_size)
-            : Number(session.file_size) - (expectedCount - 1) * Number(session.part_size);
-          if (Number(part.Size) !== expectedSize) return sendJson(res, 409, { error: `视频第${partNumber}片大小不完整` });
-        }
-        await client.completeMultipartUpload({ bucket, key: session.object_key, uploadId: session.upload_id, completeAll: true });
-        headResult = await client.headObject({ bucket, key: session.object_key });
-        assertTosObjectSize(headResult, session.file_size);
-        objectCompleted = true;
-      } else {
-        objectCompleted = true;
-      }
-
-      const current = (readDb().activityProjects || []).find(item => item.id === projectId);
-      if (!current || !projectCanManage(getAuthedUser(req), current)) return sendJson(res, 403, { error: "相册权限已变更，原片暂不发布。" });
-      await updateProjectUploadSession(sessionId, { status: "processing", error: null });
-      enqueueProjectVideoDelivery(sessionId);
-      return sendJson(res, 202, { ok: true, sessionId, status: "processing", storage: "tos-multipart" });
+      const result=await projectVideoTasks().prepare(sessionId,{actor:()=>getAuthedUser(req),resume:session.status==='delivery_failed'});
+      return sendJson(res,202,{ok:true,sessionId,status:result.status,storage:'tos-multipart',progress:projectVideoTasks().getProgress({...result,id:sessionId})});
     } catch (error) {
-      await updateProjectUploadSession(sessionId, { status: objectCompleted ? "delivery_failed" : "failed", error: String(error.message || error).slice(0, 1000) }).catch(() => {});
-      console.error("[project-video-multipart-complete]", error && (error.stack || error.message || error));
-      return sendJson(res, 502, { error: "视频分片已上传，但 TOS 合并失败：" + (error.message || "未知错误") });
-    } finally {
-      _projectCompleting.delete(sessionId);
+      console.error('[project-video-multipart-complete]',error.code||error.name,String(error.message||'').replace(/https?:\/\/\S+/g,'[URL omitted]').slice(0,300));
+      return sendJson(res,error.httpStatus||502,{error:error.httpStatus?error.message:'原片已保留，后台会继续检查，请稍后查看任务进度',code:error.code||'VIDEO_TASK_WAITING'});
     }
   }
 
@@ -4926,6 +4968,10 @@ initDb()
       });
     }, 6 * 60 * 60 * 1000);
     cleanupTimer.unref();
+    const projectVideoRecoveryTimer = setInterval(() => {
+      projectVideoTasks().autoRecover().catch(error => console.error('[project-video-recovery]', error.code || error.name));
+    }, 15000);
+    projectVideoRecoveryTimer.unref();
     server.listen(PORT, () => {
       console.log(`Silver community H5 (MySQL) running at http://localhost:${PORT}`);
       console.log(`Admin console: http://localhost:${PORT}/admin`);
