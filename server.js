@@ -10,6 +10,7 @@ const { createVideoSpaceReservations } = require("./server/video-space");
 const { validateProjectImage, MAX_IMAGE_BYTES } = require("./server/project-image-delivery");
 const { createProjectVideoTasks } = require("./server/project-video-tasks");
 const videoSpace = createVideoSpaceReservations();
+const { createPhotoViews, photoResourcesAvailable } = require("./server/photo-views");
 const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
 const { exchangeWechatCode, identityError, identityFingerprint, validateApplication } = require("./server/wechat-identity");
 const { activitySopPdf } = require("./server/sop-pdf");
@@ -321,6 +322,31 @@ function getCaseVideoTosClient() {
   _caseVideoTosClient = { client: new TosClient(config), bucket: config.bucket };
   return _caseVideoTosClient;
 }
+
+let _photoViews;
+function photoViews() {
+  if (!_photoViews) _photoViews = createPhotoViews({
+    stateFile: path.join(DATA_DIR, "photo-views.json"),
+    stagingRoot: path.join(DATA_DIR, ".photo-view-staging"),
+    getStorage: getCaseVideoTosClient,
+    reserve: () => videoSpace.reserve(DATA_DIR, 1280 * 1024 * 1024),
+    resolveSource(media) {
+      const key = trustedObjectKey(media.url, [[PROJECT_IMAGE_PUBLIC_BASE, PROJECT_IMAGE_TOS_PREFIX], [CASE_IMAGE_PUBLIC_BASE, CASE_IMAGE_TOS_PREFIX]]);
+      return key && !key.includes("/photo-views/") ? { key, url: media.url } : null;
+    },
+    isReferenced(media) {
+      const db = readDb();
+      return [...(db.activityProjects || []), ...(db.cases || [])].some(doc => (doc.media || []).some(item => item.type === "image" && item.url === media.url));
+    },
+    canRun: async () => videoQueuePendingCount() === 0 && _projectImageQueued.size === 0 && _projectImagePreparing.size === 0 && await photoResourcesAvailable(DATA_DIR)
+  });
+  return _photoViews;
+}
+// Wait for this service's owned subprocesses and staging on shutdown. The
+// existing release idle gate prevents stopping active uploads/video jobs.
+for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => {
+  Promise.resolve(_photoViews?.stop()).finally(() => { process.exit(0); });
+});
 
 function projectVideoTosObject(filename) {
   return {
@@ -2172,7 +2198,8 @@ function caseCategories(list) {
 
 function publicCase(c) {
   const { createdBy, ...rest } = normalizeCase(c, c);
-  return rest;
+  if (rest.status !== "published") return rest;
+  return { ...rest, media: (rest.media || []).map(media => photoViews().decorate(media)) };
 }
 
 function normalizeProjectMedia(input) {
@@ -2416,6 +2443,7 @@ function publicProject(project, db, options = {}) {
   const activity = (db.activities || []).find(a => a.id === item.activityId);
   const result = {
     ...safe,
+    media: (safe.media || []).map(media => photoViews().decorate(media)),
     activityTitle: activity?.title || "",
     activityCategory: activity?.category || ""
   };
@@ -3556,6 +3584,8 @@ async function handleApi(req, res, pathname) {
     const media = Array.isArray(item.media) ? item.media : [];
     const m = media[idx];
     if (!m || !m.url) return sendJson(res, 404, { error: "素材不存在" });
+    const expectedUrl = new URL(req.url, "http://localhost").searchParams.get("expectedUrl");
+    if (expectedUrl !== null && expectedUrl !== m.url) return sendJson(res, 409, { error: "案例素材已变化，请刷新后下载", code: "PHOTO_IDENTITY_CHANGED" });
     const filename = auditMediaFilename(m, idx);
     if (m.type === "link") {
       await recordAuditLog(req, {
@@ -3653,6 +3683,8 @@ async function handleApi(req, res, pathname) {
     const media = Array.isArray(item.media) ? item.media : [];
     const m = media[idx];
     if (!m || !m.url) return sendJson(res, 404, { error: "素材不存在" });
+    const expectedUrl = new URL(req.url, "http://localhost").searchParams.get("expectedUrl");
+    if (expectedUrl !== null && expectedUrl !== m.url) return sendJson(res, 409, { error: "相册素材已变化，请刷新后下载", code: "PHOTO_IDENTITY_CHANGED" });
     try {
       const url = projectDownloadUrl(item, m, idx);
       const filename = projectDownloadFileName(item, m, idx);
@@ -3679,6 +3711,8 @@ async function handleApi(req, res, pathname) {
     const idx = Number(rawIndex);
     const m = /^\d+$/.test(rawIndex || "") && Number.isSafeInteger(idx) && Array.isArray(item.media) ? item.media[idx] : null;
     if (!m || m.type !== "video" || !m.url) return sendJson(res, 404, { error: "视频不存在" });
+    const expectedUrl = new URL(req.url, "http://localhost").searchParams.get("expectedUrl");
+    if (expectedUrl !== null && expectedUrl !== m.url) return sendJson(res, 409, { error: "相册素材已变化，请刷新后下载", code: "PHOTO_IDENTITY_CHANGED" });
     // 仅为本项目 TOS 视频生成跳转；绝不将数据库中的任意外部 URL 当作重定向目标。
     if (!String(m.url).startsWith(`${PROJECT_VIDEO_PUBLIC_BASE}/`)) {
       return sendJson(res, 422, { error: "此视频暂不支持浏览器直链下载" });

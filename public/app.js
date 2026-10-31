@@ -352,7 +352,7 @@ function saveFavs() {
 function rerenderCurrent() {
   if (state.projectView === "album" && state.currentProject) renderProjectAlbum(state.currentProject);
   else if (state.projectView === "manager" && state.currentProject) renderProjectManager(state.currentProject);
-  else if (state.projectView === "preview" && state.currentProject) renderProjectPreview(state.currentProject, state.projectPreviewIndex, state.projectPreviewMode);
+  else if (state.projectView === "preview" && state.currentProject) void loadProjectPreview(state.currentProject.id, state.projectPreviewIndex, state.projectPreviewMode, {session:true, expectedUrl:state.currentProject.media[state.projectPreviewIndex]?.url});
   else if (state.projectView === "hub") renderProjectsView();
   else if (state.caseView && state.activeCaseId) renderCasePage(state.activeCaseId);
   else if (state.caseView) renderCases();
@@ -586,6 +586,7 @@ function bindAuthEvents() {
   const logoutBtn = document.querySelector("#logoutBtn");
   if (logoutBtn) logoutBtn.addEventListener("click", async () => {
     await api("/api/logout", { method:"POST", body:{} });
+    invalidatePhotoBrowsing();
     state.user = null; state.sessionToken = ""; localStorage.removeItem(AUTH_TOKEN_KEY); window.location.reload();
   });
   const loginForm = document.querySelector("#loginForm");
@@ -594,13 +595,14 @@ function bindAuthEvents() {
     const f = new FormData(e.currentTarget);
     try {
       const data = await api("/api/login", { method:"POST", body:{ username:f.get("username"), password:f.get("password") } });
+      invalidatePhotoBrowsing();
       state.user = data.user;
       if (data.token) { state.sessionToken = data.token; localStorage.setItem(AUTH_TOKEN_KEY, data.token); }
       state.loginOpen = false; state.authMessage = "";
       // 登录前接口不返回 SOP 内容(planLocked)，登录后重新拉取当前页数据
-      if (state.projectView === "album" && state.currentProject) { renderProjectAlbum(state.currentProject); }
+      if (state.projectView === "album" && state.currentProject) { loadPublicProject(state.currentProject.id); }
       else if (state.projectView === "manager") { loadProjectManager(state.currentProject?.id); }
-      else if (state.projectView === "preview" && state.currentProject) { renderProjectPreview(state.currentProject, state.projectPreviewIndex, state.projectPreviewMode); }
+      else if (state.projectView === "preview" && state.currentProject) { loadProjectPreview(state.currentProject.id, state.projectPreviewIndex, state.projectPreviewMode, {expectedUrl:state.currentProject.media[state.projectPreviewIndex]?.url}); }
       else if (state.projectView === "hub") { loadProjectsView(); }
       else if (state.caseView) { loadCases(); }
       else if (state.currentActivity) { loadDetail(state.currentActivity.id); }
@@ -838,7 +840,7 @@ function heroCaseSlidesHtml() {
       <div class="hero-case-slider">
         ${list.map((c, idx) => `
           <a href="${caseHref(c.id)}" class="hero-case-item ${idx === 0 ? "active" : ""}" data-case-item="${idx}">
-            <img class="hero-case-cover" src="${esc(c.cover)}" alt="${esc(c.title)}">
+            <img class="hero-case-cover" src="${esc(caseCoverUrl(c))}" alt="${esc(c.title)}">
             <div class="hero-case-info">
               <strong>${esc(c.title)}</strong>
               <span>${esc(c.meta || "精彩活动实录")}</span>
@@ -1452,6 +1454,7 @@ function renderDetail(a) {
 
 // ---- 数据加载 ----
 async function loadList() {
+  invalidatePhotoBrowsing();
   const p = new URLSearchParams();
   Object.entries(state.filters).forEach(([k,v]) => v && p.set(k,v));
   const [data] = await Promise.all([
@@ -1864,6 +1867,7 @@ function persistProjectUploadBatch() {
 }
 
 async function refreshProjectAlbumMedia(projectId) {
+  invalidatePhotoBrowsing();
   state.projectAlbumRefreshPending ||= {};
   state.projectAlbumRefreshPending[projectId]=true;
   const data = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}`);
@@ -1896,6 +1900,7 @@ function bindProjectManagerMediaActions(project, root = document) {
     if(!confirm("确定删除这个素材吗？TOS 文件会保留，但相册中不再展示。"))return;
     try {await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/media/${button.dataset.projectDeleteMedia}`,{method:"DELETE"});await refreshProjectAlbumMedia(project.id);}catch(error){alert(error.message);}
   }));
+  bindPhotoImages(project);
   bindProjectVideoThumbs();bindProjectDownloadEvents(project,root);bindProjectShareEvents(root);
 }
 
@@ -1954,6 +1959,149 @@ async function runProjectUploadBatch(projectId, files) {
 }
 
 
+// Browsing resources never change the original media URL used for downloads.
+function photoSource(media, tier = "thumbnail", original = false) {
+  if (!media?.url) return "";
+  if (original) return media.url;
+  const field = tier === "thumbnail" ? "thumbnailUrl" : "previewUrl";
+  if (media[field]) return media[field];
+  if (media.imageViewState === "pending" || media.imageViewState === "unavailable") return "";
+  let url;
+  try { url = new URL(media.url); } catch { return media.url; }
+  const controlled = url.protocol === "https:" && url.hostname === "proj2.likeduoduiyi.cn"
+    && /^\/(silver-project-images|silver-images)\//.test(url.pathname)
+    && !url.search && !url.hash;
+  // Animation status of legacy WebP is unknown; preserve it like GIF/SVG.
+  if (!controlled || !/\.(jpe?g|png)$/i.test(url.pathname)) return media.url;
+  if (media.imageViewState === "pending" || media.imageViewState === "unavailable") return "";
+  if (!(Number(media.size) > 0 && Number(media.size) <= 20 * 1024 * 1024)) return "";
+  const edge = tier === "thumbnail" ? 640 : 1600;
+  return `${media.url}?x-tos-process=image/auto-orient,1/resize,m_lfit,w_${edge},h_${edge},limit_1/quality,q_82`;
+}
+
+function photoImageHtml(media, tier, alt, className = "", lazy = tier === "thumbnail") {
+  const original = tier === "preview" && photoBrowsing().originalUrl === media.url;
+  const src = photoSource(media, tier, original);
+  return src ? `<img class="${className}" data-photo-image data-photo-original="${esc(media.url)}" data-photo-tier="${tier}" src="${esc(src)}" alt="${esc(alt)}" decoding="async" ${lazy ? 'loading="lazy"' : 'fetchpriority="high"'}>`
+    : `<div class="photo-view-placeholder" role="status">${media.imageViewState === "pending" ? "浏览图准备中，可查看原图" : "浏览图暂不可用，可查看原图"}</div>`;
+}
+
+function photoCoverHtml(project, alt = project.title) {
+  const media = (project.media || []).find(m => m.type === "image" && m.url === project.cover);
+  return photoImageHtml(media || {url:project.cover, type:"image"}, "thumbnail", alt);
+}
+
+function photoBrowsing() {
+  const actor = `${state.user?.id || "anonymous"}:${state.sessionToken || ""}`;
+  if (!state.photoBrowsing) state.photoBrowsing = { actor, generation:0, snapshot:null, nodes:[], prefetch:null };
+  const browsing = state.photoBrowsing;
+  if (browsing.actor !== actor) {
+    clearPhotoView(); browsing.actor = actor; browsing.snapshot = null; browsing.generation++;
+  }
+  return browsing;
+}
+
+function clearPhotoView() {
+  const browsing = state.photoBrowsing;
+  if (!browsing) return;
+  clearTimeout(browsing.poll); clearTimeout(browsing.expiry);
+  browsing.poll = null; browsing.expiry = null;
+  for (const node of browsing.nodes || []) { node.onload = null; node.onerror = null; node.removeAttribute?.("src"); }
+  browsing.nodes = [];
+  if (browsing.prefetch) {
+    browsing.prefetch.onload = null; browsing.prefetch.onerror = null; browsing.prefetch.src = "";
+    browsing.prefetch = null;
+  }
+}
+
+function invalidatePhotoBrowsing() {
+  const browsing = photoBrowsing();
+  clearPhotoView(); browsing.snapshot = null; browsing.generation++; browsing.originalUrl = null;
+}
+
+function rememberPhotoProject(project, manager, requestedAt = Date.now()) {
+  const browsing = photoBrowsing();
+  browsing.snapshot = {project, manager, expires:requestedAt + 15000, actor:browsing.actor};
+}
+
+function photoOriginalButton(media) {
+  if (media?.type !== "image") return "";
+  return `<button class="btn secondary small" type="button" data-photo-original-toggle>${photoBrowsing().originalUrl === media.url ? "返回清晰预览" : "查看原图"}</button>`;
+}
+
+function bindPhotoImages(project, index = null, manager = false) {
+  const browsing = photoBrowsing();
+  for (const node of document.querySelectorAll("[data-photo-image]")) {
+    const media = (project.media || []).find(m => m.url === node.dataset.photoOriginal) || project.media?.[index];
+    if (!media) continue;
+    let failed = false;
+    node.onerror = () => {
+      const fallback = photoSource(media, node.dataset.photoTier === "thumbnail" ? "preview" : "thumbnail");
+      if (!failed && fallback && fallback !== media.url && fallback !== node.src) { failed = true; node.src = fallback; }
+      else { node.onerror = null; node.onload = null; node.removeAttribute?.("src"); node.alt = "浏览图加载失败，请点查看原图或下载原图"; }
+    };
+    if (index !== null) {
+      browsing.nodes.push(node);
+      node.onload = () => {
+        if (!browsing.nodes.includes(node) || browsing.prefetch || browsing.originalUrl || state.projectView !== "preview"
+          || (browsing.snapshot && Date.now() >= browsing.snapshot.expires)) return;
+        const connection = navigator.connection;
+        if (connection?.saveData || /^(slow-)?2g$/.test(connection?.effectiveType || "")) return;
+        const next = project.media?.[index + 1];
+        if (next?.type !== "image") return;
+        const src = photoSource(next, "preview");
+        if (!src || src === next.url) return;
+        const image = new Image(); browsing.prefetch = image;
+        image.decoding = "async"; image.fetchPriority = "low"; image.src = src;
+      };
+      if (node.complete && node.naturalWidth) node.onload();
+    }
+  }
+  if (index === null) {
+    const lightboxIndex = state.projectLightboxIndex;
+    const media = lightboxIndex === null ? null : project.media?.[lightboxIndex];
+    if (media?.type === "image") document.querySelector("[data-photo-original-toggle]")?.addEventListener("click", () => {
+      browsing.originalUrl = browsing.originalUrl === media.url ? null : media.url;
+      state.projectView === "manager" ? renderProjectManager(project) : renderProjectAlbum(project);
+    });
+    return;
+  }
+  const media = project.media[index];
+  if (media.type !== "image") return;
+  document.querySelector("[data-photo-original-toggle]")?.addEventListener("click", () => {
+    browsing.originalUrl = browsing.originalUrl === media.url ? null : media.url;
+    void loadProjectPreview(project.id, index, manager, {session:true, expectedUrl:media.url});
+  });
+  const snapshot = browsing.snapshot;
+  const generation = browsing.generation, actor = browsing.actor;
+  const isCurrent = () => state.projectView === "preview" && browsing.generation === generation
+    && photoBrowsing().actor === actor && state.currentProject?.id === project.id && state.currentProject?.media?.[state.projectPreviewIndex]?.url === media.url;
+  if (snapshot) browsing.expiry = setTimeout(() => {
+    if (!isCurrent()) return;
+    void loadProjectPreview(project.id, index, manager, {session:true, expectedUrl:media.url, force:true});
+  }, Math.max(0, snapshot.expires - Date.now()));
+  if (media.imageViewState !== "pending" || browsing.originalUrl) return;
+  if (browsing.pendingUrl !== media.url) { browsing.pendingUrl = media.url; browsing.pendingSince = Date.now(); }
+  if (Date.now() - browsing.pendingSince >= 30000) return;
+  browsing.poll = setTimeout(() => {
+    if (!isCurrent()) return;
+    void loadProjectPreview(project.id, index, manager, {session:true, expectedUrl:media.url, force:true});
+  }, 2000);
+}
+
+function revalidatePhotoView() {
+  const project = state.currentProject;
+  const index = state.projectPreviewIndex;
+  const view = state.projectView;
+  const preview = view === "preview";
+  const expectedUrl = project?.media?.[index]?.url;
+  const manager = state.projectPreviewMode;
+  invalidatePhotoBrowsing();
+  if (preview && expectedUrl) void loadProjectPreview(project.id, index, manager, {expectedUrl});
+  else if (view === "album" && project) void loadPublicProject(project.id).catch(error => { state.currentProject = null; app.innerHTML = `<div class="error">${esc(error.message)}</div>`; });
+  else if (view === "manager" && project) void refreshProjectAlbumMedia(project.id).catch(() => {});
+}
+
 function projectShareButton(project, mediaIndex, className = "btn secondary small") {
   if (project.status !== "published" || project.shareEnabled === false) return "";
   return `<button class="${className}" type="button" data-project-share="${esc(project.id)}" ${mediaIndex === undefined ? "" : `data-project-media-share="${mediaIndex}"`}>📤 分享</button>`;
@@ -1962,9 +2110,6 @@ function projectShareButton(project, mediaIndex, className = "btn secondary smal
 function projectDownloadButton(project, index) {
   if (project.status !== "published" || project.shareEnabled === false) return "";
   const type = project.media[index]?.type;
-  if (type === "image" && isMobileProjectDownload()) {
-    return "";
-  }
   if (type === "video" && isWeChatBrowser() && isMobileProjectDownload() && !isIOSProjectDownload()) {
     return "";
   }
@@ -1972,14 +2117,14 @@ function projectDownloadButton(project, index) {
     return `<button class="btn small" type="button" data-project-save-video="${index}">${isWeChatBrowser() ? "复制视频下载链接" : "下载视频"}</button>`;
   }
   const name = projectMediaDisplayName(project.media[index], index);
-  return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">下载${projectMediaLabel(type)}</button>`;
+  return `<button class="btn small" type="button" data-project-download="${index}" title="下载${esc(name)}">${type === "image" ? "下载原图" : `下载${projectMediaLabel(type)}`}</button>`;
 }
 
 function projectMobileMediaTip(project, index) {
   const type = project.media[index]?.type;
   if (!isMobileProjectDownload() || !["image", "video"].includes(type)) return "";
   const target = type === "image"
-    ? "长按图片，点击下载到相册"
+    ? "长按保存的是当前浏览图；原图请点“下载原图”或“查看原图”"
     : isIOSProjectDownload() && isWeChatBrowser()
       ? "点“复制视频下载链接”，用 Safari 打开并下载"
       : isIOSProjectDownload()
@@ -2108,7 +2253,7 @@ function bindProjectDownloadEvents(project, root = document) {
   root.querySelectorAll("[data-project-download]").forEach(btn => { if(btn.dataset.downloadBound)return;btn.dataset.downloadBound="1";btn.addEventListener("click", async () => {
     try {
       const index = Number(btn.dataset.projectDownload);
-      const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${index}`);
+      const data = await api(`/api/public/activity-projects/${encodeURIComponent(project.id)}/download?i=${index}&expectedUrl=${encodeURIComponent(project.media[index]?.url || "")}`);
       if (data.url) triggerProjectDownload(data.url, data.filename || `activity-${project.id}-${index}`, project.media[index]?.type);
     } catch (err) { alert(err.message); }
   }); });
@@ -2120,7 +2265,7 @@ function projectMediaCardHtml(project, m, manager = false, canDelete = manager) 
   if (!manager) {
     const poster = projectVideoPosterHtml(m, mediaName);
     const visual = m.type === "image"
-      ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
+      ? photoImageHtml(m, "thumbnail", project.title)
       : m.type === "video"
       ? `${poster || `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video>`}<span class="project-gallery-play">▶</span>`
       : "";
@@ -2130,7 +2275,7 @@ function projectMediaCardHtml(project, m, manager = false, canDelete = manager) 
   }
   const selected = state.selectedProjectMediaIndex === m.index ? "share-target" : "";
   const visual = m.type === "image"
-    ? `<img src="${esc(m.url)}" alt="${esc(project.title)}" loading="lazy">`
+    ? photoImageHtml(m, "thumbnail", project.title)
     : m.type === "video"
     ? `<button class="project-media-video-preview" type="button" data-project-open-media="${m.index}" aria-label="打开视频 ${m.index + 1}">${projectVideoPosterHtml(m, mediaName) || `<video src="${esc(m.url)}#t=0.5" data-project-video-thumb muted playsinline preload="metadata"></video>`}<span class="project-gallery-play">▶</span></button>`
     : "";
@@ -2159,7 +2304,7 @@ function projectLightboxHtml(project) {
   const m = media[index];
   const mediaName = projectMediaDisplayName(m, index);
   const body = m.type === "image"
-    ? `<img class="project-lightbox-image" src="${esc(m.url)}" alt="${esc(m.title || project.title)}">`
+    ? photoImageHtml(m, "preview", m.title || project.title, "project-lightbox-image")
     : m.type === "video"
     ? `<video class="project-lightbox-video" src="${esc(m.url)}"${m.poster ? ` poster="${esc(m.poster)}"` : ""} controls playsinline preload="metadata"></video>`
     : `<div class="project-lightbox-document"><strong>文档素材</strong><span>${esc(m.title || "活动交付文档")}</span><a class="btn small" href="${esc(m.url)}" target="_blank" rel="noreferrer">打开文档</a></div>`;
@@ -2171,7 +2316,7 @@ function projectLightboxHtml(project) {
     <div class="project-lightbox-toolbar">
       <span>${index + 1} / ${media.length}</span>
       ${projectShareButton(project, index, "btn secondary small")}
-      ${projectDownloadButton(project, index)}
+      ${photoOriginalButton(m)}${projectDownloadButton(project, index)}
     </div>
     ${projectMobileMediaTip(project, index)}
     <p class="project-lightbox-caption"><strong>${esc(mediaName)}</strong>${m.caption ? `<span>备注：${esc(m.caption)}</span>` : ""}</p>
@@ -2197,6 +2342,7 @@ function renderProjectLogin() {
 }
 
 async function loadProjectsView() {
+  invalidatePhotoBrowsing();
   state.projectView = "hub";
   state.caseView = false;
   state.currentActivity = null;
@@ -2231,7 +2377,7 @@ function renderProjectsView() {
     <section class="project-list-section"><div class="section-label"><div class="label-bar"></div><div><h2>活动项目</h2><p>${projects.length ? `共 ${projects.length} 场活动` : "还没有活动项目"}</p></div></div>
       ${projects.length ? `<div class="project-list-grid">${projects.map(p => {
         const g = projectMediaGroups(p);
-        return `<article class="project-list-card"><div class="project-list-cover">${p.cover ? `<img src="${esc(p.cover)}" alt="${esc(p.title)}">` : `<div class="project-cover-empty">▣</div>`}<span>${p.status === "published" && p.shareEnabled ? "可分享" : "未开放分享"}</span></div><div class="project-list-body"><h3>${esc(p.title)}</h3><p>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写时间地点")}${p.ownerName ? ` · 创建者：${esc(p.ownerName)}` : ""}</p><div class="project-list-stats">${g.images.length} 图片 · ${g.videos.length} 视频 · ${p.canManage ? "可管理" : "只读"}</div><div class="project-list-actions"><button class="btn small" type="button" data-project-open="${esc(p.id)}">${p.canManage ? "管理素材" : "查看相册"}</button>${p.status === "published" && p.shareEnabled ? `<a class="btn secondary small" href="${esc(projectShareHref(p.id))}" target="_blank" rel="noreferrer">打开客户相册</a>${projectShareButton(p)}` : ""}${p.canManage ? `<button class="btn ghost small danger" type="button" data-project-delete="${esc(p.id)}">删除相册</button>` : ""}</div></div></article>`;
+        return `<article class="project-list-card"><div class="project-list-cover">${p.cover ? photoCoverHtml(p) : `<div class="project-cover-empty">▣</div>`}<span>${p.status === "published" && p.shareEnabled ? "可分享" : "未开放分享"}</span></div><div class="project-list-body"><h3>${esc(p.title)}</h3><p>${esc([p.city, p.dateLabel].filter(Boolean).join(" · ") || "未填写时间地点")}${p.ownerName ? ` · 创建者：${esc(p.ownerName)}` : ""}</p><div class="project-list-stats">${g.images.length} 图片 · ${g.videos.length} 视频 · ${p.canManage ? "可管理" : "只读"}</div><div class="project-list-actions"><button class="btn small" type="button" data-project-open="${esc(p.id)}">${p.canManage ? "管理素材" : "查看相册"}</button>${p.status === "published" && p.shareEnabled ? `<a class="btn secondary small" href="${esc(projectShareHref(p.id))}" target="_blank" rel="noreferrer">打开客户相册</a>${projectShareButton(p)}` : ""}${p.canManage ? `<button class="btn ghost small danger" type="button" data-project-delete="${esc(p.id)}">删除相册</button>` : ""}</div></div></article>`;
       }).join("")}</div>` : `<div class="project-empty-state">${state.canCreateProjects ? "创建第一场活动，把微信群里的素材迁移到平台。" : "还没有可查看的活动相册。"}</div>`}
     </section>${state.canCreateProjects && state.projectCreateOpen ? `<div class="project-create-modal-mask" data-project-create-overlay><section class="project-create-modal" role="dialog" aria-modal="true" aria-labelledby="projectCreateTitle"><button class="project-create-close" type="button" data-close-project-create aria-label="关闭">×</button><div class="eyebrow"><span class="eyebrow-dot"></span>新建活动项目</div><h2 id="projectCreateTitle">创建活动相册</h2><p>先填写活动信息，创建后进入相册页面上传照片和视频。</p><form id="projectCreateForm" class="project-create-form"><label><span>活动名称</span><input class="input" name="title" required placeholder="例如：8月9日山西社群旗袍美拍"></label><label><span>关联 SOP</span><select class="select" name="activityId"><option value="">暂不关联</option>${(state.activities || []).map(a => `<option value="${esc(a.id)}">${esc(a.title)}</option>`).join("")}</select></label><label><span>活动日期</span><input class="input" name="dateLabel" type="date"></label><label><span>城市/地区</span><input class="input" name="city" placeholder="例如：太原"></label><label class="project-create-wide"><span>给客户看的活动说明</span><textarea class="input" name="description" rows="3" placeholder="活动回顾、感谢语或交付提示"></textarea></label><div class="project-create-modal-actions"><button class="btn secondary" type="button" data-close-project-create>取消</button><button class="btn" type="submit">创建并进入上传</button></div></form></section></div>` : ""}${loginModal()}`;
 
@@ -2276,10 +2422,13 @@ function bindProjectShareEvents(root = document) {
 }
 
 async function loadProjectManager(id) {
+  invalidatePhotoBrowsing();
+  const browsing = photoBrowsing(), generation = browsing.generation, actor = browsing.actor, requestedAt = Date.now();
   if (!state.user) return renderProjectLogin();
   if (!id) return loadProjectsView();
   try {
     const data = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(id)}`);
+    if (photoBrowsing().actor !== actor || browsing.generation !== generation) return;
     state.currentProject = data.project;
     state.projectView = "manager";
     if (!state.projectUploading && state.projectUploadBatch?.projectId !== id) {
@@ -2291,13 +2440,19 @@ async function loadProjectManager(id) {
     if (data.project.canManage) {
       try {
         const uploads = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(id)}/media/upload-sessions`);
+        if (photoBrowsing().actor !== actor || browsing.generation !== generation) return;
         state.projectUploadSessions = uploads.sessions || [];
         state.projectUploadSessionsTotal = Number.isFinite(Number(uploads.total)) ? Number(uploads.total) : state.projectUploadSessions.filter(item=>item.status!=="completed").length;
         reconcileProjectUploadBatch(id);
       } catch (error) { state.projectUploadSessionsError = error.message || "读取失败"; }
     }
+    if (photoBrowsing().actor !== actor || browsing.generation !== generation) return;
+    rememberPhotoProject(state.currentProject, true, requestedAt);
     renderProjectManager(state.currentProject);
-  } catch (err) { app.innerHTML = `<div class="error">${esc(err.message)}</div>`; }
+  } catch (err) {
+    if (photoBrowsing().actor !== actor || browsing.generation !== generation) return;
+    app.innerHTML = `<div class="error">${esc(err.message)}</div>`;
+  }
 }
 
 function projectUploadSessionsHtml(projectId) {
@@ -2475,6 +2630,7 @@ async function refreshProjectUploadSessions(projectId) {
 }
 
 function renderProjectManager(project) {
+  clearPhotoView();
   state.projectView = "manager";
   state.currentProject = project;
   state.currentActivity = null;
@@ -2518,6 +2674,7 @@ function renderProjectManager(project) {
     await runProjectUploadBatch(project.id,files);
   });
   document.querySelectorAll("[data-project-manager-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectManagerTab; state.projectLightboxIndex = null; renderProjectManager(state.currentProject); }));
+  bindPhotoImages(project);
   bindProjectVideoThumbs();
   bindProjectManagerMediaActions(project,document.querySelector(".project-media-grid") || document);
   document.querySelectorAll("[data-project-lightbox-close]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = null; renderProjectManager(state.currentProject); }));
@@ -2543,23 +2700,41 @@ function navigateProjectPreview(project, index, manager = false) {
   state.projectLightboxIndex = null;
   state.projectPreviewMode = manager;
   history.pushState(null, "", projectPreviewHref(project.id, index, manager));
-  loadProjectPreview(project.id, index, manager);
+  loadProjectPreview(project.id, index, manager, {session:true, expectedUrl:project.media[index]?.url});
 }
 
-async function loadProjectPreview(id, index, manager = false) {
-  const endpoint = manager
-    ? `/api/my/activity-projects/${encodeURIComponent(id)}`
-    : `/api/public/activity-projects/${encodeURIComponent(id)}`;
+async function loadProjectPreview(id, index, manager = false, options = {}) {
+  const browsing = photoBrowsing();
+  clearPhotoView();
+  const generation = ++browsing.generation, actor = browsing.actor;
+  const snapshot = browsing.snapshot;
+  const valid = options.session && !options.force && snapshot && snapshot.actor === actor
+    && snapshot.project.id === id && snapshot.manager === manager && Date.now() < snapshot.expires;
+  const expectedUrl = options.expectedUrl || (options.session && snapshot?.project.id === id ? snapshot.project.media?.[index]?.url : null);
+  if (!valid) app.innerHTML = '<div class="photo-view-placeholder" role="status">正在核验相册访问权限…</div>';
+  const requestedAt = Date.now();
   try {
-    const data = await api(endpoint);
-    state.currentProject = data.project;
-    renderProjectPreview(data.project, index, manager);
+    const project = valid ? snapshot.project : (await api(manager
+      ? `/api/my/activity-projects/${encodeURIComponent(id)}`
+      : `/api/public/activity-projects/${encodeURIComponent(id)}`)).project;
+    if (photoBrowsing().actor !== actor || browsing.generation !== generation) return;
+    if (!valid) rememberPhotoProject(project, manager, requestedAt);
+    if (Date.now() >= browsing.snapshot.expires) throw new Error("访问核验超时，请重新打开相册");
+    const selectedIndex = expectedUrl ? (project.media || []).findIndex(m => m.url === expectedUrl) : Number(index);
+    if (selectedIndex < 0 || !project.media?.[selectedIndex]) throw new Error("这张素材已移除，请返回相册");
+    if (browsing.originalUrl !== project.media[selectedIndex].url) browsing.originalUrl = null;
+    state.currentProject = project;
+    history.replaceState(null, "", projectPreviewHref(id, selectedIndex, manager));
+    renderProjectPreview(project, selectedIndex, manager);
   } catch (err) {
+    if (photoBrowsing().actor !== actor || browsing.generation !== generation) return;
+    clearPhotoView(); browsing.snapshot = null; state.currentProject = null;
     app.innerHTML = `<div class="error">${esc(err.message)}</div>`;
   }
 }
 
 function renderProjectPreview(project, index, manager = false) {
+  clearPhotoView();
   const media = Array.isArray(project.media) ? project.media : [];
   const currentIndex = Number.isInteger(Number(index)) ? Number(index) : 0;
   const current = media[currentIndex];
@@ -2573,7 +2748,7 @@ function renderProjectPreview(project, index, manager = false) {
   state.currentActivity = null;
   const currentName = projectMediaDisplayName(current, currentIndex);
   const body = current.type === "image"
-    ? `<img class="project-preview-image" src="${esc(current.url)}" alt="${esc(current.title || project.title)}">`
+    ? photoImageHtml(current, "preview", current.title || project.title, "project-preview-image")
     : current.type === "video"
     ? `<video class="project-preview-video" src="${esc(current.url)}"${current.poster ? ` poster="${esc(current.poster)}"` : ""} controls playsinline preload="metadata"></video>`
     : "";
@@ -2583,8 +2758,9 @@ function renderProjectPreview(project, index, manager = false) {
   app.className = `app-shell project-preview-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
     <div class="project-preview-nav"><button class="btn secondary" id="projectPreviewBack" type="button">← 返回相册</button><a class="btn secondary" href="${esc(backHref)}">相册首页</a></div>${projectWeChatTip()}
-    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar${current.type === "video" && isIOSProjectDownload() && isWeChatBrowser() ? " project-preview-toolbar-ios-wechat" : ""}">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${projectDownloadButton(project, currentIndex)}${manager && project.canManage ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
+    <main class="project-preview-page"><div class="eyebrow"><span class="eyebrow-dot"></span>${current.type === "video" ? "视频预览" : "图片预览"}</div><div class="project-preview-title-row"><div><h1>${esc(project.title)}</h1><p class="project-preview-media-name" title="${esc(currentName)}">${esc(currentName)}</p></div><span class="project-preview-count">${currentIndex + 1} / ${media.length}</span></div><div class="project-preview-stage">${body}</div>${projectMobileMediaTip(project, currentIndex)}<div class="project-preview-toolbar${current.type === "video" && isIOSProjectDownload() && isWeChatBrowser() ? " project-preview-toolbar-ios-wechat" : ""}">${currentIndex > 0 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex - 1}">‹ 上一个</button>` : ""}${projectShareButton(project, currentIndex, "btn secondary small")}${photoOriginalButton(current)}${projectDownloadButton(project, currentIndex)}${manager && project.canManage ? `<button class="btn ghost small danger" id="projectPreviewDelete" type="button">删除素材</button>` : ""}${currentIndex < media.length - 1 ? `<button class="btn secondary small" type="button" data-project-preview-nav="${currentIndex + 1}">下一个 ›</button>` : ""}</div>${current.caption ? `<p class="project-preview-caption">备注：${esc(current.caption)}</p>` : ""}</main>${loginModal()}`;
 
+  bindPhotoImages(project, currentIndex, manager);
   const previewVideo = document.querySelector(".project-preview-video");
   if (previewVideo) {
     previewVideo.addEventListener("play", () => { void trackMediaView("activity_project_media", project.id, currentIndex); }, { once: true });
@@ -2593,13 +2769,14 @@ function renderProjectPreview(project, index, manager = false) {
   }
 
   document.querySelector("#projectPreviewBack")?.addEventListener("click", () => {
+    invalidatePhotoBrowsing();
     history.pushState(null, "", backHref);
     manager ? loadProjectManager(project.id) : loadPublicProject(project.id);
   });
   document.querySelectorAll("[data-project-preview-nav]").forEach(btn => btn.addEventListener("click", () => {
     const nextIndex = Number(btn.dataset.projectPreviewNav);
     history.replaceState(null, "", projectPreviewHref(project.id, nextIndex, manager));
-    loadProjectPreview(project.id, nextIndex, manager);
+    loadProjectPreview(project.id, nextIndex, manager, {session:true, expectedUrl:project.media[nextIndex]?.url});
   }));
   bindProjectDownloadEvents(project);
   document.querySelectorAll("[data-project-login]").forEach(btn => btn.addEventListener("click", () => { state.loginOpen = true; state.authMessage = ""; state.authTab = "login"; renderProjectPreview(project, currentIndex, manager); }));
@@ -2607,6 +2784,7 @@ function renderProjectPreview(project, index, manager = false) {
     if (!confirm("确定删除这个素材吗？TOS 文件会保留，但相册中不再展示。")) return;
     try {
       const data = await api(`/api/my/activity-projects/${encodeURIComponent(project.id)}/media/${currentIndex}`, { method: "DELETE" });
+      invalidatePhotoBrowsing();
       const nextMedia = data.project?.media || [];
       if (!nextMedia.length) return loadProjectManager(project.id);
       const nextIndex = Math.min(currentIndex, nextMedia.length - 1);
@@ -2619,7 +2797,11 @@ function renderProjectPreview(project, index, manager = false) {
 }
 
 async function loadPublicProject(id, mediaIndex = null) {
+  invalidatePhotoBrowsing();
+  const browsing = photoBrowsing(), generation = browsing.generation, requestedAt = Date.now();
   const data = await api(`/api/public/activity-projects/${encodeURIComponent(id)}`);
+  if (photoBrowsing().generation !== generation) return;
+  rememberPhotoProject(data.project, false, requestedAt);
   state.currentProject = data.project;
   state.projectView = "album";
   const defaultTab = projectDefaultMediaTab(data.project);
@@ -2634,6 +2816,7 @@ async function loadPublicProject(id, mediaIndex = null) {
 }
 
 function renderProjectAlbum(project) {
+  clearPhotoView();
   state.projectView = "album";
   state.currentProject = project;
   state.caseView = false;
@@ -2643,13 +2826,14 @@ function renderProjectAlbum(project) {
   const type = projectMediaTypeForTab(tab);
   const media = (project.media || []).map((m, index) => ({ ...m, index })).filter(m => !type || m.type === type);
   const downloadNote = isIOSProjectDownload()
-    ? isWeChatBrowser() ? "图片长按保存 · 视频复制链接到 Safari 下载" : "图片长按保存 · 视频点下载到文件"
-    : isWeChatBrowser() && isMobileProjectDownload() ? "图片长按保存 · 视频右下角⋮下载" : "分享链接内可直接下载";
+    ? isWeChatBrowser() ? "长按保存浏览图，原图点下载 · 视频复制链接到 Safari 下载" : "长按保存浏览图，原图点下载 · 视频点下载到文件"
+    : isWeChatBrowser() && isMobileProjectDownload() ? "长按保存浏览图，原图点下载 · 视频右下角⋮下载" : "分享链接内可直接下载";
   app.className = `app-shell project-album-shell${isMobileProjectDownload() ? " project-mobile-mode" : ""}`;
   app.innerHTML = `${projectHeader(project.title)}
-    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? `<img src="${esc(project.cover)}" alt="${esc(project.title)}">` : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}<span class="project-album-download-note">${downloadNote}</span></div></div></section>${projectWeChatTip()}
+    <section class="project-album-hero"><div class="project-album-cover">${project.cover ? photoCoverHtml(project) : `<div class="project-cover-empty">▣</div>`}</div><div class="project-album-copy"><div class="eyebrow"><span class="eyebrow-dot"></span>活动相册</div><div class="project-album-title-row"><h1>${esc(project.title)}</h1><span class="project-album-count">${project.media?.length || 0} 个素材</span></div><div class="project-album-meta">${esc([project.dateLabel, project.city].filter(Boolean).join(" · ") || "活动现场")}</div>${project.description ? `<p>${esc(project.description)}</p>` : ""}<div class="project-album-actions">${projectShareButton(project)}<span class="project-album-download-note">${downloadNote}</span></div></div></section>${projectWeChatTip()}
     <section class="project-album-content"><div class="project-album-tabs"><button class="${tab === "images" ? "active" : ""}" data-project-tab="images">图片 <strong>${groups.images.length}</strong></button><button class="${tab === "videos" ? "active" : ""}" data-project-tab="videos">视频 <strong>${groups.videos.length}</strong></button></div>${media.length ? `<div class="project-media-grid public">${media.map(m => projectMediaCardHtml(project, m, false)).join("")}</div>` : `<div class="project-empty-state">该分类还没有素材。</div>`}</section>${projectLightboxHtml(project)}${loginModal()}`;
   document.querySelectorAll("[data-project-tab]").forEach(btn => btn.addEventListener("click", () => { state.projectMediaTab = btn.dataset.projectTab; state.projectLightboxIndex = null; renderProjectAlbum(project); }));
+  bindPhotoImages(project);
   bindProjectVideoThumbs();
   document.querySelectorAll("[data-project-open-media]").forEach(btn => btn.addEventListener("click", () => navigateProjectPreview(project, Number(btn.dataset.projectOpenMedia), false)));
   document.querySelectorAll("[data-project-lightbox-close]").forEach(btn => btn.addEventListener("click", () => { state.projectLightboxIndex = null; renderProjectAlbum(project); }));
@@ -2717,9 +2901,9 @@ function caseMediaSummary(c) {
 }
 
 function caseCoverUrl(c) {
-  if (c.cover) return c.cover;
+  if (c.cover) return photoSource((c.media || []).find(m => m.url === c.cover) || {url:c.cover}, "thumbnail") || fallbackCover();
   const s = caseMediaSummary(c);
-  if (s.imgs.length) return s.imgs[0].url;
+  if (s.imgs.length) return photoSource(s.imgs[0], "thumbnail") || fallbackCover();
   return fallbackCover();
 }
 
@@ -2783,6 +2967,7 @@ function hydrateCaseVideoThumbs() {
 }
 
 async function loadCases() {
+  invalidatePhotoBrowsing();
   const data = await api("/api/public/cases");
   state.cases = data.cases || [];
   state.caseCategories = data.categories || [];
@@ -2939,7 +3124,7 @@ function renderCasePage(caseId) {
             </article>`;
         }
 		    const body = m.type === "image"
-		      ? `<img src="${esc(m.url)}" alt="${esc(c.title)}" loading="lazy" data-case-image-view="${m.index}">`
+		      ? photoImageHtml(m, "preview", c.title, "", true).replace("data-photo-image", `data-photo-image data-case-image-view="${m.index}"`)
 		      : m.type === "video"
 		      ? `<button class="case-video-poster" type="button" data-case-video-play="${esc(m.url)}">
 		          <video class="case-video-thumb" data-thumb-src="${esc(m.url)}#t=0.5" muted playsinline preload="metadata"></video>
@@ -3064,7 +3249,7 @@ function renderCasePage(caseId) {
 		    renderCasePage(caseId);
 		  }));
 		  document.querySelectorAll("[data-case-download]").forEach(btn => btn.addEventListener("click", async () => {
-		    const href = apiHref(`/api/public/cases/${encodeURIComponent(caseId)}/download?i=${btn.dataset.caseDownload}`);
+		    const href = apiHref(`/api/public/cases/${encodeURIComponent(caseId)}/download?i=${btn.dataset.caseDownload}&expectedUrl=${encodeURIComponent(c.media[Number(btn.dataset.caseDownload)]?.url || "")}`);
 		    try {
 		      const res = await fetch(href, { credentials: "include" });
 		      const type = res.headers.get("content-type") || "";
@@ -3097,6 +3282,7 @@ function renderCasePage(caseId) {
     renderCasePage(caseId);
   }));
   bindAuthEvents();
+  bindPhotoImages(c);
   if (shouldAuditCase) void trackMediaView("case", c.id, null);
 }
 
@@ -3178,7 +3364,10 @@ async function boot() {
   }
 }
 
+window.addEventListener("focus", revalidatePhotoView);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") revalidatePhotoView(); else invalidatePhotoBrowsing(); });
 window.addEventListener("popstate", () => {
+  invalidatePhotoBrowsing();
   const qs = new URLSearchParams(location.search);
   const sharedProject = parseProjectShareValue(qs.get("share"));
   if (sharedProject) {

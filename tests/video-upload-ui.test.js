@@ -15,7 +15,7 @@ function loadPage(filename, exports) {
   const storage = new Map();
   const root = element();
   const context = vm.createContext({
-    document: { querySelector: () => root, querySelectorAll: () => [] },
+    document: { querySelector: () => root, querySelectorAll: () => [], addEventListener() {} },
     location: { hostname: "localhost" },
     window: { location: { origin: "http://localhost" }, addEventListener() {} },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },

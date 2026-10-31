@@ -7,7 +7,7 @@ const vm = require("node:vm");
 function loadPage(filename, exports) {
   const source = fs.readFileSync(path.join(__dirname, "..", "public", filename), "utf8");
   const context = vm.createContext({
-    document: { querySelector: () => ({}), querySelectorAll: () => [] },
+    document: { querySelector: () => ({}), querySelectorAll: () => [], addEventListener() {} },
     location: { hostname: "localhost" },
     window: { location: { origin: "http://localhost" }, addEventListener() {} },
     localStorage: { getItem: () => null },
