@@ -101,42 +101,22 @@ function webpStructure(b) {
   if (animated ? !animation || !frames || still : !still) invalid();
 }
 
-function structure(b, ext) {
-  if (ext === "png") {
-    if (b.length < 45 || !b.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) invalid();
-    let p = 8,
-      first = true,
-      data = false,
-      end = false;
-    while (p + 12 <= b.length) {
-      const n = b.readUInt32BE(p),
-        type = b.toString("ascii", p + 4, p + 8);
-      if (n > b.length - p - 12) invalid();
-      if (crc32(b.subarray(p + 4, p + 8 + n)) !== b.readUInt32BE(p + 8 + n)) invalid();
-      if (first && (type !== "IHDR" || n !== 13 || !b.readUInt32BE(p + 8) || !b.readUInt32BE(p + 12))) invalid();
-      first = false;
-      if (type === "IDAT" && n) data = true;
-      p += 12 + n;
-      if (type === "IEND") {
-        if (n || p !== b.length) invalid();
-        end = true;
-        break;
-      }
-    }
-    if (!data || !end) invalid();
-  } else if (ext === "jpg" || ext === "jpeg") {
+// One structural scan stops at the image's own EOI. Only the MP Index may
+// authorize any additional JPEG ranges; ordinary JPEGs still require EOF.
+function jpegImage(b, collectIndex = false) {
     if (b.length < 8 || b.readUInt16BE(0) !== 0xffd8) invalid();
     let p = 2,
       frame = false,
       components = new Set(),
       scan = false,
-      end = false;
+      end = false,
+      mpf = null;
     while (p < b.length) {
       if (b[p++] !== 255) invalid();
       while (b[p] === 255) p++;
       const marker = b[p++];
       if (marker === 0xd9) {
-        end = p === b.length;
+        end = true;
         break;
       }
       if (marker === 0 || marker === 0xd8) invalid();
@@ -144,6 +124,10 @@ function structure(b, ext) {
       if (p + 2 > b.length) invalid();
       const n = b.readUInt16BE(p);
       if (n < 2 || p + n > b.length) invalid();
+      if (collectIndex && marker === 0xe2 && n >= 6 && b.toString("ascii", p + 2, p + 6) === "MPF\0") {
+        if (mpf || scan) invalid();
+        mpf = { start: p + 6, end: p + n };
+      }
       if ([0xc0, 0xc1, 0xc2].includes(marker)) {
         if (n < 8 || !b.readUInt16BE(p + 3) || !b.readUInt16BE(p + 5)) invalid();
         const count=b[p+7];
@@ -186,6 +170,104 @@ function structure(b, ext) {
       }
     }
     if (!frame || !scan || !end) invalid();
+    return { end: p, mpf };
+}
+function jpegStructure(b) {
+  const primary = jpegImage(b, true);
+  if (!primary.mpf) {
+    if (primary.end !== b.length) invalid();
+    return;
+  }
+  const { start, end } = primary.mpf;
+  const tiff = b.subarray(start, end);
+  if (tiff.length < 8) invalid();
+  const endian = tiff.toString("ascii", 0, 2);
+  if (endian !== "II" && endian !== "MM") invalid();
+  const u16 = p => endian === "II" ? tiff.readUInt16LE(p) : tiff.readUInt16BE(p);
+  const u32 = p => endian === "II" ? tiff.readUInt32LE(p) : tiff.readUInt32BE(p);
+  if (u16(2) !== 42) invalid();
+  const directory = offset => {
+    if (offset < 8 || offset + 2 > tiff.length) invalid();
+    const count = u16(offset), end = offset + 2 + count * 12 + 4;
+    if (!count || count > 128 || end > tiff.length) invalid();
+    return { offset, count, end };
+  };
+  const index = directory(u32(4));
+  let version = false, images = null, table = null;
+  for (let n = 0; n < index.count; n++) {
+    const entry = index.offset + 2 + n * 12;
+    const tag = u16(entry), type = u16(entry + 2), count = u32(entry + 4);
+    if (tag === 0xb000) {
+      if (version || type !== 7 || count !== 4 || tiff.toString("ascii", entry + 8, entry + 12) !== "0100") invalid();
+      version = true;
+    } else if (tag === 0xb001) {
+      if (images !== null || type !== 4 || count !== 1) invalid();
+      images = u32(entry + 8);
+    } else if (tag === 0xb002) {
+      if (table || type !== 7) invalid();
+      table = { offset: u32(entry + 8), bytes: count };
+    }
+  }
+  // APP2 is at most64KiB; cap image scans independently to bound parser work.
+  if (!version || !images || images > 32 || !table || table.bytes !== images * 16) invalid();
+  const tableEnd = table.offset + table.bytes;
+  const overlaps = (a, z, c, d) => a < d && c < z;
+  if (table.offset < 8 || tableEnd > tiff.length || overlaps(table.offset, tableEnd, index.offset, index.end)) invalid();
+  const next = u32(index.end - 4);
+  if (next) {
+    // A following MP Attribute IFD is legal, but not a second index chain.
+    const attributes = directory(next);
+    if (overlaps(next, attributes.end, index.offset, index.end) || overlaps(next, attributes.end, table.offset, tableEnd) || u32(attributes.end - 4)) invalid();
+  }
+  const ranges = [];
+  for (let n = 0; n < images; n++) {
+    const entry = table.offset + n * 16;
+    const attribute = u32(entry), size = u32(entry + 4), offset = u32(entry + 8);
+    if ((attribute & 0x07000000) || size < 8 || u16(entry + 12) > images || u16(entry + 14) > images) invalid();
+    const imageStart = n === 0 ? 0 : start + offset;
+    if (n === 0 && (offset !== 0 || size !== primary.end)) invalid();
+    if (n > 0 && !offset) invalid();
+    if (imageStart + size > b.length) invalid();
+    ranges.push({ start: imageStart, end: imageStart + size });
+  }
+  ranges.sort((a, b) => a.start - b.start);
+  let previousEnd = primary.end;
+  for (const range of ranges.slice(1)) {
+    if (range.start < previousEnd) invalid();
+    const image = b.subarray(range.start, range.end);
+    if (jpegImage(image).end !== image.length) invalid();
+    previousEnd = range.end;
+  }
+  // Gaps explicitly delimited by the index may carry MPF metadata. No tail
+  // after the final indexed JPEG is authorized, even if it resembles a JPEG.
+  if (previousEnd !== b.length) invalid();
+}
+
+function structure(b, ext) {
+  if (ext === "png") {
+    if (b.length < 45 || !b.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) invalid();
+    let p = 8,
+      first = true,
+      data = false,
+      end = false;
+    while (p + 12 <= b.length) {
+      const n = b.readUInt32BE(p),
+        type = b.toString("ascii", p + 4, p + 8);
+      if (n > b.length - p - 12) invalid();
+      if (crc32(b.subarray(p + 4, p + 8 + n)) !== b.readUInt32BE(p + 8 + n)) invalid();
+      if (first && (type !== "IHDR" || n !== 13 || !b.readUInt32BE(p + 8) || !b.readUInt32BE(p + 12))) invalid();
+      first = false;
+      if (type === "IDAT" && n) data = true;
+      p += 12 + n;
+      if (type === "IEND") {
+        if (n || p !== b.length) invalid();
+        end = true;
+        break;
+      }
+    }
+    if (!data || !end) invalid();
+  } else if (ext === "jpg" || ext === "jpeg") {
+    jpegStructure(b);
   } else if (ext === "gif") {
     if (
       b.length < 14 ||

@@ -270,3 +270,58 @@ test('GIF image requires a global or local color table',async()=>{
  const bytes=Buffer.from('474946383961010001000000002c00000000010001000002014c003b','hex');
  try{fs.writeFileSync(file,bytes);await assert.rejects(validateProjectImage(file,{ext:'gif',expectedSize:bytes.length}));}finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+
+// Synthetic MPF container made solely from repository-owned, nonpersonal JPEGs.
+function mpfFixture(little = true, gapSize = 291) {
+  const primary = fs.readFileSync(path.join(__dirname, 'fixtures/project-baseline.jpg'));
+  const secondary = fs.readFileSync(path.join(__dirname, 'fixtures/project-progressive.jpg'));
+  const tiff = Buffer.alloc(82);
+  const u16 = (v, p) => little ? tiff.writeUInt16LE(v, p) : tiff.writeUInt16BE(v, p);
+  const u32 = (v, p) => little ? tiff.writeUInt32LE(v, p) : tiff.writeUInt32BE(v, p);
+  tiff.write(little ? 'II' : 'MM');u16(42, 2);u32(8, 4);u16(3, 8);
+  u16(0xb000, 10);u16(7, 12);u32(4, 14);tiff.write('0100', 18);
+  u16(0xb001, 22);u16(4, 24);u32(1, 26);u32(2, 30);
+  u16(0xb002, 34);u16(7, 36);u32(32, 38);u32(50, 42);
+  const segment = Buffer.alloc(90);segment.set([255, 226, 0, 88]);segment.write('MPF\0', 4);
+  const primaryEnd = primary.length + segment.length, secondaryStart = primaryEnd + gapSize;
+  u32(0x20030000, 50);u32(primaryEnd, 54);u32(0, 58);
+  u32(0, 66);u32(secondary.length, 70);u32(secondaryStart - 10, 74);
+  tiff.copy(segment, 8);
+  const bytes = Buffer.concat([primary.subarray(0, 2), segment, primary.subarray(2), Buffer.alloc(gapSize, 0x5a), secondary]);
+  const set16=(b,v,p)=>little?b.writeUInt16LE(v,10+p):b.writeUInt16BE(v,10+p);
+  const set32=(b,v,p)=>little?b.writeUInt32LE(v,10+p):b.writeUInt32BE(v,10+p);
+  return {bytes, primaryEnd, secondaryStart, set16, set32};
+}
+for (const little of [true, false]) test(`MPF ${little?'little':'big'} endian preserves two indexed JPEGs and declared gap byte-for-byte`, async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mpf-valid-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'image.jpeg');
+  for(const gap of [0,291]) {
+    const {bytes}=mpfFixture(little,gap);fs.writeFileSync(file,bytes);
+    const result=await validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length});
+    assert.equal(result.size,bytes.length);assert.equal(result.contentType,'image/jpeg');assert.equal(result.fingerprint,crypto.createHash('sha256').update(bytes).digest('hex'));assert.deepEqual(fs.readFileSync(file),bytes);
+  }
+});
+test('MPF rejects malformed tables, ambiguous ranges, truncated pictures and unindexed tails', async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mpf-invalid-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'image.jpeg');
+  for(const little of [true,false]){
+    const f=mpfFixture(little);
+    const cases=[
+      ['primary offset',b=>f.set32(b,1,58)],['primary size',b=>f.set32(b,f.primaryEnd-1,54)],
+      ['overlap',b=>f.set32(b,f.primaryEnd-11,74)],['out of bounds',b=>f.set32(b,0xffffffff,74)],
+      ['secondary short',b=>f.set32(b,b.length-f.secondaryStart-1,70)],['secondary long',b=>f.set32(b,b.length,70)],
+      ['truncated primary',b=>{b[f.primaryEnd-1]=0;}],['truncated secondary',b=>{b[b.length-1]=0;}],
+      ['secondary missing SOI',b=>{b[f.secondaryStart]=0;}],
+      ['secondary malformed SOS',b=>{const sos=b.indexOf(Buffer.from([255,218]),f.secondaryStart);assert.ok(sos>f.secondaryStart);b[sos+4]=0;}],
+      ['table offset outside APP2',b=>f.set32(b,0xffffffff,42)],['table escapes APP2 into JPEG',b=>f.set32(b,80,42)],['table overlaps IFD',b=>f.set32(b,10,42)],
+      ['table count mismatch',b=>f.set32(b,16,38)],['too many images',b=>f.set32(b,0xffffffff,30)],
+      ['image work cap',b=>f.set32(b,33,30)],['zero images',b=>f.set32(b,0,30)],['wrong number type',b=>f.set16(b,3,24)],
+      ['wrong table type',b=>f.set16(b,4,36)],['bad endian',b=>{b[10]=0;}],
+      ['bad attribute IFD pointer',b=>f.set32(b,0xffffffff,46)],['attribute IFD overlaps index',b=>f.set32(b,8,46)],['bad TIFF signature',b=>f.set16(b,41,2)],['bad IFD offset',b=>f.set32(b,0xffffffff,4)],
+      ['oversize IFD count',b=>f.set16(b,0xffff,8)],['duplicate number tag',b=>f.set16(b,0xb001,34)],
+      ['non-JPEG MP entry',b=>f.set32(b,0x01000000,66)],['missing index version',b=>f.set16(b,0xb099,10)]
+    ];
+    for(const [name,mutate] of cases){const bytes=Buffer.from(f.bytes);mutate(bytes);fs.writeFileSync(file,bytes);await assert.rejects(validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length}),undefined,`${little?'LE':'BE'} ${name}`);}
+    for(const bytes of [f.bytes.subarray(0,-1),Buffer.concat([f.bytes,Buffer.from('unindexed')]),Buffer.concat([samples.jpg,Buffer.from('arbitrary tail')]),Buffer.concat([samples.jpg,samples.jpg])]) {
+      fs.writeFileSync(file,bytes);await assert.rejects(validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length}));
+    }
+  }
+});
