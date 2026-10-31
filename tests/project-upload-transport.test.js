@@ -164,4 +164,19 @@ test('generic missing/conflict retains receipt; repeated explicit removal stops 
  await assert.rejects(env.ctx.uploadProjectMediaFile('p',photo),/deleted again/);assert.equal(inits,1);assert.notEqual(JSON.parse(env.storage.get(key)).clientUploadId,'a'.repeat(32));
 });
 
+test('paused photo and video reselection requery authoritative metadata after minimal resume response',async()=>{
+ for(const type of ['image','video']) {
+ let resumed=false,statusCalls=0;
+ const file={...photo,name:type==='image'?'a.jpg':'v.mp4',type:type==='image'?'image/jpeg':'video/mp4'};
+ const env=harness({projectMediaFileType:()=>type,fetch:async url=>{
+ if(url.endsWith('/status')){statusCalls++;return response({sessionId:'s',status:resumed?'uploading':'paused',filename:file.name,fileSize:10,partSize:10,partCount:1,completedParts:[]});}
+ if(url.endsWith('/resume')){resumed=true;return response({ok:true,status:'uploading',sessionId:'s',fileSize:10,partSize:10,partCount:1});}
+ if(url.includes('part-url'))return response({url:'https://tos/p'});
+ return response({sessionId:'s',status:'queued'});
+ }});
+ env.storage.set(env.ctx.projectUploadStateKey('p',file),JSON.stringify({sessionId:'s'}));
+ const pending=env.ctx.uploadProjectMediaFile('p',file);pending.catch(()=>{});await flush();assert.equal(env.requests.length,1);env.requests[0].done();assert.equal((await pending).status,'queued');assert.equal(statusCalls,2);
+ }
+});
+
 }

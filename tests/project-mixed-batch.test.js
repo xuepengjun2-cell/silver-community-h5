@@ -60,3 +60,44 @@ test('mixed40 first photo stalls during PUT; four idle attempts release all rema
  assert.equal(env.requests.length,4);assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'failed');assert.equal(env.ctx.state.projectUploadBatch.items.filter(i=>i.status==='duplicate').length,39);
  assert.equal((env.ctx.projectUploadProgressHtml('p').match(/data-batch-index=/g)||[]).length,40);
 });
+test('same-session reselection waits for delayed pause acknowledgement before resume or PUT',async()=>{
+ let paused=false,releasePause,pauseStarted=false;const paths=[];
+ const env=harness({esc:s=>String(s),projectMediaFileType:()=> 'image',fetch:async url=>{
+ paths.push(url);
+ if(url.endsWith('/init'))return response({sessionId:'s',status:'uploading',partSize:10,partCount:1});
+ if(url.endsWith('/pause')){pauseStarted=true;await new Promise(resolve=>releasePause=resolve);paused=true;return response({status:'paused'});}
+ if(url.endsWith('/status'))return response({sessionId:'s',status:paused?'paused':'uploading',filename:'a.jpg',fileSize:10,partSize:10,partCount:1});
+ if(url.endsWith('/resume')){paused=false;return response({status:'uploading',sessionId:'s',fileSize:10,partSize:10,partCount:1});}
+ if(url.includes('part-url'))return response({url:'https://tos/p'});
+ return response({sessionId:'s',status:'queued'});
+ }});
+ const first=env.ctx.runProjectUploadBatch('p',[photo]);await flush();assert.equal(env.requests.length,1);
+ env.ctx.stopProjectUploadFile('p');await first;await flush();assert.equal(pauseStarted,true);
+ const before=paths.length;const second=env.ctx.runProjectUploadBatch('p',[photo]);await flush();assert.equal(env.requests.length,1);assert.equal(paths.length,before,'must wait before even reading pre-pause state');
+ releasePause();await flush();assert.equal(env.requests.length,2);env.requests[1].done();await second;assert.equal(paused,false);assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'processing');
+});
+test('completed transition retains pending media refresh across failure then next-poll success',async()=>{
+ let albums=0;const env=harness({fetch:async url=>url.endsWith('/upload-sessions')?response({sessions:[{sessionId:'q',status:'completed'}]}):(++albums===1?response({error:'temporarily unavailable'},400):response({project:{id:'p',media:[{type:'image',url:'u'}]}})),projectMediaGroups:p=>({images:p.media,videos:[]})});
+ env.ctx.state.projectView='manager';env.ctx.state.projectUploadSessions=[{sessionId:'q',status:'queued'}];
+ await assert.rejects(env.ctx.refreshProjectUploadSessions('p'),/temporarily unavailable/);
+ await env.tick(15000);assert.equal(albums,2);assert.equal(env.ctx.state.currentProject.media.length,1);assert.equal(env.ctx.state.projectUploadSessionsError,'');
+ await env.tick(60000);assert.equal(albums,2,'successful refresh clears pending work');
+});
+test('direct published result retries failed album refresh through bounded polling',async()=>{
+ let albums=0;const env=harness({projectMediaFileType:()=> 'image',projectMediaGroups:p=>({images:p.media,videos:[]}),fetch:async(url)=>{
+ if(url.endsWith('/init'))return response({status:'completed',sessionId:'s',media:{url:'u'}});
+ if(url.endsWith('/upload-sessions'))return response({sessions:[{sessionId:'s',status:'completed'}]});
+ albums++;return albums===1?response({error:'album stale'},400):response({project:{id:'p',media:[{type:'image',url:'u'}]}});
+ }});
+ env.ctx.state.projectView='manager';await env.ctx.runProjectUploadBatch('p',[photo]);assert.equal(albums,1);
+ await env.tick(15000);assert.equal(albums,2);assert.equal(env.ctx.state.currentProject.media.length,1);assert.equal(env.ctx.state.projectUploadBatch.items[0].message,undefined);
+});
+test('queued photo describes validation and saving while video retains conversion wording',()=>{
+ const env=harness({esc:s=>String(s)});
+ env.ctx.state.projectUploadSessions=[{sessionId:'photo',type:'image',title:'photo.jpg',status:'queued',progress:{label:'排队等待转换',percent:null}},{sessionId:'video',type:'video',title:'video.mp4',status:'queued'}];
+ const html=env.ctx.projectUploadSessionsHtml('p');
+ const photoRow=html.slice(html.indexOf('data-project-session="photo"'),html.indexOf('data-project-session="video"'));
+ assert.match(photoRow,/等待照片校验.*入库/);assert.doesNotMatch(photoRow,/转换/);
+ assert.match(html.slice(html.indexOf('data-project-session="video"')),/排队等待转换/);
+ assert.doesNotMatch(html,/上传完成后自动逐条转换/);
+});

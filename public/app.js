@@ -1530,6 +1530,7 @@ const PROJECT_VIDEO_UPLOAD_STATE_PREFIX = "silver_project_video_upload:";
 const PROJECT_VIDEO_DELIVERY_MAX_BYTES = 190 * 1024 * 1024;
 let projectUploadPollTimer = null;
 const projectUploadControllers = new Map();
+const projectUploadMutations = new Map();
 
 function projectUploadOutcome(data, type) {
   if (["processing", "queued", "receiving"].includes(data?.status)) return "processing";
@@ -1684,6 +1685,16 @@ function syncProjectUploadPanel(projectId) {
   scheduleProjectUploadPoll(projectId);
 }
 
+function projectUploadMutation(sessionId, operation) {
+  const previous = projectUploadMutations.get(sessionId);
+  const pending = (previous || Promise.resolve()).catch(() => {}).then(operation);
+  projectUploadMutations.set(sessionId,pending);
+  pending.then(() => {
+    if(projectUploadMutations.get(sessionId)===pending)projectUploadMutations.delete(sessionId);
+  }, () => {}); // Retain an uncertain mutation; reselection must fail closed.
+  return pending;
+}
+
 async function uploadProjectVideoMultipart(projectId, file, onProgress, controller = new AbortController(), allowRemovedReset = true) {
   const type = projectMediaFileType(file);
   const name = String(file.name || "file");
@@ -1705,12 +1716,20 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress, controll
   projectUploadControllers.set(storageKey,controller);
   try {
     if (sessionId) {
+      const mutation=projectUploadMutations.get(sessionId);
+      if(mutation) {
+        onProgress?.({phase:"等待停止确认",percent:null,uploadedBytes:0,totalBytes:file.size});
+        await projectUploadBounded(()=>mutation,controller.signal);
+      }
       let status = await control(route("status"));
       if (["completed", "queued", "processing", "receiving", "delivery_failed"].includes(status.status)) {
         if (status.status === "completed") status = await control(route("complete?delivery=1"), {method:"POST",body:{}},1);
         receipt.status = status.status; persist(); return status;
       }
-      if (["paused","stopped","failed"].includes(status.status)) status = await control(route("resume"),{method:"POST",body:{}},1);
+      if (["paused","stopped","failed"].includes(status.status)) {
+        await projectUploadMutation(sessionId,()=>control(route("resume"),{method:"POST",body:{}},1));
+        status = await control(route("status"));
+      }
       if (["completed","queued","processing","receiving"].includes(status.status)) { receipt.status=status.status;persist();return status; }
       if (status.status !== "uploading" || Number(status.fileSize) !== Number(file.size) || !String(status.filename || "").toLowerCase().endsWith(`.${ext}`)) throw new Error("原会话与文件不一致或素材已删除，请核查后重新选择文件");
       init = status;
@@ -1818,6 +1837,8 @@ function persistProjectUploadBatch() {
 }
 
 async function refreshProjectAlbumMedia(projectId) {
+  state.projectAlbumRefreshPending ||= {};
+  state.projectAlbumRefreshPending[projectId]=true;
   const data = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}`);
   if(state.projectView !== "manager" || state.currentProject?.id !== projectId)return;
   state.currentProject = data.project;
@@ -1834,6 +1855,11 @@ async function refreshProjectAlbumMedia(projectId) {
     const media=(data.project.media || []).map((item,index)=>({...item,index})).filter(item=>item.type===type);
     grid.innerHTML=media.length ? media.map(item=>projectMediaCardHtml(data.project,item,true,data.project.canManage)).join("") : '<div class="project-empty-state">该分类还没有素材。</div>';
     bindProjectManagerMediaActions(data.project,grid);
+  }
+  delete state.projectAlbumRefreshPending[projectId];
+  if(state.projectUploadBatch?.projectId===projectId) {
+    for(const item of state.projectUploadBatch.items) if(item.albumRefreshPending) {delete item.albumRefreshPending;delete item.message;}
+    persistProjectUploadBatch();syncProjectUploadProgress(projectId);
   }
 }
 
@@ -1853,7 +1879,7 @@ function stopProjectUploadFile(projectId, action = "pause") {
   // The file controller exists before hashing/init and before a session ID.
   projectUploadControllers.get(transfer.controllerKey)?.abort();
   if(transfer.sessionId) {
-    projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(transfer.sessionId)}/pause`,{method:"POST",body:{}},1).catch(error=>{
+    projectUploadMutation(transfer.sessionId,()=>projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(transfer.sessionId)}/pause`,{method:"POST",body:{}},1)).catch(error=>{
       state.projectUploadTaskMessages[transfer.sessionId]=error.message;syncProjectUploadPanel(projectId);
     });
   }
@@ -1881,7 +1907,7 @@ async function runProjectUploadBatch(projectId, files) {
         if(session)Object.assign(session,{status:data.status,progress:data.progress,duplicate:data.duplicate});
         if(outcome==="processing" && item.sessionId && !state.projectUploadSessions.some(task=>task.sessionId===item.sessionId))state.projectUploadSessions.unshift({sessionId:item.sessionId,type:item.type,title:file.name,status:data.status});
         if(outcome==="published" || outcome==="duplicate") {
-          try {await refreshProjectAlbumMedia(projectId);}catch(error){item.message=`结果已确认；相册数量待刷新：${error.message}`;}
+          try {await refreshProjectAlbumMedia(projectId);}catch(error){item.albumRefreshPending=true;item.message=`结果已确认；相册数量待刷新：${error.message}`;state.projectUploadSessionsError=error.message || "相册数量待刷新";}
         }
       } catch(error) {
         item.status=error.code === "UPLOAD_PAUSED" ? transfer.stopAction === "skip" ? "skipped" : "paused" : "failed";
@@ -2262,7 +2288,7 @@ function projectUploadSessionsHtml(projectId) {
     failed: "等待续传", delivery_failed: "待处理，可重试", stopping: "正在停止"
   };
   return `<section class="project-processing-panel" aria-label="素材后台任务"><strong>素材后台任务 · ${Math.max(sessions.length,Number(state.projectUploadSessionsTotal) || 0)} 项</strong>
-    <p class="project-processing-note">上传完成后自动逐条转换，完成后进入相册。你可以离开页面，稍后回来查看。</p>
+    <p class="project-processing-note">上传完成后由后台处理，通过校验并保存后进入相册。你可以离开页面，稍后回来查看。</p>
     ${state.projectUploadSessionsError ? `<details class="project-task-details"><summary>任务状态暂未更新，稍后自动重试</summary><small>${esc(state.projectUploadSessionsError)}</small></details>` : ""}
     ${ordered.map((item,index) => {
       const busy = Boolean(state.projectUploadTaskActions[item.sessionId]);
@@ -2272,10 +2298,13 @@ function projectUploadSessionsHtml(projectId) {
       const message = state.projectUploadTaskMessages[item.sessionId] || "";
       const transfer = state.projectUploadTransfer;
       const isCurrentUpload = item.status === "uploading" && transfer?.projectId === projectId && transfer?.sessionId === item.sessionId;
-      const progress = isCurrentUpload ? { label: "原片上传", percent: transfer.percent } : item.progress;
+      const imageLabel = item.type === "image" ? {uploading:"照片上传",receiving:"正在接收照片",queued:"等待照片校验 / 入库",processing:"照片校验 / 入库中"}[item.status] : "";
+      const progress = isCurrentUpload ? { label: imageLabel || "原片上传", percent: transfer.percent }
+        : item.type === "image" && item.status === "queued" ? {...item.progress,label:imageLabel} : item.progress;
+      const statusLabel = progress?.label || imageLabel || labels[item.status] || "等待后台处理";
       return `${index===visibleCount ? `<details class="project-task-overflow"><summary>展开其余 ${sessions.length-visibleCount} 项任务</summary>` : ""}<div class="project-processing-row" data-project-session="${esc(item.sessionId)}">
         <div class="project-task-main"><span class="project-processing-name" title="${esc(item.title)}">${esc(item.title)}</span>
-          <span class="project-processing-status">${esc(progress?.label || labels[item.status] || "等待后台处理")}</span>
+          <span class="project-processing-status">${esc(statusLabel)}</span>
           ${projectTaskProgressHtml(progress, ["uploading", "receiving", "queued", "processing", "stopping"].includes(item.status))}
         </div>
         <div class="project-task-actions">
@@ -2321,7 +2350,7 @@ function syncProjectUploadProgress(projectId) {
   if (transfer?.projectId !== projectId || !transfer.sessionId) return;
   const task = [...document.querySelectorAll("[data-project-session]")].find(row => row.dataset.projectSession === transfer.sessionId);
   const progressBar = task?.querySelector(".project-task-progress");
-  if (progressBar) progressBar.outerHTML = projectTaskProgressHtml({ label: "原片上传", percent: transfer.percent });
+  if (progressBar) progressBar.outerHTML = projectTaskProgressHtml({ label: transfer.type === "image" ? "照片上传" : "原片上传", percent: transfer.percent });
 }
 
 function bindProjectUploadSessionActions(projectId) {
@@ -2335,7 +2364,7 @@ function bindProjectUploadSessionActions(projectId) {
     if (["pause", "dismiss"].includes(action)) projectUploadControllers.get(sessionId)?.abort();
     syncProjectUploadPanel(projectId);
     try {
-      const result = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/${action}`, { method: "POST", body: {} });
+      const result = await projectUploadMutation(sessionId,()=>projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(sessionId)}/${action}`, { method: "POST", body: {} },1));
       state.projectUploadTaskMessages[sessionId] = action === "resume" && result.status === "uploading"
         ? "请选择同一原文件继续上传，已到达云端的分片会复用。"
         : action === "pause" ? "已停止，原片保留，可稍后继续。" : "";
@@ -2354,7 +2383,7 @@ function scheduleProjectUploadPoll(projectId) {
   clearTimeout(projectUploadPollTimer);
   if(state.projectUploadPollProject===projectId)return;
   const tasks=state.projectUploadSessions || [];
-  if(!state.projectUploadSessionsError && !tasks.some(item=>["uploading","receiving","queued","processing","stopping"].includes(item.status)))return;
+  if(!state.projectAlbumRefreshPending?.[projectId] && !state.projectUploadSessionsError && !tasks.some(item=>["uploading","receiving","queued","processing","stopping"].includes(item.status)))return;
   const interval=state.projectUploadSessionsError ? 15000 : tasks.some(item=>["queued","processing","stopping"].includes(item.status)) ? 4000 : 12000;
   projectUploadPollTimer=setTimeout(()=>{
     if(state.projectView === "manager" && state.currentProject?.id===projectId) refreshProjectUploadSessions(projectId).catch(()=>{});
@@ -2382,7 +2411,7 @@ async function refreshProjectUploadSessions(projectId) {
     if(state.projectView!=="manager" || state.currentProject?.id!==projectId)return;
     state.projectUploadSessions=data.sessions || [];state.projectUploadSessionsTotal=Number(data.total) || state.projectUploadSessions.length;state.projectUploadSessionsError="";
     reconcileProjectUploadBatch(projectId);
-    if(state.projectUploadSessions.some(item=>previous.has(item.sessionId) && item.status==="completed"))await refreshProjectAlbumMedia(projectId);
+    if(state.projectUploadSessions.some(item=>previous.has(item.sessionId) && item.status==="completed") || state.projectAlbumRefreshPending?.[projectId])await refreshProjectAlbumMedia(projectId);
   } catch(error) {
     if(state.projectView==="manager" && state.currentProject?.id===projectId)state.projectUploadSessionsError=error.message || "读取失败";
     throw error;
@@ -2424,7 +2453,7 @@ function renderProjectManager(project) {
     <section class="project-manager-head"><div><div class="eyebrow"><span class="eyebrow-dot"></span>活动交付相册</div><h1>${esc(project.title)}</h1><p>${esc(activity?.title ? `关联 SOP：${activity.title}` : "未关联标准 SOP")}</p></div><div class="project-manager-stats"><strong>${project.media?.length || 0}</strong><span>个素材</span><strong>${g.images.length}</strong><span>张图片</span><strong>${g.videos.length}</strong><span>个视频</span>${canManage ? `<strong>${projectAuditTotal(project, "view")}</strong><span>次查看</span><strong>${projectAuditTotal(project, "download")}</strong><span>次下载</span>` : ""}</div></section>
     <section class="project-manager-layout">
       ${metaPanelHtml}
-      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 ${canManage ? `<span class="project-upload-hint">图片 ≤50MB · 视频原片 ≤2GB、≤120分钟</span>` : ""}</div>${canManage ? `<label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>照片上传后进入相册；视频上传后自动在后台转换为 MP4 并生成封面，无需留在此页面等待。单个视频原片≤2GB、时长≤120分钟，超出请先分段。鸿蒙微信/部分安卓微信相册单次最多9张。</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress">${projectUploadProgressHtml(project.id)}</div><div id="projectUploadSessions">${projectUploadSessionsHtml(project.id)}</div>` : projectReadOnlyNote}<div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true, canManage)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
+      <div class="project-upload-panel"><div class="panel-title"><span class="title-bar"></span>现场素材 ${canManage ? `<span class="project-upload-hint">图片 ≤50MB · 视频原片 ≤2GB、≤120分钟</span>` : ""}</div>${canManage ? `<label class="project-upload-zone" for="projectFileInput"><strong>＋ 选择照片或视频</strong><span>照片上传后在后台校验并入库，完成后进入相册；视频上传后自动在后台转换为 MP4 并生成封面，无需留在此页面等待。单个视频原片≤2GB、时长≤120分钟，超出请先分段。鸿蒙微信/部分安卓微信相册单次最多9张。</span><input id="projectFileInput" type="file" multiple accept="image/*,video/*"></label><div id="projectUploadProgress" class="project-upload-progress">${projectUploadProgressHtml(project.id)}</div><div id="projectUploadSessions">${projectUploadSessionsHtml(project.id)}</div>` : projectReadOnlyNote}<div class="project-album-tabs project-manager-media-tabs"><button class="${managerTab === "images" ? "active" : ""}" data-project-manager-tab="images">照片 <strong>${g.images.length}</strong></button><button class="${managerTab === "videos" ? "active" : ""}" data-project-manager-tab="videos">视频 <strong>${g.videos.length}</strong></button></div><div class="project-media-grid">${managerMedia.length ? managerMedia.map(m => projectMediaCardHtml(project, m, true, canManage)).join("") : `<div class="project-empty-state">该分类还没有素材。</div>`}</div></div>
     </section>${metaModalHtml}${projectLightboxHtml(project)}${loginModal()}`;
 
   document.querySelector("#projectBackBtn")?.addEventListener("click", () => { history.pushState(null, "", "?view=projects"); loadProjectsView(); });
