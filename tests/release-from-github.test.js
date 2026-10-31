@@ -153,3 +153,42 @@ test("上传目录链接不能绕过旧照片检查", async t => {
   fs.symlinkSync(`${root}/elsewhere`, `${root}/uploads`, "dir");
   await assert.rejects(release.idle(conn, root), /Upload directory/);
 });
+
+// Removing the sidecar staging guard would interrupt derivative work despite SQL being idle.
+test("照片衍生目录任意遗留条目阻止发布并保留内容", async t => {
+  const { root, conn } = idleFixture(t);
+  const staging = `${root}/data/.photo-view-staging`;
+  fs.mkdirSync(staging);
+  for (const name of ["active-job", ".orphan", "partial.jpg"]) {
+    fs.writeFileSync(`${staging}/${name}`, "unfinished derivative");
+    await assert.rejects(release.idle(conn, root), /Photo view staging/);
+    assert.equal(fs.readFileSync(`${staging}/${name}`, "utf8"), "unfinished derivative");
+    fs.unlinkSync(`${staging}/${name}`);
+  }
+  fs.mkdirSync(`${staging}/job-directory`);
+  await assert.rejects(release.idle(conn, root), /Photo view staging/);
+  assert.equal(fs.statSync(`${staging}/job-directory`).isDirectory(), true);
+});
+test("照片衍生目录缺失或空目录允许发布，停服后新增条目再次阻止发布", async t => {
+  const { root, conn } = idleFixture(t);
+  await release.idle(conn, root);
+  const staging = `${root}/data/.photo-view-staging`;
+  fs.mkdirSync(staging);
+  await release.idle(conn, root);
+  fs.writeFileSync(`${staging}/late-job`, "late work");
+  await assert.rejects(release.idle(conn, root), /Photo view staging/);
+  assert.equal(fs.readFileSync(`${staging}/late-job`, "utf8"), "late work");
+});
+test("照片衍生目录链接、普通文件和不可读权限拒绝发布", async t => {
+  const { root, conn } = idleFixture(t);
+  const staging = `${root}/data/.photo-view-staging`;
+  fs.symlinkSync(`${root}/uploads`, staging, "dir");
+  await assert.rejects(release.idle(conn, root), /Photo view staging/);
+  fs.unlinkSync(staging);
+  fs.writeFileSync(staging, "not a directory");
+  await assert.rejects(release.idle(conn, root), /Photo view staging/);
+  fs.unlinkSync(staging);
+  fs.mkdirSync(staging, { mode: 0o000 });
+  try { await assert.rejects(release.idle(conn, root), /Photo view staging/); }
+  finally { fs.chmodSync(staging, 0o700); }
+});

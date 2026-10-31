@@ -2967,3 +2967,6 @@ img { display: block; }
 .project-batch-row > small { grid-column: 1 / -1; color: #6b7280; overflow-wrap: anywhere; }
 .project-task-overflow > summary { cursor: pointer; padding: 12px 0; }
 .project-transfer-card > div { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.photo-view-placeholder { min-height: 140px; display: grid; place-items: center; padding: 24px; color: var(--muted); text-align: center; background: #f4f5f7; border-radius: 12px; }
+.project-preview-stage .photo-view-placeholder { min-height: 45vh; width: 100%; }

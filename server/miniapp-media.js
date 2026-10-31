@@ -412,6 +412,7 @@ async function processVideoPoster(video, target, options = {}) {
 }
 
 module.exports = {
+  run, probe,
   MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, MAX_DELIVERY_BYTES,
   receiveUpload, videoEncoding, videoEncodingProfile, videoDeliveryMode, verifyVideoDelivery, processImage, processVideo, processVideoPoster
 };

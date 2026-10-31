@@ -63,13 +63,18 @@ async function boot({ seed = {}, tosDelay = 0, headDelay = 0, env = {}, beforeSt
     logs: () => log,
     login: async () => (await api("/login", { method: "POST", body: { username: "admin", password: "admin123" } })).data.token,
     persisted: () => JSON.parse(fs.readFileSync(dumpFile, "utf8")),
-    stop: () => { child.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
+    stop: async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        await new Promise(resolve => { child.once("close", resolve); child.kill(); });
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   };
 }
 
 async function withServer(options, run) {
   const ctx = await boot(options);
-  try { await run(ctx); } finally { ctx.stop(); }
+  try { await run(ctx); } finally { await ctx.stop(); }
 }
 
 

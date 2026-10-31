@@ -137,7 +137,20 @@ const sameData = (before, after) => { if (stable(before) !== stable(after)) fail
 function assertPhotoIdle(entries) {
   if (entries.some(name => name.startsWith(".project-"))) fail("Legacy photo upload temporary entry present; inspect and retry after completion");
 }
+function assertPhotoViewIdle(root) {
+  const staging = `${root}/data/.photo-view-staging`;
+  let stat;
+  try { stat = fs.lstatSync(staging); }
+  catch (error) { if (error.code === "ENOENT") return; fail("Photo view staging cannot be inspected"); }
+  if (!stat.isDirectory() || !(stat.mode & 0o444) || !(stat.mode & 0o111)) fail("Photo view staging must be a readable regular directory");
+  let entries;
+  try { entries = fs.readdirSync(staging); }
+  catch { fail("Photo view staging cannot be inspected"); }
+  if (entries.length) fail("Photo view staging contains active or orphan work; inspect and retry after completion");
+}
 async function idle(conn, root = ROOT) {
+  // Sidecar work is independent of SQL; reject even ambiguous/orphan entries, never delete them.
+  assertPhotoViewIdle(root);
   const uploads = `${root}/uploads`;
   // Legacy whole-photo requests have no SQL session. Never delete or ignore their evidence.
   if (!fs.lstatSync(uploads).isDirectory()) fail("Upload directory must be a regular directory");
