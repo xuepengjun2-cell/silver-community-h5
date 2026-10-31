@@ -37,7 +37,7 @@
 - XHR分片无进展90秒取消；有进展则重置，分片绝对上限30分钟；最多4次PUT尝试。完整响应和JSON消费都受控制请求期限覆盖。
 - 任务列表返回类型、进度及总数，保留旧`sessions`字段；可返回最多1000项，前端默认50项并可展开，正在处理/当前上传项不能隐藏。
 
-### Task1: durable direct-photo backend and idempotent session protocol
+### Task 1: durable direct-photo backend and idempotent session protocol
 
 **Files:** Modify `server.js`, `server/project-video-tasks.js`, `server/video-delivery-io.js` if required; create `server/project-image-delivery.js`, `tests/project-image-delivery.test.js`, `tests/project-photo-upload-api.test.js`; own relevant changes in `tests/support/video-api-server.js` and `tests/concurrency/fake-mysql.js`, `fake-tos.js`; adjust existing backend tests only where protocol intentionally changes.
 **Consumes:** existing createProjectVideoTasks lifecycle, trusted project commit/persistence, TOS SDK, shared interfaces above.
@@ -52,7 +52,7 @@
 - [ ] Add tests for photo finish while a delayed video runs, partial pause/resume, lost complete response, immediate stop/resume, account revocation across HEAD/copy/commit, duplicate finish, deleted completed reference, failed copy/DB and source retention. Run new tests plus `npm run test:tasks`, `npm run test:concurrency`, `npm run test:identity`.
 - [ ] Self-review and report RED/GREEN commands/results, touched files and code concerns; controller commits only Task1 files before independent review.
 
-### Task2: browser multipart transport and mixed-batch usability
+### Task 2: browser multipart transport and mixed-batch usability
 
 **Files:** Modify `public/app.js`, `public/styles.css`; create `tests/project-upload-transport.test.js`, `tests/project-mixed-batch.test.js`; own relevant updates to existing UI tests. Do not modify server files, fixtures, package.json or HTML cache versions.
 **Consumes:** shared HTTP contract; current H5 state/render and existing pause/resume actions.
@@ -67,7 +67,7 @@
 - [ ] Bound polling and reschedule in finally. Tests cover hung poll followed by recovery, more than50 outstanding tasks with current/oldest processing visible, and old photo response compatibility.
 - [ ] Run new tests and relevant existing UI/miniapp tests; self-review and report RED/GREEN evidence. Controller commits only Task2 files before independent review.
 
-### Task3: integration, guarded release and documentation
+### Task 3: integration, guarded release and documentation
 
 **Files:** Modify `package.json` scripts only, `public/index.html` cache tags, `deploy/release-from-github.cjs`, `tests/release-from-github.test.js`, `VIDEO_UPLOAD_STANDARD.md`, `DEPLOYMENT.md`; add targeted integration tests if Task1/2 leave a real boundary gap. Do not change GitHub workflow or dependency lock.
 **Consumes:** approved Task1/Task2 implementations and test reports; existing runtime/static release executors.
