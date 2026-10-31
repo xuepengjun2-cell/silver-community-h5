@@ -2427,7 +2427,7 @@ function reconcileProjectUploadBatch(projectId, receipts = state.projectUploadSe
       for(const item of state.projectUploadBatch.items) {
         if(!["processing","failed","uploading","paused","skipped"].includes(item.status))continue;
         const task=receipts.find(task=>task.sessionId===item.sessionId);
-        if(task?.status==="completed")item.status=task.duplicate ? "duplicate" : "published";
+        if(task?.status==="completed") {item.status=task.duplicate ? "duplicate" : "published";delete item.message;}
         else if(["queued","processing","receiving"].includes(task?.status)) {item.status="processing";item.receiptTerminal=false;}
         else if(["failed","delivery_failed","paused","stopped","dismissed","aborted"].includes(task?.status)) {item.status=["paused","stopped"].includes(task.status) ? "paused" : "failed";item.receiptTerminal=true;item.message=task.error || "请在任务列表处理或重新选择同一原文件";}
       }

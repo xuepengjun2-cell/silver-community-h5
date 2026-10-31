@@ -118,5 +118,5 @@ test('exhausted complete and status response loss keeps session and later reconc
  }});env.ctx.refreshProjectAlbumMedia=async()=>{};
  const pending=env.ctx.runProjectUploadBatch('p',[photo]);await flush();env.requests[0].done();await pending;
  assert.equal(env.ctx.state.projectUploadBatch.items[0].sessionId,'s');assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'failed');
- recovered=true;env.ctx.state.projectView='manager';await env.ctx.refreshProjectUploadSessions('p');assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'published');
+ recovered=true;env.ctx.state.projectView='manager';await env.ctx.refreshProjectUploadSessions('p');assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'published');assert.equal(env.ctx.state.projectUploadBatch.items[0].message,undefined);
 });
