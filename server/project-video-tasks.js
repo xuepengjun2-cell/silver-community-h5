@@ -10,7 +10,7 @@ function createProjectVideoTasks(options) {
   let dispatching = null;
   let recovering = null;
   let scanCursor = 0;
-  const labels = { queued:'等待后台处理', preparing:'检查已上传文件', downloading:'准备原片', probing:'检查视频格式', converting:'后台转换', verifying:'校验完整时长和画面', poster:'生成视频封面', uploading:'保存成片与封面', publishing:'保存相册结果', paused:'已停止，可继续', completed:'处理完成' };
+  const labels = { queued:'等待后台处理', preparing:'检查已上传文件', downloading:'准备原片', probing:'检查视频格式', converting:'后台转换', verifying:'校验完整时长和画面', poster:'生成视频封面', uploading:'保存成片与封面', publishing:'保存相册结果', paused:'已停止，可继续', completed:'处理完成', ...(options.labels || {}) };
   const terminal = new Set(['completed','aborted','dismissed']);
   const log = error => { try { options.log?.(error); } catch {} };
 
@@ -46,6 +46,7 @@ function createProjectVideoTasks(options) {
   function assertSourceUnchanged(latest, row) {
     if (latest.status!==row.status || latest.object_key!==row.object_key ||
         latest.upload_id!==row.upload_id || latest.owner_id!==row.owner_id ||
+        latest.type!==row.type || latest.ext!==row.ext ||
         latest.project_id!==row.project_id || Number(latest.file_size)!==Number(row.file_size) ||
         Number(latest.part_size)!==Number(row.part_size) || Number(latest.part_count)!==Number(row.part_count)) {
       throw taskError('任务状态已变化，原片保留，不会自动重新入队');
@@ -129,7 +130,7 @@ function createProjectVideoTasks(options) {
       if (!options.enabled()) return;
       const rows=await options.listQueued();
       for (const row of rows) {
-        if (options.pendingCount()>=6) break;
+        if (options.pendingCount()>=(options.maxPending || 6)) break;
         options.enqueue(row.id);
       }
     })();

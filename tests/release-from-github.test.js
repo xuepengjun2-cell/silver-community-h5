@@ -97,3 +97,59 @@ test("原子代码复制完整替换且不遗留临时文件", t => {
   assert.equal(fs.readFileSync(`${root}/target`, "utf8"), "new code");
   assert.deepEqual(fs.readdirSync(root).sort(), ["source", "target"]);
 });
+
+// Removing the legacy-file check would let SQL-idle releases interrupt old photo uploads.
+function idleFixture(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "silver-release-idle-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(`${root}/uploads`); fs.mkdirSync(`${root}/data`);
+  const conn = { query: async () => [[{ n: 0 }]] };
+  return { root, conn };
+}
+test("SQL空闲但存在旧照片临时文件时发布拒绝且保留原文件", async t => {
+  const { root, conn } = idleFixture(t);
+  const file = `${root}/uploads/.project-photo.jpg`;
+  fs.writeFileSync(file, "original upload bytes");
+  await assert.rejects(async () => release.idle(conn, root), /Legacy photo upload/);
+  assert.equal(fs.readFileSync(file, "utf8"), "original upload bytes");
+});
+test("干净上传目录允许SQL空闲发布，普通历史照片保持不变", async t => {
+  const { root, conn } = idleFixture(t);
+  fs.writeFileSync(`${root}/uploads/photo.jpg`, "published");
+  await release.idle(conn, root);
+  assert.equal(fs.readFileSync(`${root}/uploads/photo.jpg`, "utf8"), "published");
+});
+test("上传目录缺失或不可检查时不能当作空闲", async t => {
+  const { root, conn } = idleFixture(t);
+  fs.rmdirSync(`${root}/uploads`);
+  await assert.rejects(async () => release.idle(conn, root));
+  fs.writeFileSync(`${root}/uploads`, "not a directory");
+  await assert.rejects(async () => release.idle(conn, root));
+});
+test("纯照片空闲判定拒绝任何project临时条目，不受文件扩展名影响", () => {
+  assert.throws(() => release.assertPhotoIdle(["photo.jpg", ".project-unfinished"]), /Legacy photo upload/);
+  assert.doesNotThrow(() => release.assertPhotoIdle(["photo.jpg", ".upload-other"]));
+});
+test("首次空闲之后出现旧照片临时文件，第二次检查仍会拦截", async t => {
+  const { root, conn } = idleFixture(t);
+  await release.idle(conn, root);
+  fs.writeFileSync(`${root}/uploads/.project-late.png`, "late incoming request");
+  await assert.rejects(release.idle(conn, root), /Legacy photo upload/);
+  assert.equal(fs.readFileSync(`${root}/uploads/.project-late.png`, "utf8"), "late incoming request");
+});
+test("照片守卫不绕过原有SQL会话和本地视频活动任务检查", async t => {
+  const { root } = idleFixture(t);
+  for (const activeTable of ["project_upload_sessions", "case_direct_upload_sessions"]) {
+    const conn = { query: async sql => [[{ n: sql.includes(`FROM ${activeTable} `) ? 1 : 0 }]] };
+    await assert.rejects(release.idle(conn, root), /Active upload session/);
+  }
+  fs.writeFileSync(`${root}/data/miniapp-video-jobs.json`, JSON.stringify([{ status: "processing" }]));
+  await assert.rejects(release.idle({ query: async () => [[{ n: 0 }]] }, root), /Active media job/);
+});
+test("上传目录链接不能绕过旧照片检查", async t => {
+  const { root, conn } = idleFixture(t);
+  fs.rmdirSync(`${root}/uploads`);
+  fs.mkdirSync(`${root}/elsewhere`);
+  fs.symlinkSync(`${root}/elsewhere`, `${root}/uploads`, "dir");
+  await assert.rejects(release.idle(conn, root), /Upload directory/);
+});

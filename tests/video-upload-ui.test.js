@@ -6,6 +6,7 @@ const vm = require("node:vm");
 
 function element(initial = {}) {
   return Object.assign({ value: "", disabled: false, textContent: "", innerHTML: "", dataset: {}, handlers: {},
+    querySelectorAll() { return []; },
     addEventListener(event, handler) { this.handlers[event] = handler; }
   }, initial);
 }
@@ -18,7 +19,7 @@ function loadPage(filename, exports) {
     location: { hostname: "localhost" },
     window: { location: { origin: "http://localhost" }, addEventListener() {} },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    URL, URLSearchParams, Set, console,
+    URL, URLSearchParams, Set, console, AbortController,
     setTimeout(callback) { callback(); return 1; }, clearTimeout() {},
     alert() {}, confirm: () => true
   });
@@ -187,7 +188,7 @@ test("相册实际批量上传事件：原片传完进入 processing 仍不统�
   release(); await running;
   const summary = context.page.projectUploadProgressHtml(project.id);
   assert.match(summary, /0 项已进入相册/);
-  assert.match(summary, /1 个视频已交给后台自动处理/);
+  assert.match(summary, /1 项交给后台处理/);
   assert.equal(project.media.length, 0, "processing 状态不进入已发布素材");
   assert.equal(context.page.state.projectUploadTransfer, null, "传输进度结束，后台进度单独显示");
   assert.equal(alerts, 0, "后台接管任务不弹出错误或成功提醒打断操作");

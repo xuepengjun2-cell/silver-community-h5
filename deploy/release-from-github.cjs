@@ -134,12 +134,19 @@ async function snapshot(conn) {
   } catch (error) { await conn.rollback(); throw error; }
 }
 const sameData = (before, after) => { if (stable(before) !== stable(after)) fail("Business table data changed; code rollback only, database never overwritten"); };
-async function idle(conn) {
+function assertPhotoIdle(entries) {
+  if (entries.some(name => name.startsWith(".project-"))) fail("Legacy photo upload temporary entry present; inspect and retry after completion");
+}
+async function idle(conn, root = ROOT) {
+  const uploads = `${root}/uploads`;
+  // Legacy whole-photo requests have no SQL session. Never delete or ignore their evidence.
+  if (!fs.lstatSync(uploads).isDirectory()) fail("Upload directory must be a regular directory");
+  assertPhotoIdle(fs.readdirSync(uploads));
   for (const table of ["project_upload_sessions", "case_direct_upload_sessions"]) {
     const [[row]] = await conn.query(`SELECT COUNT(*) AS n FROM ${table} WHERE status IN ('uploading','receiving','queued','processing')`);
     if (Number(row.n)) fail("Active upload session; retry after completion");
   }
-  const file = `${ROOT}/data/miniapp-video-jobs.json`;
+  const file = `${root}/data/miniapp-video-jobs.json`;
   if (fs.existsSync(file)) { const jobs = JSON.parse(fs.readFileSync(file)); if (!Array.isArray(jobs) || jobs.some(j => ["receiving", "queued", "processing"].includes(j.status))) fail("Active media job; retry after completion"); }
 }
 async function healthy() {
@@ -259,5 +266,5 @@ async function local(args) {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 async function main(args) { if (args[0] === "--remote" && (args.length === 2 || args.length === 3 && args[2] === "--apply")) return remote(args[1], args[2] === "--apply"); return local(args); }
-module.exports = { sha, options, identityOptions, assertCodeHash, allowed, validateCi, archiveNames, assertPackages, functionText, assertStartup, plan, validatePlan, stable, hash, sameData, atomicCopy };
+module.exports = { sha, options, identityOptions, assertCodeHash, allowed, validateCi, archiveNames, assertPackages, functionText, assertStartup, plan, validatePlan, stable, hash, sameData, atomicCopy, idle, assertPhotoIdle };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(JSON.stringify({ ok: false, error: error instanceof ReleaseError ? error.message : "Release command failed; raw output withheld to protect credentials" })); process.exitCode = 1; });

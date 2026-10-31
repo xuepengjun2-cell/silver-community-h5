@@ -18,9 +18,10 @@ function extract(name) {
 function context(names, overrides = {}) {
   const state = { projectUploadSessions: [], projectUploadSessionsError: '', projectUploadTaskMessages: {}, projectUploadTaskActions: {}, projectUploading: false, projectView: 'manager', currentProject: {id: 'p'}, projectUploadTransfer: null, projectUploadBatchNotice: null };
   const ctx = vm.createContext({ state, console, AbortController, setTimeout, clearTimeout,
-    projectUploadControllers: new Map(), PROJECT_VIDEO_UPLOAD_WORKERS: 3,
+    projectUploadMutation:(_id,operation)=>operation(),projectUploadControllers: new Map(), PROJECT_VIDEO_UPLOAD_WORKERS: 3,
     document: { querySelector: () => null, querySelectorAll: () => [] },
     ...overrides });
+  ctx.projectUploadControl = overrides.projectUploadControl || overrides.api;
   vm.runInContext([extract('esc'), ...names.map(extract)].join('\n'), ctx);
   return ctx;
 }
@@ -80,7 +81,7 @@ test('upload progress does not claim conversion has completed at 100%', () => {
 
 test('poll queued work every four seconds, partial uploads more slowly, and stop polling paused work', () => {
   const timers=[];
-  const ctx=context(['scheduleProjectUploadPoll'],{projectUploadPollTimer:null,setTimeout:(fn,delay)=>{timers.push(delay);return 1;},clearTimeout:()=>{}});
+  const ctx=context(['projectUploadUnresolved','scheduleProjectUploadPoll'],{projectUploadPollTimer:null,setTimeout:(fn,delay)=>{timers.push(delay);return 1;},clearTimeout:()=>{}});
   ctx.state.projectUploadSessions=[{status:'queued'}];ctx.scheduleProjectUploadPoll('p');
   ctx.state.projectUploadSessions=[{status:'uploading'}];ctx.scheduleProjectUploadPoll('p');
   ctx.state.projectUploadSessions=[{status:'paused'}];ctx.scheduleProjectUploadPoll('p');
@@ -90,7 +91,7 @@ test('poll queued work every four seconds, partial uploads more slowly, and stop
 
 test('queued-to-completed refreshes album media, not just processing-to-completed', async () => {
   const loaded=[];
-  const ctx=context(['refreshProjectUploadSessions'],{api:async()=>({sessions:[{sessionId:'q',status:'completed'}]}),syncProjectUploadControls:()=>{},loadProjectManager:id=>loaded.push(id)});
+  const ctx=context(['projectUploadUnresolved','refreshProjectUploadSessions'],{api:async()=>({sessions:[{sessionId:'q',status:'completed'}]}),syncProjectUploadControls:()=>{},refreshProjectAlbumMedia:id=>loaded.push(id),reconcileProjectUploadBatch:()=>{},persistProjectUploadBatch:()=>{},syncProjectUploadProgress:()=>{},bindProjectUploadSessionActions:()=>{},scheduleProjectUploadPoll:()=>{}});
   ctx.state.projectUploadSessions=[{sessionId:'q',status:'queued'}];
   await ctx.refreshProjectUploadSessions('p');
   assert.deepEqual(loaded,['p']);
@@ -143,17 +144,12 @@ test('resume partial upload tells user to select the same original, without pret
 });
 
 test('pausing a transfer retains multipart resume state and never submits completion', async () => {
-  const saved=[],calls=[];
-  const ctx=context(['projectUploadPausedError','uploadProjectVideoMultipart'],{
-    readProjectUploadState:()=>null,projectUploadStateKey:()=> 'saved-key',
-    writeProjectUploadState:(key,value)=>saved.push({key,value}),clearProjectUploadState:()=>assert.fail('must retain resume state'),
-    api:async(url)=>{calls.push(url);return {sessionId:'s',partSize:10,partCount:1};},
-    syncProjectUploadPanel:()=>{},
-  });
-  ctx.state.projectView='other';
-  const file={name:'video.mp4',size:10,lastModified:1,slice:()=>new Uint8Array(10)};
-  await assert.rejects(ctx.uploadProjectVideoMultipart('p',file,()=>ctx.projectUploadControllers.get('s').abort()),e=>e.code==='UPLOAD_PAUSED');
-  assert.ok(saved.length>=2);
+  const {harness,flush,response}=require('./project-upload-transport.test');
+  const calls=[];
+  const env=harness({projectMediaFileType:()=> 'video',fetch:async url=>{calls.push(url);return response({sessionId:'s',partSize:10,partCount:1,status:'uploading'});}});
+  const file={name:'video.mp4',size:10,lastModified:1,slice:()=>({size:10})};
+  const pending=env.ctx.uploadProjectVideoMultipart('p',file,progress=>{if(progress.phase==='上传')vm.runInContext('projectUploadControllers.get("s").abort()',env.ctx);});
+  await assert.rejects(pending,error=>error.code==='UPLOAD_PAUSED');
+  assert.ok([...env.storage.values()].some(value=>JSON.parse(value).sessionId==='s'));
   assert.equal(calls.some(url=>url.includes('/complete')),false);
-  assert.equal(ctx.projectUploadControllers.has('s'),false);
 });

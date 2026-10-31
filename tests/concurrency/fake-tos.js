@@ -3,6 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const crypto=require("crypto");
+const etag=key=>crypto.createHash("md5").update(fs.readFileSync(file(key))).digest("hex");
 
 const dir = process.env.FAKE_TOS_DIR;
 const delay = () => new Promise(resolve => setTimeout(resolve, Number(process.env.FAKE_TOS_DELAY_MS || 0)));
@@ -25,10 +27,17 @@ class TosClient {
     await new Promise(resolve => setTimeout(resolve, Number(process.env.FAKE_TOS_HEAD_DELAY_MS || 0)));
     if (!fs.existsSync(file(key))) { const e = new Error("NoSuchKey"); e.statusCode = 404; throw e; }
     const size = String(fs.statSync(file(key)).size);
-    return { data: { "content-length": size }, headers: { "content-length": size } };
+    return { data: { "content-length": size, ETag:etag(key) }, headers: { "content-length": size, etag:etag(key) } };
+  }
+  async copyObject({key,srcKey,copySourceIfMatch}) {
+    await delay();
+    if(process.env.FAKE_TOS_MUTATE_COPY==='1')fs.writeFileSync(file(srcKey),Buffer.alloc(fs.statSync(file(srcKey)).size,0));
+    if(process.env.FAKE_TOS_REJECT_COPY==='1')throw new Error('test: copy rejected');
+    if(!copySourceIfMatch||etag(srcKey)!==copySourceIfMatch){const e=new Error('Source changed');e.statusCode=412;throw e;}
+    fs.copyFileSync(file(srcKey),file(key));return {data:{ETag:etag(key)}};
   }
   async deleteObject({ key }) { fs.rmSync(file(key), { force: true }); return {}; }
-  async createMultipartUpload() { return { data: { UploadId: "fake-upload" } }; }
+  async createMultipartUpload() { const events=dir+'.initiations.json';const list=fs.existsSync(events)?JSON.parse(fs.readFileSync(events)):[];list.push('init');fs.writeFileSync(events,JSON.stringify(list));return { data: { UploadId: "fake-upload" } }; }
   async abortMultipartUpload() { return {}; }
   async listParts({ key }) {
     const metadata = `${file(key)}.parts.json`;

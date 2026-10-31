@@ -2958,3 +2958,12 @@ img { display: block; }
   .share-fallback-link-row .btn { width: 100%; }
   .share-fallback-actions > * { flex: 1; justify-content: center; text-align: center; }
 }
+
+/* The selected-file manifest remains separate from server publication tasks. */
+.project-batch-list { max-height: 320px; overflow: auto; margin-top: 12px; border: 1px solid var(--border, #e5e7eb); border-radius: 10px; }
+.project-batch-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; padding: 9px 12px; border-bottom: 1px solid var(--border, #e5e7eb); font-size: 12px; }
+.project-batch-row > span { overflow-wrap: anywhere; }
+.project-batch-row > strong { font-size: 12px; }
+.project-batch-row > small { grid-column: 1 / -1; color: #6b7280; overflow-wrap: anywhere; }
+.project-task-overflow > summary { cursor: pointer; padding: 12px 0; }
+.project-transfer-card > div { display: flex; flex-wrap: wrap; gap: 8px; }
