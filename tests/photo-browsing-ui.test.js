@@ -177,3 +177,14 @@ test('case focus retains case context and resumes readiness checks instead of re
  const f=fixture(),c=project();c.media=[{...photo(),size:30e6,imageViewState:'pending'}];f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;f.ctx.state.cases=[c];f.ctx.state.currentProject=project();f.ctx.state.projectView='album';f.ctx.renderCasePage('p');
  let albums=0;f.ctx.loadPublicProject=()=>albums++;f.handlers.focus();assert.equal(albums,0);assert.ok(f.timers.some(t=>t.delay===2000&&!t.cancelled));assert.match(f.app.innerHTML,/case-media-card/);
 });
+test('case to project preview via loader or popstate keeps project on focus',async()=>{
+ for(const popstate of [false,true]) {
+  const f=fixture();f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;f.ctx.state.cases=[project()];f.ctx.renderCasePage('p');
+  if(popstate){f.ctx.location.search='?view=project-preview&project=p&media=1';f.handlers.popstate();await new Promise(r=>setImmediate(r));}else await f.ctx.loadProjectPreview('p',1);
+  assert.equal(f.ctx.state.caseView,false);assert.equal(f.ctx.state.activeCaseId,'');f.handlers.focus();await new Promise(r=>setImmediate(r));assert.match(f.app.innerHTML,/project-preview-image/);assert.doesNotMatch(f.app.innerHTML,/case-media-card/);
+ }
+});
+test('case to manager activation clears stale case focus target',async()=>{
+ const f=fixture();f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;f.ctx.state.cases=[project()];f.ctx.renderCasePage('p');f.ctx.renderProjectManager(project());
+ assert.equal(f.ctx.state.caseView,false);assert.equal(f.ctx.state.activeCaseId,'');let refreshed=0;f.ctx.refreshProjectAlbumMedia=async()=>refreshed++;f.handlers.focus();assert.equal(refreshed,1);assert.doesNotMatch(f.app.innerHTML,/case-media-card/);
+});

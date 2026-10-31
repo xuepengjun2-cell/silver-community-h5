@@ -103,3 +103,11 @@ test('restart transient readback preserves pair and retries without original dow
  recovered.request(w.media);await new Promise(r=>setTimeout(r,40));assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(w.dir,'views.json'))).entries)[0].state,'ready');assert.equal(recovered.decorate(w.media).previewUrl,undefined);
  fail=false;const realNow=Date.now;Date.now=()=>realNow()+61000;t.after(()=>{Date.now=realNow;});recovered.request(w.media);await wait(()=>recovered.decorate(w.media).imageViewState==='ready');assert.equal(originalDownloads,0);
 });
+test('restart regenerates legacy JPEG recipe even with intact source and derivative identities',async t=>{
+ const w=worker(t);w.service.request(w.media);await wait(()=>w.service.decorate(w.media).imageViewState==='ready');await w.service.stop();
+ const file=path.join(w.dir,'views.json'),saved=JSON.parse(fs.readFileSync(file)),entry=Object.values(saved.entries)[0];
+ const legacy=require('node:crypto').createHash('sha256').update(`${w.media.url}\noriginal-1\n${21*1024*1024}\nphoto-v1`).digest('hex');
+ entry.outputs=entry.outputs.map(output=>{const key=output.key.replace(entry.revision,legacy),url=output.url.replace(entry.revision,legacy);w.objects.set(key,w.objects.get(output.key));return {...output,key,url};});entry.revision=legacy;fs.writeFileSync(file,JSON.stringify(saved));
+ let renders=0;const recovered=createPhotoViews({stateFile:file,stagingRoot:path.join(w.dir,'staging'),resolveSource:m=>({key:'photos/a.jpg',url:m.url}),isReferenced:()=>true,canRun:async()=>true,io:w.io,render:async(_source,dir)=>{renders++;return [640,1600].map(size=>{const file=path.join(dir,size+'.jpg');fs.writeFileSync(file,'new recipe');return {size,file,ext:'jpg'};});}});t.after(()=>recovered.stop());
+ recovered.request(w.media);await wait(()=>recovered.decorate(w.media).imageViewState==='ready');assert.equal(renders,1);
+});

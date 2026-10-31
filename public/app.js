@@ -2426,6 +2426,7 @@ function bindProjectShareEvents(root = document) {
 }
 
 async function loadProjectManager(id) {
+  state.caseView = false;state.activeCaseId = "";
   invalidatePhotoBrowsing();
   const browsing = photoBrowsing(), generation = browsing.generation, actor = browsing.actor, requestedAt = Date.now();
   if (!state.user) return renderProjectLogin();
@@ -2634,6 +2635,7 @@ async function refreshProjectUploadSessions(projectId) {
 }
 
 function renderProjectManager(project) {
+  state.caseView = false;state.activeCaseId = "";
   clearPhotoView();
   state.projectView = "manager";
   state.currentProject = project;
@@ -2708,6 +2710,7 @@ function navigateProjectPreview(project, index, manager = false) {
 }
 
 async function loadProjectPreview(id, index, manager = false, options = {}) {
+  state.caseView = false;state.activeCaseId = "";
   const browsing = photoBrowsing();
   clearPhotoView();
   const generation = ++browsing.generation, actor = browsing.actor;
@@ -2738,6 +2741,7 @@ async function loadProjectPreview(id, index, manager = false, options = {}) {
 }
 
 function renderProjectPreview(project, index, manager = false) {
+  state.caseView = false;state.activeCaseId = "";
   clearPhotoView();
   const media = Array.isArray(project.media) ? project.media : [];
   const currentIndex = Number.isInteger(Number(index)) ? Number(index) : 0;

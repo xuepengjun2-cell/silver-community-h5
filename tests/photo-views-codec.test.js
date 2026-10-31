@@ -43,3 +43,27 @@ test('real static WebP generates two previews and animated WebP never flattens t
  assert.deepEqual(await renderPhoto(fixture('animated.webp'),dir,new AbortController().signal,'webp'),{bypass:true});
  assert.deepEqual(fs.readdirSync(dir),[]);
 });
+test('real mirrored JPEG EXIF2/5/7 preserves quadrant order without double rotation',{skip:!available && !process.env.CI},async t=>{
+ assert.equal(available,true,'Linux CI must provide FFmpeg');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'photo-mirrors-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+ const cases=[
+  [2,80,40,[[0,255,0],[255,0,0],[255,255,0],[0,0,255]]],
+  [5,40,80,[[255,0,0],[0,0,255],[0,255,0],[255,255,0]]],
+  [7,40,80,[[255,255,0],[0,255,0],[0,0,255],[255,0,0]]]
+ ];
+ for(const [orientation,w,h,colors] of cases){
+  const bytes=fs.readFileSync(path.join(__dirname,'fixtures/photo-views/orientation-6.jpg'));
+  // This fixture's big-endian IFD0 orientation SHORT is at byte48.
+  assert.equal(bytes.readUInt16BE(48),6);bytes.writeUInt16BE(orientation,48);
+  const source=path.join(dir,`orientation-${orientation}.jpg`);fs.writeFileSync(source,bytes);
+  const outputs=await renderPhoto(source,dir,new AbortController().signal,'jpg');
+  for(const output of outputs){
+   const info=await probe(output.file);assert.equal(info.streams[0].width,w);assert.equal(info.streams[0].height,h);
+   const raw=path.join(dir,`pixels-${orientation}-${output.size}.rgb`);
+   await run('ffmpeg',['-nostdin','-hide_banner','-loglevel','error','-i',output.file,'-frames:v','1','-threads','1','-pix_fmt','rgb24','-f','rawvideo',raw],60000);
+   const pixels=fs.readFileSync(raw);assert.equal(pixels.length,w*h*3);
+   for(const [i,[x,y]] of [[w/4,h/4],[3*w/4,h/4],[w/4,3*h/4],[3*w/4,3*h/4]].entries())for(let channel=0;channel<3;channel++)assert.ok(Math.abs(pixels[(y*w+x)*3+channel]-colors[i][channel])<45,`EXIF${orientation} ${output.size} quadrant${i}`);
+  }
+  assert.deepEqual(fs.readFileSync(source),bytes);
+ }
+});

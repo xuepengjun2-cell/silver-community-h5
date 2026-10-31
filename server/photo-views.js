@@ -7,6 +7,7 @@ const { run, probe } = require('./miniapp-media');
 const { downloadVideo } = require('./video-delivery-io');
 const MiB = 1024 * 1024;
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+const photoRevision = (ref, head) => digest(`${ref.url}\n${head.etag}\n${head.size}\n${/\.jpe?g$/i.test(ref.key)?'photo-v2-exif':'photo-v1'}`);
 const online = (url, size) => `${url}?x-tos-process=image/auto-orient,1/resize,m_lfit,w_${size},h_${size},limit_1/quality,q_82`;
 function regularDirectory(dir) {
   fs.mkdirSync(dir,{recursive:true,mode:0o700});
@@ -37,6 +38,53 @@ function storageIO(getStorage) {
     }
   };
 }
+// Read only JPEG header segments and TIFF IFD0. Never follow arbitrary IFD chains.
+function jpegOrientation(bytes) {
+  const limit=Math.min(bytes.length,1024*1024);
+  if(limit<2 || bytes[0]!==0xff || bytes[1]!==0xd8)return 1;
+  let offset=2;
+  while(offset<limit) {
+    if(bytes[offset++]!==0xff)return 1;
+    while(offset<limit && bytes[offset]===0xff)offset++;
+    if(offset>=limit)break;
+    const marker=bytes[offset++];
+    if(marker===0xda || marker===0xd9)return 1;
+    if(marker===0x01 || (marker>=0xd0 && marker<=0xd7))continue;
+    if(offset+2>limit)break;
+    const length=bytes.readUInt16BE(offset);
+    if(length<2)return 1;
+    if(offset+length>limit)break;
+    if(marker===0xe1 && length>=16 && bytes.toString('ascii',offset+2,offset+8)==='Exif\0\0') {
+      const tiff=bytes.subarray(offset+8,offset+length);
+      const endian=tiff.toString('ascii',0,2);
+      if(endian!=='II' && endian!=='MM')return 1;
+      const u16=p=>endian==='II'?tiff.readUInt16LE(p):tiff.readUInt16BE(p);
+      const u32=p=>endian==='II'?tiff.readUInt32LE(p):tiff.readUInt32BE(p);
+      if(u16(2)!==42)return 1;
+      const ifd=u32(4);
+      if(ifd<8 || ifd+2>tiff.length)return 1;
+      const count=u16(ifd);
+      if(count>Math.floor((tiff.length-ifd-2)/12))return 1;
+      for(let n=0;n<count;n++) {
+        const entry=ifd+2+n*12;
+        if(u16(entry)!==0x112)continue;
+        if(u16(entry+2)!==3 || u32(entry+4)!==1)return 1;
+        const orientation=u16(entry+8);
+        return orientation>=1 && orientation<=8?orientation:1;
+      }
+    }
+    offset+=length;
+  }
+  if(limit===1024*1024)throw Error('JPEG header exceeds scan bound');
+  return 1;
+}
+async function jpegTransform(source) {
+  const header=Buffer.alloc(1024*1024),fd=await fs.promises.open(source,'r');
+  let bytesRead;
+  try{({bytesRead}=await fd.read(header,0,header.length,0));}finally{await fd.close();}
+  const orientation=jpegOrientation(header.subarray(0,bytesRead));
+  return ['', '', 'hflip', 'hflip,vflip', 'vflip', 'transpose=0', 'transpose=1', 'transpose=3', 'transpose=2'][orientation];
+}
 async function renderPhoto(source,dir,signal,ext) {
   if(ext==='webp') {
     const h=Buffer.alloc(32);const fd=await fs.promises.open(source,'r');try{await fd.read(h,0,32,0);}finally{await fd.close();}
@@ -45,10 +93,11 @@ async function renderPhoto(source,dir,signal,ext) {
   const info=await probe(source,{signal});
   const picture=info.streams?.find(s=>s.codec_type==='video');
   if(!picture || picture.codec_name!==({jpg:'mjpeg',png:'png',webp:'webp'}[ext]) || !(picture.width>0 && picture.height>0) || picture.width*picture.height>64000000)throw Error('Photo exceeds decode bounds');
+  const transform=ext==='jpg'?await jpegTransform(source):'';
   const outputs=[];
   for(const size of [640,1600]){
     const file=path.join(dir,`${size}.${ext}`);
-    await run('ffmpeg',['-nostdin','-hide_banner','-loglevel','error','-filter_threads','1','-threads','1','-max_alloc','268435456','-i',source,'-map','0:v:0','-frames:v','1','-threads','1','-vf',`scale=w='min(${size},iw)':h='min(${size},ih)':force_original_aspect_ratio=decrease`,...(ext==='png'?['-c:v','png']:ext==='webp'?['-c:v','libwebp','-quality','82']:['-c:v','mjpeg','-q:v','4']),'-y',file],60000,{signal});
+    await run('ffmpeg',['-nostdin','-hide_banner','-loglevel','error','-filter_threads','1','-threads','1','-max_alloc','268435456',...(ext==='jpg'?['-noautorotate']:[]),'-i',source,'-map','0:v:0','-frames:v','1','-threads','1','-vf',`${transform?transform+',':''}scale=w='min(${size},iw)':h='min(${size},ih)':force_original_aspect_ratio=decrease`,...(ext==='jpg'?['-map_metadata','-1']:[]),...(ext==='png'?['-c:v','png']:ext==='webp'?['-c:v','libwebp','-quality','82']:['-c:v','mjpeg','-q:v','4']),'-y',file],60000,{signal});
     const out=await probe(file,{signal});const p=out.streams?.find(s=>s.codec_type==='video');
     const bytes=(await fs.promises.stat(file)).size;
     if(!p || p.width>size || p.height>size || !bytes || bytes>20*MiB)throw Error('Invalid photo derivative');
@@ -122,7 +171,7 @@ function createPhotoViews(options) {
         if(verified.has(id) && ['ready','original'].includes(previous?.state)) {
           queue.delete(id);await check();
           const before=await io.head(ref.key,signal);
-          const revision=digest(`${ref.url}\n${before.etag}\n${before.size}\nphoto-v1`);
+          const revision=photoRevision(ref,before);
           if(revision===previous.revision) {
             for(const output of previous.outputs || []) {
               const head=await io.head(output.key,signal);
@@ -149,7 +198,7 @@ function createPhotoViews(options) {
         if(before.size<=20*MiB && !/\.webp$/i.test(ref.key)) {
           await check();entries[id]={state:'online',size:before.size,etag:before.etag};persist();validated.set(id,Date.now()+15000);return;
         }
-        const revision=digest(`${ref.url}\n${before.etag}\n${before.size}\nphoto-v1`);
+        const revision=photoRevision(ref,before);
         const prefix=ref.key.slice(0,ref.key.lastIndexOf('/')+1);
         const urlPrefix=ref.url.slice(0,ref.url.lastIndexOf('/')+1);
         const ext=/\.png$/i.test(ref.key)?'png':/\.webp$/i.test(ref.key)?'webp':'jpg';
@@ -212,4 +261,4 @@ function createPhotoViews(options) {
   }
   return {decorate,request,isBusy:()=>Boolean(active),async stop(){stopped=true;clearTimeout(timer);queue.clear();active?.controller.abort();await active?.done;}};
 }
-module.exports={createPhotoViews,photoResourcesAvailable,renderPhoto};
+module.exports={createPhotoViews,photoResourcesAvailable,renderPhoto,jpegOrientation};
