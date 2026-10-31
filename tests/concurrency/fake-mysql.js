@@ -32,6 +32,7 @@ async function query(sql, params = []) {
   await tick();
   const s = String(sql).replace(/\s+/g, " ").trim();
   await waitForTestGate(s, params);
+  if(/^INSERT INTO activity_projects/.test(s) && process.env.FAKE_TOS_DIR && fs.existsSync(require('path').join(require('path').dirname(process.env.FAKE_TOS_DIR),'reject-photo-db')) && params.some(p=>typeof p==='string' && p.includes('silver-project-images/')))throw new Error('test: photo database unavailable');
   let m;
   if (/^CREATE TABLE/i.test(s)) return [{}, []];
   if ((m = s.match(/^SELECT COUNT\(\*\) AS (\w+) FROM (\w+)/i))) return [[{ [m[1]]: table(m[2]).length }], []];
@@ -45,9 +46,11 @@ async function query(sql, params = []) {
     return [table("wechat_identities").filter(r => r.user_id === params[0]).map(r => ({ ...r })), []];
   }
   if ((m = s.match(/^SELECT (.+?) FROM (\w+)(?: WHERE (.+?))?(?: ORDER BY .+?)?(?: LIMIT \d+)?$/i))) {
-    const [, , name, where] = m;
+    let [, , name, where] = m;
     let rows = table(name);
     if (where) {
+      const typed=where.match(/^type = '(video|image)' AND (.+)$/i);
+      if(typed){ rows=rows.filter(r=>(r.type||"video")===typed[1]);where=typed[2]; }
       if (/^id = \?$/i.test(where)) rows = rows.filter(r => r.id === params[0]);
       else if ((m = where.match(/^project_id = \? AND status IN \((.+)\)$/i))) {
         const statuses = [...m[1].matchAll(/'([^']+)'/g)].map(hit => hit[1]);

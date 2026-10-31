@@ -219,3 +219,12 @@ test('dispatch admits at most six workers and respects existing unrelated pendin
  const sample=setup(),rows=Array.from({length:9},(_,i)=>sample.makeRow('t'+i,'queued'));const h=setup({rows,basePending:4});
  await h.tasks.dispatch();assert.equal(h.state.enqueued.size,2);
 });
+
+test('session media type or extension changed during merge never queues the changed object',async()=>{
+ for(const field of ['type','ext']){
+  const h=setup({onMerge:async rows=>{rows.get('task')[field]=field==='type'?'image':'.svg';}});
+  Object.assign(h.rows.get('task'),{type:'video',ext:'.mp4'});
+  await assert.rejects(h.tasks.prepare('task',{auto:true}),e=>e.httpStatus===409);
+  assert.equal(h.state.enqueued.size,0);
+ }
+});

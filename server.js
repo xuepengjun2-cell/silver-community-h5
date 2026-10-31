@@ -7,6 +7,7 @@ const { MAX_VIDEO_BYTES: MINIAPP_MAX_VIDEO_BYTES, receiveUpload: receiveMiniappU
 const { ensureWorkingSpace, receiveRawVideo, downloadVideo } = require("./server/video-delivery-io");
 const { trustedObjectKey, assertDeliveryMetadata, canonicalVideoReferences } = require("./server/video-publication");
 const { createVideoSpaceReservations } = require("./server/video-space");
+const { validateProjectImage, MAX_IMAGE_BYTES } = require("./server/project-image-delivery");
 const { createProjectVideoTasks } = require("./server/project-video-tasks");
 const videoSpace = createVideoSpaceReservations();
 const { resolveOrProvisionActivityHubUser, verifyActivityHubSsoToken } = require("./server/activity-hub-sso");
@@ -123,7 +124,24 @@ const _projectDeliveryQueued = new Set();
 const _projectCompleting = new Set();
 const _projectDeliveryTickets = new Map();
 let _projectVideoTasks;
-
+let _projectImageTasks;
+let _projectImageQueue = Promise.resolve();
+const _projectImageQueued = new Map();
+const _projectImagePreparing = new Set();
+const _projectInitLocks = new Map();
+async function lockedProjectInit(id, fn) {
+  const previous = _projectInitLocks.get(id) || Promise.resolve();
+  const work = previous.catch(() => {}).then(fn);
+  _projectInitLocks.set(id, work);
+  try {
+    return await work;
+  } finally {
+    if (_projectInitLocks.get(id) === work) _projectInitLocks.delete(id);
+  }
+}
+function projectTasksFor(session) {
+  return projectVideoTasks(session.type === "image" ? "image" : "video");
+}
 function videoProcessingPaused(req, res) {
   if (H5_AUTO_VIDEO_DELIVERY) return false;
   req.resume();
@@ -306,6 +324,13 @@ function projectVideoTosObject(filename) {
   };
 }
 
+async function trustedProjectImageUrls(projectId) {
+  const [rows] = await pool.query(
+    "SELECT type, media_url FROM project_upload_sessions WHERE project_id = ? AND status = 'completed'",
+    [projectId],
+  );
+  return new Set(rows.filter((row) => row.type === "image").map((row) => row.media_url));
+}
 async function projectMediaPersisted(projectId, url, poster = "") {
   const [[row]] = await pool.query("SELECT doc FROM activity_projects WHERE id = ?", [projectId]);
   const doc = row ? parseDoc(row.doc) : null;
@@ -358,47 +383,78 @@ async function updateProjectUploadSession(sessionId, fields) {
   ]);
 }
 
-function projectVideoTasks() {
-  if (_projectVideoTasks) return _projectVideoTasks;
-  _projectVideoTasks = createProjectVideoTasks({
-    read: readProjectUploadSession,
+function projectVideoTasks(type = "video") {
+  const image = type === "image";
+  if (image ? _projectImageTasks : _projectVideoTasks) return image ? _projectImageTasks : _projectVideoTasks;
+  const tasks = createProjectVideoTasks({
+    maxPending: image ? 1 : 6,
+    labels: image ? { probing: "校验照片格式与指纹", uploading: "保存照片", downloading: "读取照片" } : {},
+    read: async (id) => {
+      const row = await readProjectUploadSession(id);
+      return row && (row.type || "video") === type ? row : null;
+    },
     update: updateProjectUploadSession,
     getStorage: getCaseVideoTosClient,
     assertSize: assertTosObjectSize,
-    preparing: _projectCompleting,
-    enabled: () => H5_AUTO_VIDEO_DELIVERY,
-    pendingCount: videoQueuePendingCount,
-    enqueue: enqueueProjectVideoDelivery,
-    removeQueued: id => { _projectDeliveryTickets.delete(id); _projectDeliveryQueued.delete(id); },
+    preparing: image ? _projectImagePreparing : _projectCompleting,
+    enabled: () => image || H5_AUTO_VIDEO_DELIVERY,
+    pendingCount: image ? () => _projectImageQueued.size : videoQueuePendingCount,
+    enqueue: image ? enqueueProjectImageDelivery : enqueueProjectVideoDelivery,
+    removeQueued: (id) => {
+      if (image) _projectImageQueued.delete(id);
+      else {
+        _projectDeliveryTickets.delete(id);
+        _projectDeliveryQueued.delete(id);
+      }
+    },
     listQueued: async () => {
-      const [rows] = await pool.query("SELECT id FROM project_upload_sessions WHERE status IN ('queued','processing') ORDER BY created_at ASC LIMIT 1000");
+      const [rows] = await pool.query(
+        `SELECT id FROM project_upload_sessions WHERE type = '${type}' AND status IN ('queued','processing') ORDER BY created_at ASC LIMIT 1000`,
+      );
       return rows;
     },
     listUploading: async () => {
       const cutoff = new Date(Date.now() - PROJECT_UPLOAD_SESSION_TTL_MS).toISOString();
-      const [rows] = await pool.query("SELECT id FROM project_upload_sessions WHERE status = 'uploading' AND updated_at >= ? ORDER BY created_at ASC LIMIT 1000", [cutoff]);
+      const [rows] = await pool.query(
+        `SELECT id FROM project_upload_sessions WHERE type = '${type}' AND status = 'uploading' AND updated_at >= ? ORDER BY created_at ASC LIMIT 1000`,
+        [cutoff],
+      );
       return rows;
     },
     canManage: (session, actor) => {
-      const project = (readDb().activityProjects || []).find(item => item.id === session.project_id);
-      const uploader = (readDb().users || []).find(item => item.id === session.owner_id && item.status === 'active');
+      const project = (readDb().activityProjects || []).find((item) => item.id === session.project_id);
+      const uploader = (readDb().users || []).find((item) => item.id === session.owner_id && item.status === "active");
       if (!projectCanManage(uploader, project)) return false;
       if (actor === undefined) return true;
-      const resolved = typeof actor === 'function' ? actor() : actor;
-      const current = resolved && (readDb().users || []).find(item => item.id === resolved.id && item.status === 'active');
-      return Boolean(current && projectCanManage(current, project) && (session.owner_id === current.id || current.role === 'admin'));
+      const resolved = typeof actor === "function" ? actor() : actor;
+      const current =
+        resolved && (readDb().users || []).find((item) => item.id === resolved.id && item.status === "active");
+      return Boolean(
+        current && projectCanManage(current, project) && (session.owner_id === current.id || current.role === "admin"),
+      );
     },
     canControl: (session, actor) => {
-      const project = (readDb().activityProjects || []).find(item => item.id === session.project_id);
-      const resolved = typeof actor === 'function' ? actor() : actor;
-      const current = resolved && (readDb().users || []).find(item => item.id === resolved.id && item.status === 'active');
-      return Boolean(current && projectCanManage(current, project) && (session.owner_id === current.id || current.role === 'admin'));
+      const project = (readDb().activityProjects || []).find((item) => item.id === session.project_id);
+      const resolved = typeof actor === "function" ? actor() : actor;
+      const current =
+        resolved && (readDb().users || []).find((item) => item.id === resolved.id && item.status === "active");
+      return Boolean(
+        current && projectCanManage(current, project) && (session.owner_id === current.id || current.role === "admin"),
+      );
     },
-    log: error => console.error('[project-video-task]', error.code || error.name || 'Error', String(error.message || '').replace(/https?:\/\/\S+/g, '[URL omitted]').slice(0, 300))
+    log: (error) =>
+      console.error(
+        "[project-video-task]",
+        error.code || error.name || "Error",
+        String(error.message || "")
+          .replace(/https?:\/\/\S+/g, "[URL omitted]")
+          .slice(0, 300),
+      ),
   });
-  return _projectVideoTasks;
+  if (image) _projectImageTasks = tasks;
+  else _projectVideoTasks = tasks;
+  return tasks;
 }
-
 async function cleanupStaleProjectUploadSessions() {
   const cutoff = new Date(Date.now() - PROJECT_UPLOAD_SESSION_TTL_MS).toISOString();
   const [rows] = await pool.query(
@@ -1421,7 +1477,7 @@ function enqueueMiniappVideo(job) {
       // A SQL failure must not leave an unpersisted video visible in cache.
       // Keep uploaded objects conservatively if a DB commit was attempted.
       committed = true;
-      await publishNativeProjectVideo(job.projectId, media, sameOwner);
+      await persistVerifiedProjectMedia(job.projectId, media, sameOwner);
       Object.assign(job, { url, poster, size, fingerprint, deliveryStandard: 1 });
       committed = true;
       await saveMiniappJobs({ ...job, status: "ready", error: "", updatedAt: now() });
@@ -1448,6 +1504,116 @@ function enqueueMiniappVideo(job) {
   });
 }
 
+// Photos have their own serial lifecycle; they never reserve a video slot.
+function enqueueProjectImageDelivery(sessionId) {
+  if (_projectImageQueued.has(sessionId)) return;
+  const ticket = {};
+  _projectImageQueued.set(sessionId, ticket);
+  _projectImageQueue = _projectImageQueue
+    .catch(() => {})
+    .then(async () => {
+      if (_projectImageQueued.get(sessionId) !== ticket) return;
+      const tasks = projectVideoTasks("image");
+      let execution;
+      // A run-specific path prevents an old stopped run removing a resumed run's file.
+      const staging = path.join(MINIAPP_STAGE_DIR, `photo_${sessionId}_${crypto.randomBytes(6).toString("hex")}`);
+      try {
+        execution = await tasks.begin(sessionId);
+        if (!execution) return;
+        const { session, signal, onProgress } = execution;
+        const active = () => tasks.assertActive(sessionId, signal);
+        const { client, bucket } = getCaseVideoTosClient();
+        await fs.promises.mkdir(staging, { recursive: true, mode: 0o700 });
+        await ensureWorkingSpace(staging, MAX_IMAGE_BYTES + 16 * 1024 * 1024);
+        await active();
+        const head = await client.headObject({ bucket, key: session.object_key });
+        assertTosObjectSize(head, session.file_size);
+        const etag = head?.data?.ETag || head?.data?.etag || head?.headers?.etag;
+        if (!etag) throw new Error("TOS未返回源对象ETag，照片保留");
+        const source = path.join(staging, "source");
+        await downloadVideo(
+          client.getPreSignedUrl({ bucket, key: session.object_key, method: "GET", expires: 1800 }),
+          source,
+          Number(session.file_size),
+          MAX_IMAGE_BYTES,
+          { signal, onProgress },
+        );
+        await active();
+        onProgress({ phase: "probing", percent: null });
+        const verified = await validateProjectImage(source, {
+          ext: session.ext,
+          expectedSize: Number(session.file_size),
+          signal,
+        });
+        await active();
+        const filename = `project_${session.project_id}_${session.id}_${verified.fingerprint.slice(0, 16)}${session.ext}`;
+        const key = `${PROJECT_IMAGE_TOS_PREFIX}/${filename}`,
+          url = `${PROJECT_IMAGE_PUBLIC_BASE}/${encodeURIComponent(filename)}`;
+        onProgress({ phase: "uploading", percent: null });
+        await client.copyObject({
+          bucket,
+          key,
+          srcBucket: bucket,
+          srcKey: session.object_key,
+          copySourceIfMatch: etag,
+          metadataDirective: "REPLACE",
+          contentType: verified.contentType,
+          contentDisposition: "inline",
+          cacheControl: "public, max-age=31536000, immutable",
+        });
+        await active();
+        assertTosObjectSize(await client.headObject({ bucket, key }), verified.size);
+        await fs.promises.rm(source, { force: true });
+        const readback = path.join(staging, "readback");
+        await downloadVideo(
+          client.getPreSignedUrl({ bucket, key, method: "GET", expires: 1800 }),
+          readback,
+          verified.size,
+          MAX_IMAGE_BYTES,
+          { signal },
+        );
+        const published = await validateProjectImage(readback, {
+          ext: session.ext,
+          expectedSize: verified.size,
+          signal,
+        });
+        if (published.fingerprint !== verified.fingerprint) throw new Error("照片存储读回校验失败");
+        await tasks.publish(sessionId, signal, async () => {
+          const media = {
+            type: "image",
+            url,
+            title: session.title || "活动照片",
+            caption: "",
+            size: verified.size,
+            fingerprint: verified.fingerprint,
+            createdAt: now(),
+          };
+          const assertOwner = (current) => {
+            const uploader = (readDb().users || []).find((u) => u.id === session.owner_id && u.status === "active");
+            if (!projectCanManage(uploader, current)) throw new Error("上传权限已变更，照片保留");
+          };
+          const result = await persistVerifiedProjectMedia(session.project_id, media, assertOwner);
+          const canonical = result.project.media.find(
+            (m) => m.type === "image" && m.fingerprint === verified.fingerprint && Number(m.size) === verified.size,
+          );
+          if (!canonical || !(await projectMediaPersisted(session.project_id, canonical.url)))
+            throw new Error("照片未持久化，源文件保留");
+          await updateProjectUploadSession(sessionId, { status: "completed", media_url: canonical.url, error: null });
+        });
+        // Delete only this source once the canonical receipt is durable.
+        const refs = (readDb().activityProjects || []).flatMap((p) => p.media || []);
+        if (!refs.some((m) => projectTosObjectKey(m.url) === session.object_key))
+          await client.deleteObject({ bucket, key: session.object_key }).catch(() => {});
+      } catch (error) {
+        await tasks.fail(sessionId, error, execution?.control).catch(() => {});
+      } finally {
+        await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+        if (_projectImageQueued.get(sessionId) === ticket) _projectImageQueued.delete(sessionId);
+        if (execution) tasks.finish(sessionId, execution.control);
+        else void tasks.dispatch().catch(() => {});
+      }
+    });
+}
 function enqueueProjectVideoDelivery(sessionId) {
   if (_projectDeliveryQueued.has(sessionId)) return;
   const ticket = {};
@@ -1502,7 +1668,7 @@ function enqueueProjectVideoDelivery(sessionId) {
         const result = commitActivityProject(session.project_id, current => {
           const list = assertCanPublish(current).media || [];
           const duplicate = list.find(item => item.type === "video" && (item.url === url || item.fingerprint === fingerprint));
-          return { ...current, media: duplicate ? list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item) : [...list, media], updatedAt: now() };
+          return { ...current, media: duplicate ? (media.type === "image" ? list : list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item)) : [...list, media], updatedAt: now() };
         });
         if (!result) throw new Error("活动相册已删除，原片暂不发布。");
         publicationAttempted = true;
@@ -1537,6 +1703,7 @@ function enqueueProjectVideoDelivery(sessionId) {
 
 async function resumeProjectVideoDeliveries() {
   await projectVideoTasks().dispatch();
+  await projectVideoTasks("image").autoRecover();
 }
 
 async function resumeMiniappJobs() {
@@ -2139,63 +2306,105 @@ function commitActivityProject(projectId, update) {
   return { db, project: list[idx], changed: true };
 }
 
-function publishNativeProjectVideo(projectId, media, assertOwner) {
+function persistVerifiedProjectMedia(projectId, media, assertOwner) {
   const run = _writeQueue.then(async () => {
-    const merge = current => {
+    const trusted = media.type === "image" ? await trustedProjectImageUrls(projectId) : null;
+    const merge = (current) => {
       assertOwner(current);
       const list = current.media || [];
-      const duplicate = list.find(item => item.type === "video" && (item.url === media.url || item.fingerprint === media.fingerprint));
-      return { ...current, media: duplicate ? list.map(item => item === duplicate ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt } : item) : [...list, media], updatedAt: now() };
+      const duplicate = list.find(
+        (item) =>
+          item.type === media.type &&
+          (!trusted || trusted.has(item.url)) &&
+          (item.url === media.url || item.fingerprint === media.fingerprint),
+      );
+      const untrusted =
+        trusted &&
+        list.find((item) => item.type === "image" && item.fingerprint === media.fingerprint && !trusted.has(item.url));
+      if (untrusted && !duplicate)
+        return {
+          ...current,
+          media: list.map((item) =>
+            item === untrusted ? { ...media, title: item.title, caption: item.caption } : item,
+          ),
+          updatedAt: now(),
+        };
+      return {
+        ...current,
+        media: duplicate
+          ? media.type === "image"
+            ? list
+            : list.map((item) =>
+                item === duplicate
+                  ? { ...media, title: item.title, caption: item.caption, createdAt: item.createdAt }
+                  : item,
+              )
+          : [...list, media],
+        updatedAt: now(),
+      };
     };
-    const current = (readDb().activityProjects || []).find(item => item.id === projectId);
+    const current = (readDb().activityProjects || []).find((item) => item.id === projectId);
     const candidate = normalizeActivityProject(merge(current), current);
     const conn = await pool.getConnection();
     let inTransaction = false;
-    const upsert = project => conn.query(
-      `INSERT INTO activity_projects (id, owner_id, status, created_at, updated_at, doc) VALUES (?,?,?,?,?,?)
+    const upsert = (project) =>
+      conn.query(
+        `INSERT INTO activity_projects (id, owner_id, status, created_at, updated_at, doc) VALUES (?,?,?,?,?,?)
        ON DUPLICATE KEY UPDATE owner_id=VALUES(owner_id), status=VALUES(status), created_at=VALUES(created_at), updated_at=VALUES(updated_at), doc=VALUES(doc)`,
-      [project.id, project.ownerId || "", project.status || "published", project.createdAt || "", project.updatedAt || "", JSON.stringify(project)]
-    );
-    const rememberCommitted = project => {
+        [
+          project.id,
+          project.ownerId || "",
+          project.status || "published",
+          project.createdAt || "",
+          project.updatedAt || "",
+          JSON.stringify(project),
+        ],
+      );
+    const rememberCommitted = (project) => {
       // The next ordinary persist must compare against what SQL actually
       // contains, including a video removed again before that persist starts.
       if (!_persistedSnapshot) return;
-      const rows = (_persistedSnapshot.activityProjects || []).filter(row => row.id !== projectId);
+      const rows = (_persistedSnapshot.activityProjects || []).filter((row) => row.id !== projectId);
       if (project) rows.push(JSON.parse(JSON.stringify(project)));
       _persistedSnapshot.activityProjects = rows;
     };
     try {
-      await conn.beginTransaction(); inTransaction = true;
+      await conn.beginTransaction();
+      inTransaction = true;
       await upsert(candidate);
-      await conn.commit(); inTransaction = false;
+      await conn.commit();
+      inTransaction = false;
       rememberCommitted(candidate);
       try {
         // Requests may have edited title/photos or deleted/transferred this
         // album during SQL I/O. Merge only this video into the latest row.
-        const latest = (readDb().activityProjects || []).find(item => item.id === projectId);
+        const latest = (readDb().activityProjects || []).find((item) => item.id === projectId);
         assertOwner(latest);
         return commitActivityProject(projectId, merge);
       } catch (error) {
         // If ownership/deletion changed, undo just this SQL candidate before
         // releasing the write queue. Never restore an old cache snapshot.
-        const latest = (readDb().activityProjects || []).find(item => item.id === projectId);
+        const latest = (readDb().activityProjects || []).find((item) => item.id === projectId);
         const restored = latest ? JSON.parse(JSON.stringify(latest)) : null;
-        await conn.beginTransaction(); inTransaction = true;
+        await conn.beginTransaction();
+        inTransaction = true;
         if (restored) await upsert(restored);
         else await conn.query("DELETE FROM activity_projects WHERE id = ?", [projectId]);
-        await conn.commit(); inTransaction = false;
+        await conn.commit();
+        inTransaction = false;
         rememberCommitted(restored);
         throw error;
       }
     } catch (error) {
       if (inTransaction) await conn.rollback();
       throw error;
-    } finally { conn.release(); }
+    } finally {
+      conn.release();
+    }
   });
   _writeQueue = run.catch(() => {});
   return run;
 }
-
 function publicProject(project, db, options = {}) {
   const item = normalizeActivityProject(project, project);
   const { ownerId, ownerName, ...safe } = item;
@@ -3529,64 +3738,152 @@ async function handleApi(req, res, pathname) {
     if (!user) return;
     const db = readDb();
     const projectId = decodeURIComponent(projectVideoUploadInit[1]);
-    const idx = (db.activityProjects || []).findIndex(p => p.id === projectId);
+    const idx = (db.activityProjects || []).findIndex((p) => p.id === projectId);
     if (idx < 0) return sendJson(res, 404, { error: "活动相册不存在" });
     const project = db.activityProjects[idx];
     if (!projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能上传到这个活动相册" });
-    if (videoProcessingPaused(req, res)) return;
     const body = await parseBody(req, 256 * 1024);
     const type = cleanString(body.type).toLowerCase();
     const ext = `.${cleanString(body.ext).toLowerCase().replace(/^\./, "")}`;
+    const image = type === "image";
     const fileSize = Number(body.size);
-    if (type !== "video" || !VIDEO_EXTS.includes(ext)) return sendJson(res, 400, { error: "分片上传仅支持 mp4、m4v、mov、webm 视频" });
-    if (!Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > H5_PROJECT_VIDEO_MAX_BYTES) {
-      return sendJson(res, 413, { error: "视频不能超过2GB" });
-    }
-
-    const partSize = PROJECT_VIDEO_PART_SIZE;
-    const partCount = Math.ceil(fileSize / partSize);
-    const filename = `project_${project.id}_${Date.now()}-${crypto.randomBytes(5).toString("hex")}${ext}`;
-    const object = projectVideoTosObject(filename);
-    const { client, bucket } = getCaseVideoTosClient();
-    let uploadId = "";
+    if (
+      !(image ? [".jpg", ".jpeg", ".png", ".webp", ".gif"].includes(ext) : type === "video" && VIDEO_EXTS.includes(ext))
+    )
+      return sendJson(res, 400, { error: "不支持的上传格式" });
+    if (
+      !Number.isSafeInteger(fileSize) ||
+      fileSize <= 0 ||
+      fileSize > (image ? MAX_IMAGE_BYTES : H5_PROJECT_VIDEO_MAX_BYTES)
+    )
+      return sendJson(res, 413, { error: image ? "照片不能超过50MiB" : "视频不能超过2GB" });
+    if (!image && videoProcessingPaused(req, res)) return;
+    if (body.clientUploadId !== undefined && !/^[a-f0-9]{32}$/.test(body.clientUploadId))
+      return sendJson(res, 400, { error: "上传标识无效" });
+    if (body.fingerprint !== undefined && !/^[a-f0-9]{64}$/.test(body.fingerprint))
+      return sendJson(res, 400, { error: "文件指纹无效" });
+    const title = cleanString(body.title).slice(0, 255);
+    const sessionId = body.clientUploadId
+      ? "project_upload_" +
+        crypto
+          .createHash("sha256")
+          .update(JSON.stringify([user.id, projectId, body.clientUploadId]))
+          .digest("hex")
+          .slice(0, 40)
+      : createId("project_upload");
     try {
-      const created = await client.createMultipartUpload({
-        bucket,
-        key: object.key,
-        contentType: MIME_TYPES[ext] || "video/mp4",
-        cacheControl: "public, max-age=31536000, immutable",
-        contentDisposition: "inline"
-      });
-      uploadId = created?.data?.UploadId || created?.UploadId || "";
-      if (!uploadId) throw new Error("TOS未返回Multipart UploadId");
-      const sessionId = createId("project_upload");
-      const ts = now();
-      try {
-        await pool.query(
-          `INSERT INTO project_upload_sessions
-           (id, project_id, owner_id, type, ext, title, filename, object_key, upload_id, file_size, part_size, part_count, status, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [sessionId, projectId, user.id, type, ext, cleanString(body.title).slice(0, 255), filename, object.key, uploadId, fileSize, partSize, partCount, "uploading", ts, ts]
-        );
-      } catch (error) {
-        await client.abortMultipartUpload({ bucket, key: object.key, uploadId }).catch(() => {});
-        throw error;
-      }
-      return sendJson(res, 201, {
-        ok: true,
-        sessionId,
-        fileSize,
-        partSize,
-        partCount,
-        expiresIn: 1800,
-        storage: "tos-multipart"
+      await lockedProjectInit(sessionId, async () => {
+        const current = (readDb().activityProjects || []).find((p) => p.id === projectId);
+        if (!projectCanManage(getAuthedUser(req), current)) return sendJson(res, 403, { error: "上传权限已变更" });
+        const existing = await readProjectUploadSession(sessionId);
+        const receipt = async (row, statusCode) => {
+          const project = (readDb().activityProjects || []).find((p) => p.id === projectId);
+          const media = (project?.media || []).find((m) => m.url === row.media_url);
+          if (row.status === "completed" && !media)
+            return sendJson(res, 409, { error: "已完成素材已删除，请重新选择上传", code: "UPLOAD_RESULT_REMOVED" });
+          return sendJson(res, statusCode, {
+            ok: true,
+            type: row.type,
+            sessionId: row.id,
+            fileSize: Number(row.file_size),
+            partSize: Number(row.part_size),
+            partCount: Number(row.part_count),
+            status: row.status,
+            storage: "tos-multipart",
+            expiresIn: 1800,
+            ...(media ? { media, mediaUrl: media.url, duplicate: true } : {}),
+          });
+        };
+        if (existing) {
+          if (
+            existing.owner_id !== user.id ||
+            existing.project_id !== projectId ||
+            existing.type !== type ||
+            existing.ext !== ext ||
+            Number(existing.file_size) !== fileSize ||
+            existing.title !== title
+          )
+            return sendJson(res, 409, { error: "上传标识已绑定其他文件" });
+          return receipt(existing, 200);
+        }
+        const partSize = image ? 8 * 1024 * 1024 : PROJECT_VIDEO_PART_SIZE,
+          partCount = Math.ceil(fileSize / partSize);
+        const filename = `project_${projectId}_${sessionId}${ext}`;
+        const object = image ? { key: `silver-project-image-sources/${filename}` } : projectVideoTosObject(filename);
+        const { client, bucket } = getCaseVideoTosClient();
+        let duplicate = null;
+        if (image && body.fingerprint) {
+          const trusted = await trustedProjectImageUrls(projectId);
+          const candidate = (current.media || []).find(
+            (m) =>
+              trusted.has(m.url) &&
+              m.type === "image" &&
+              m.fingerprint === body.fingerprint &&
+              Number(m.size) === fileSize &&
+              trustedObjectKey(m.url, [[PROJECT_IMAGE_PUBLIC_BASE, PROJECT_IMAGE_TOS_PREFIX]]),
+          );
+          if (candidate) {
+            try {
+              assertTosObjectSize(
+                await client.headObject({ bucket, key: projectTosObjectKey(candidate.url) }),
+                fileSize,
+              );
+              if (await projectMediaPersisted(projectId, candidate.url)) duplicate = candidate;
+            } catch {}
+          }
+        }
+        if (
+          !projectCanManage(
+            getAuthedUser(req),
+            (readDb().activityProjects || []).find((p) => p.id === projectId),
+          )
+        )
+          return sendJson(res, 403, { error: "上传权限已变更" });
+        const created = duplicate
+          ? null
+          : await client.createMultipartUpload({
+              bucket,
+              key: object.key,
+              contentType: MIME_TYPES[ext] || "application/octet-stream",
+              contentDisposition: "inline",
+            });
+        const uploadId = duplicate ? "" : created?.data?.UploadId || created?.UploadId || "";
+        if (!duplicate && !uploadId) throw new Error("TOS未返回Multipart UploadId");
+        const ts = now();
+        try {
+          await pool.query(
+            `INSERT INTO project_upload_sessions (id, project_id, owner_id, type, ext, title, filename, object_key, upload_id, file_size, part_size, part_count, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [
+              sessionId,
+              projectId,
+              user.id,
+              type,
+              ext,
+              title,
+              filename,
+              object.key,
+              uploadId,
+              fileSize,
+              partSize,
+              partCount,
+              duplicate ? "completed" : "uploading",
+              ts,
+              ts,
+            ],
+          );
+          if (duplicate) await updateProjectUploadSession(sessionId, { media_url: duplicate.url });
+        } catch (error) {
+          if (uploadId) await client.abortMultipartUpload({ bucket, key: object.key, uploadId }).catch(() => {});
+          throw error;
+        }
+        return receipt(await readProjectUploadSession(sessionId), 201);
       });
     } catch (error) {
-      console.error("[project-video-multipart-init]", error && (error.stack || error.message || error));
-      return sendJson(res, 502, { error: "视频分片上传初始化失败：" + (error.message || "未知错误") });
+      console.error("[project-multipart-init]", error.code || error.name);
+      return sendJson(res, 502, { error: "分片上传初始化失败" });
     }
+    return;
   }
-
   const projectVideoPartUrl = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/media\/upload-session\/([^/]+)\/part-url$/);
   if (req.method === "GET" && projectVideoPartUrl) {
     const user = requireRole(req, res, ["admin", "operator", "member"]);
@@ -3600,6 +3897,8 @@ async function handleApi(req, res, pathname) {
     if (!projectCanManage(user, project) || session.owner_id !== user.id && user.role !== "admin") {
       return sendJson(res, 403, { error: "当前账号不能使用这个上传会话" });
     }
+    const uploader=(readDb().users||[]).find(item=>item.id===session.owner_id && item.status==='active');
+    if(!projectCanManage(uploader,project))return sendJson(res,403,{error:'上传者相册管理权限已变更'});
     if (session.status !== "uploading") return sendJson(res, 409, { error: "上传会话已结束" });
     const partNumber = Number(new URL(req.url, "http://localhost").searchParams.get("partNumber"));
     if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > Number(session.part_count)) {
@@ -3629,9 +3928,9 @@ async function handleApi(req, res, pathname) {
     const project = (readDb().activityProjects || []).find(item => item.id === projectId);
     if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     if (!projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能查看这个相册的上传任务" });
-    const columns = "id, owner_id, title, filename, status, error, created_at, updated_at";
+    const columns = "id, owner_id, type, title, filename, status, error, created_at, updated_at";
     const [active] = await pool.query(
-      `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status IN ('uploading','failed','queued','processing','paused','delivery_failed') ORDER BY created_at DESC LIMIT 50`,
+      `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status IN ('uploading','failed','queued','processing','paused','delivery_failed') ORDER BY created_at DESC LIMIT 1000`,
       [projectId]
     );
     const [completed] = await pool.query(
@@ -3641,9 +3940,9 @@ async function handleApi(req, res, pathname) {
     const visible = [...active, ...completed]
       .filter(item => user.role === "admin" || item.owner_id === user.id)
       .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-    return sendJson(res, 200, { sessions: visible.map(item => ({
-      sessionId: item.id, title: item.title || item.filename, status: item.status,
-      error: item.error || "", updatedAt: item.updated_at, progress: projectVideoTasks().getProgress(item)
+    return sendJson(res, 200, { total:visible.length, sessions: visible.map(item => ({
+      type:item.type||"video", sessionId: item.id, title: item.title || item.filename, status: item.status,
+      error: item.error || "", updatedAt: item.updated_at, progress: projectTasksFor(item).getProgress(item)
     })) });
   }
 
@@ -3661,6 +3960,8 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 403, { error: "当前账号不能查看这个上传会话" });
     }
     if (session.status === "completed") {
+      const media=(project.media||[]).find(m=>m.url===session.media_url);
+      if(!media)return sendJson(res,409,{error:"已完成素材已删除",code:"UPLOAD_RESULT_REMOVED"});
       return sendJson(res, 200, {
         ok: true,
         status: session.status,
@@ -3670,11 +3971,11 @@ async function handleApi(req, res, pathname) {
         partSize: Number(session.part_size),
         partCount: Number(session.part_count),
         completedParts: Array.from({ length: Number(session.part_count) }, (_, index) => index + 1),
-        mediaUrl: session.media_url || ""
+        type:session.type||"video",media,progress:projectTasksFor(session).getProgress(session),mediaUrl: session.media_url || ""
       });
     }
     if (["queued", "processing", "delivery_failed"].includes(session.status)) {
-      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectVideoTasks().getProgress(session) });
+      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectTasksFor(session).getProgress(session) });
     }
     if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出", status: session.status });
     try {
@@ -3720,8 +4021,9 @@ async function handleApi(req, res, pathname) {
     const project = (readDb().activityProjects || []).find(item=>item.id===projectId);
     if (!projectCanManage(user,project) || (session.owner_id!==user.id && user.role!=='admin')) return sendJson(res,403,{error:'仅上传者或总部管理员可以管理此任务'});
     try {
-      const tasks=projectVideoTasks();
+      const tasks=projectTasksFor(session);
       const action=projectVideoTaskAction[3];
+      if(action==='resume'&&session.status==='completed'&&!(project.media||[]).some(m=>m.url===session.media_url))return sendJson(res,409,{error:'已完成素材已删除',code:'UPLOAD_RESULT_REMOVED'});
       const actor=()=>getAuthedUser(req);
       const result=action==='resume' ? await tasks.prepare(sessionId,{actor,resume:true}) : await tasks[action](sessionId,actor);
       const status=result.status;
@@ -3753,16 +4055,16 @@ async function handleApi(req, res, pathname) {
     if (session.status === "completed" && existing) {
       return sendJson(res, 200, { ok: true, status: "completed", media: existing, project: projectForAccount(project, db, user), storage: "tos-multipart", completed: true });
     }
-    if (videoProcessingPaused(req, res)) return;
-    if (new URL(req.url, "http://localhost").searchParams.get("delivery") !== "1") {
+    if (session.type!=="image" && videoProcessingPaused(req, res)) return;
+    if (session.type!=="image" && new URL(req.url, "http://localhost").searchParams.get("delivery") !== "1") {
       return sendJson(res, 409, { error: "后台视频处理已升级，请刷新页面后重试；已上传的分片会保留。" });
     }
-    if (["queued", "processing"].includes(session.status)) return sendJson(res, 202, { ok: true, sessionId, status: session.status, progress:projectVideoTasks().getProgress(session) });
+    if (["queued", "processing"].includes(session.status)) return sendJson(res, 202, { ok: true, sessionId, status: session.status, progress:projectTasksFor(session).getProgress(session) });
     if (session.status === "completed") return sendJson(res, 409, { error: "交付文件未找到，请联系管理员核查。" });
     if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出" });
     try {
-      const result=await projectVideoTasks().prepare(sessionId,{actor:()=>getAuthedUser(req),resume:session.status==='delivery_failed'});
-      return sendJson(res,202,{ok:true,sessionId,status:result.status,storage:'tos-multipart',progress:projectVideoTasks().getProgress({...result,id:sessionId})});
+      const result=await projectTasksFor(session).prepare(sessionId,{actor:()=>getAuthedUser(req),resume:session.status==='delivery_failed'});
+      return sendJson(res,202,{ok:true,sessionId,status:result.status,storage:'tos-multipart',progress:projectTasksFor(session).getProgress({...result,id:sessionId})});
     } catch (error) {
       console.error('[project-video-multipart-complete]',error.code||error.name,String(error.message||'').replace(/https?:\/\/\S+/g,'[URL omitted]').slice(0,300));
       return sendJson(res,error.httpStatus||502,{error:error.httpStatus?error.message:'原片已保留，后台会继续检查，请稍后查看任务进度',code:error.code||'VIDEO_TASK_WAITING'});
@@ -4969,6 +5271,7 @@ initDb()
     }, 6 * 60 * 60 * 1000);
     cleanupTimer.unref();
     const projectVideoRecoveryTimer = setInterval(() => {
+      projectVideoTasks('image').autoRecover().catch(error => console.error('[project-image-recovery]', error.code || error.name));
       projectVideoTasks().autoRecover().catch(error => console.error('[project-video-recovery]', error.code || error.name));
     }, 15000);
     projectVideoRecoveryTimer.unref();

@@ -53,7 +53,7 @@ function fixture() {
   };
   vm.createContext(ctx); vm.runInContext(publication + "\n" + write, ctx);
   const owner = current => { if (!current || current.ownerId !== "owner") throw new Error("album deleted or transferred"); };
-  return { ctx, db, control, stored: () => stored, publish: () => ctx.publishNativeProjectVideo("project_test", video, owner) };
+  return { ctx, db, control, stored: () => stored, publish: () => ctx.persistVerifiedProjectMedia("project_test", video, owner) };
 }
 
 test("failed DB commit never exposes video, and the following normal write cannot persist a ghost", async () => {

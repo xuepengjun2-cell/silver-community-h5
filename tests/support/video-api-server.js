@@ -37,7 +37,7 @@ async function boot({ seed = {}, tosDelay = 0, headDelay = 0, env = {}, beforeSt
     cwd: dir,
     env: {
       ...process.env, PORT: String(port), FAKE_DB_SEED: seedFile, FAKE_DB_DUMP: dumpFile,
-      FAKE_TOS_DIR: path.join(dir, "tos"), FAKE_TOS_DELAY_MS: String(tosDelay), FAKE_TOS_HEAD_DELAY_MS: String(headDelay),
+      FAKE_DB_GATE_FILE: path.join(dir,"db-gate.json"), FAKE_TOS_DIR: path.join(dir, "tos"), FAKE_TOS_DELAY_MS: String(tosDelay), FAKE_TOS_HEAD_DELAY_MS: String(headDelay),
       TOS_SDK_PATH: path.join(__dirname, "../concurrency/fake-tos.js"), TOS_ACCESS_KEY_ID: "x", TOS_SECRET_ACCESS_KEY: "x",
       TOS_BUCKET: "bucket", TOS_ENDPOINT: "tos.local", CASE_DIRECT_SYNC_TOKEN: SYNC_TOKEN, ...env
     },
