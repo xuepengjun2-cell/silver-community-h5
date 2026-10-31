@@ -61,7 +61,7 @@ async function query(sql, params = []) {
       }
       else if ((m = where.match(/^status IN \((.+)\) AND updated_at < \?$/i))) {
         const statuses=[...m[1].matchAll(/'([^']+)'/g)].map(hit=>hit[1]);
-        rows=rows.filter(r=>statuses.includes(r.status) && String(r.updated_at||'')<String(params[0]));
+        rows=rows.filter(r=>statuses.includes(r.status) && r.updated_at != null && params[0] != null && String(r.updated_at)<String(params[0]));
       }
       else if ((m = where.match(/^status IN \((.+)\)$/i))) {
         const statuses = [...m[1].matchAll(/'([^']+)'/g)].map(hit => hit[1]);
@@ -93,7 +93,7 @@ async function query(sql, params = []) {
     else if (/^expires_at < \?$/i.test(where)) tables[name] = table(name).filter(r => !(String(r.expires_at) < String(params[0])));
     else if(name==='project_upload_sessions' && (m=where.match(/^status IN \((.+)\) AND updated_at < \? LIMIT (\d+)$/i))) {
       const statuses=[...m[1].matchAll(/'([^']+)'/g)].map(hit=>hit[1]);let removed=0;
-      tables[name]=table(name).filter(r=>!(statuses.includes(r.status) && String(r.updated_at||'')<String(params[0]) && removed++<Number(m[2])));
+      tables[name]=table(name).filter(r=>!(statuses.includes(r.status) && r.updated_at != null && params[0] != null && String(r.updated_at)<String(params[0]) && removed++<Number(m[2])));
     }
     dump();
     return [{ affectedRows: before - table(name).length }, []];
