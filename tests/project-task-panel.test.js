@@ -18,7 +18,7 @@ function extract(name) {
 function context(names, overrides = {}) {
   const state = { projectUploadSessions: [], projectUploadSessionsError: '', projectUploadTaskMessages: {}, projectUploadTaskActions: {}, projectUploading: false, projectView: 'manager', currentProject: {id: 'p'}, projectUploadTransfer: null, projectUploadBatchNotice: null };
   const ctx = vm.createContext({ state, console, AbortController, setTimeout, clearTimeout,
-    projectUploadControllers: new Map(), PROJECT_VIDEO_UPLOAD_WORKERS: 3,
+    projectUploadMutation:(_id,operation)=>operation(),projectUploadControllers: new Map(), PROJECT_VIDEO_UPLOAD_WORKERS: 3,
     document: { querySelector: () => null, querySelectorAll: () => [] },
     ...overrides });
   ctx.projectUploadControl = overrides.projectUploadControl || overrides.api;
