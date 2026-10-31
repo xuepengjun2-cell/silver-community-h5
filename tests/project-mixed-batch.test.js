@@ -101,3 +101,22 @@ test('queued photo describes validation and saving while video retains conversio
  assert.match(html.slice(html.indexOf('data-project-session="video"')),/排队等待转换/);
  assert.doesNotMatch(html,/上传完成后自动逐条转换/);
 });
+
+for(const count of [4,40])test(`reopened ${count} manifest reconciles beyond three recent receipts`,async()=>{
+ const env=harness({fetch:async url=>url.endsWith('/upload-sessions')?response({sessions:Array.from({length:3},(_,i)=>({sessionId:'s'+i,status:'completed'}))}):response({sessionId:url.split('/').at(-2),status:'completed',duplicate:false})});
+ env.ctx.state.projectView='manager';env.ctx.refreshProjectAlbumMedia=async()=>{};
+ env.ctx.state.projectUploadBatch={projectId:'p',items:Array.from({length:count},(_,i)=>({sessionId:'s'+i,status:'processing'}))};
+ await env.ctx.refreshProjectUploadSessions('p');assert.equal(env.ctx.state.projectUploadBatch.items.filter(x=>x.status==='published').length,count);
+});
+test('exhausted complete and status response loss keeps session and later reconciles publication',async()=>{
+ let recovered=false;const env=harness({projectMediaFileType:()=> 'image',fetch:async url=>{
+ if(url.endsWith('/init'))return response({sessionId:'s',status:'uploading',partSize:10,partCount:1});
+ if(url.includes('part-url'))return response({url:'https://tos/p'});
+ if(url.endsWith('/upload-sessions'))return response({sessions:[]});
+ if(url.endsWith('/status') && recovered)return response({sessionId:'s',status:'completed',duplicate:false});
+ throw new TypeError('lost response');
+ }});env.ctx.refreshProjectAlbumMedia=async()=>{};
+ const pending=env.ctx.runProjectUploadBatch('p',[photo]);await flush();env.requests[0].done();await pending;
+ assert.equal(env.ctx.state.projectUploadBatch.items[0].sessionId,'s');assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'failed');
+ recovered=true;env.ctx.state.projectView='manager';await env.ctx.refreshProjectUploadSessions('p');assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'published');
+});

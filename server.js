@@ -97,6 +97,11 @@ const CASE_IMAGE_TOS_PREFIX = String(process.env.CASE_IMAGE_TOS_PREFIX || "silve
 const CASE_IMAGE_PUBLIC_BASE = String(process.env.CASE_IMAGE_PUBLIC_BASE || `https://proj2.likeduoduiyi.cn/${CASE_IMAGE_TOS_PREFIX}`).replace(/\/+$/g, "");
 const CASE_DOCUMENT_TOS_PREFIX = String(process.env.CASE_DOCUMENT_TOS_PREFIX || "silver-case-documents").replace(/^\/+|\/+$/g, "");
 const CASE_DOCUMENT_PUBLIC_BASE = String(process.env.CASE_DOCUMENT_PUBLIC_BASE || `https://proj2.likeduoduiyi.cn/${CASE_DOCUMENT_TOS_PREFIX}`).replace(/\/+$/g, "");
+function projectUploadDuplicate(session) {
+  if (session.type !== "image" || session.status !== "completed" || !session.media_url) return false;
+  const filename = decodeURIComponent(String(session.media_url).split("/").pop().split("?")[0]);
+  return !filename.startsWith(`project_${session.project_id}_${session.id}_`);
+}
 const PROJECT_IMAGE_TOS_PREFIX = String(process.env.PROJECT_IMAGE_TOS_PREFIX || "silver-project-images").replace(/^\/+|\/+$/g, "");
 const PROJECT_IMAGE_PUBLIC_BASE = String(process.env.PROJECT_IMAGE_PUBLIC_BASE || `https://proj2.likeduoduiyi.cn/${PROJECT_IMAGE_TOS_PREFIX}`).replace(/\/+$/g, "");
 const PROJECT_VIDEO_TOS_PREFIX = String(process.env.PROJECT_VIDEO_TOS_PREFIX || "silver-project-videos").replace(/^\/+|\/+$/g, "");
@@ -3791,7 +3796,7 @@ async function handleApi(req, res, pathname) {
             status: row.status,
             storage: "tos-multipart",
             expiresIn: 1800,
-            ...(media ? { media, mediaUrl: media.url, duplicate: true } : {}),
+            ...(media ? { media, mediaUrl: media.url, duplicate: projectUploadDuplicate(row) } : {}),
           });
         };
         if (existing) {
@@ -3932,7 +3937,7 @@ async function handleApi(req, res, pathname) {
     const project = (readDb().activityProjects || []).find(item => item.id === projectId);
     if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     if (!projectCanManage(user, project)) return sendJson(res, 403, { error: "当前账号不能查看这个相册的上传任务" });
-    const columns = "id, owner_id, type, title, filename, status, error, created_at, updated_at";
+    const columns = "id, project_id, owner_id, type, title, filename, status, media_url, error, created_at, updated_at";
     const [active] = await pool.query(
       `SELECT ${columns} FROM project_upload_sessions WHERE project_id = ? AND status IN ('uploading','failed','queued','processing','paused','delivery_failed') ORDER BY created_at DESC LIMIT 1000`,
       [projectId]
@@ -3944,8 +3949,8 @@ async function handleApi(req, res, pathname) {
     const visible = [...active, ...completed]
       .filter(item => user.role === "admin" || item.owner_id === user.id)
       .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-    return sendJson(res, 200, { total:visible.length, sessions: visible.map(item => ({
-      type:item.type||"video", sessionId: item.id, title: item.title || item.filename, status: item.status,
+    return sendJson(res, 200, { total:visible.filter(item=>item.status!=="completed").length, sessions: visible.map(item => ({
+      duplicate:projectUploadDuplicate(item), type:item.type||"video", sessionId: item.id, title: item.title || item.filename, status: item.status,
       error: item.error || "", updatedAt: item.updated_at, progress: projectTasksFor(item).getProgress(item)
     })) });
   }
@@ -3959,6 +3964,7 @@ async function handleApi(req, res, pathname) {
     const project = (db.activityProjects || []).find(p => p.id === projectId);
     if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     const session = await readProjectUploadSession(decodeURIComponent(projectVideoUploadStatus[2]));
+    if (!session && projectCanManage(getAuthedUser(req), (readDb().activityProjects || []).find(p=>p.id===projectId))) return sendJson(res, 404, { error: "上传会话已过期，请重新选择原文件", code: "UPLOAD_SESSION_EXPIRED" });
     if (!session || session.project_id !== projectId) return sendJson(res, 404, { error: "上传会话不存在" });
     if (!projectCanManage(user, project) || (session.owner_id !== user.id && user.role !== "admin")) {
       return sendJson(res, 403, { error: "当前账号不能查看这个上传会话" });
@@ -3967,7 +3973,7 @@ async function handleApi(req, res, pathname) {
       const media=(project.media||[]).find(m=>m.url===session.media_url);
       if(!media)return sendJson(res,409,{error:"已完成素材已删除",code:"UPLOAD_RESULT_REMOVED"});
       return sendJson(res, 200, {
-        ok: true,
+        ok: true, ownedByCurrentUser: session.owner_id === user.id, duplicate: projectUploadDuplicate(session),
         status: session.status,
         sessionId: session.id,
         filename: session.filename,
@@ -3979,9 +3985,9 @@ async function handleApi(req, res, pathname) {
       });
     }
     if (["queued", "processing", "delivery_failed"].includes(session.status)) {
-      return sendJson(res, 200, { ok: true, type:session.type||"video", status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectTasksFor(session).getProgress(session) });
+      return sendJson(res, 200, { ok: true, ownedByCurrentUser: session.owner_id === user.id, duplicate: projectUploadDuplicate(session), type:session.type||"video", status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectTasksFor(session).getProgress(session) });
     }
-    if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出", status: session.status });
+    if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出", code:"UPLOAD_SESSION_TERMINAL", status: session.status, ownedByCurrentUser:session.owner_id===user.id });
     try {
       const { client, bucket } = getCaseVideoTosClient();
       let parts;
@@ -3997,7 +4003,7 @@ async function handleApi(req, res, pathname) {
       const completedParts = parts.map(part => Number(part.PartNumber)).filter(Number.isInteger).sort((a, b) => a - b);
       const uploadedBytes = parts.reduce((total, part) => total + Math.max(0, Number(part.Size) || 0), 0);
       return sendJson(res, 200, {
-        ok: true,
+        ok: true, ownedByCurrentUser: session.owner_id === user.id, duplicate: projectUploadDuplicate(session),
         status: session.status,
         type: session.type || "video",
         progress: projectTasksFor(session).getProgress(session),
@@ -4059,7 +4065,7 @@ async function handleApi(req, res, pathname) {
     }
     const existing = (project.media || []).find(m => m && m.url === session.media_url);
     if (session.status === "completed" && existing) {
-      return sendJson(res, 200, { ok: true, status: "completed", media: existing, project: projectForAccount(project, db, user), storage: "tos-multipart", completed: true });
+      return sendJson(res, 200, { ok: true, sessionId, duplicate:projectUploadDuplicate(session), status: "completed", media: existing, project: projectForAccount(project, db, user), storage: "tos-multipart", completed: true });
     }
     if (session.type!=="image" && videoProcessingPaused(req, res)) return;
     if (session.type!=="image" && new URL(req.url, "http://localhost").searchParams.get("delivery") !== "1") {

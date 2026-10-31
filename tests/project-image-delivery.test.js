@@ -256,3 +256,17 @@ test("WebP unknown chunk traversal validates a modest file within a capped child
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+for(const [ext,hex] of [['jpg','ffd8ffc00008080001000101ffda0002ffd9'],['gif','47494638396101000100800000000000ffffff2c00000000010001000002003b']])test(`rejects empty malformed ${ext} encoded payload`,async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'empty-raster-')),file=path.join(dir,'image');const bytes=Buffer.from(hex,'hex');
+ try {fs.writeFileSync(file,bytes);await assert.rejects(validateProjectImage(file,{ext,expectedSize:bytes.length}));}finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+for(const [name,ext] of [['project-baseline.jpg','jpg'],['project-progressive.jpg','jpg'],['project-animated.gif','gif']])test(`preserves real encoded ${name}`,async()=>{
+ const file=path.join(__dirname,'fixtures',name), bytes=fs.readFileSync(file);
+ assert.equal((await validateProjectImage(file,{ext,expectedSize:bytes.length})).fingerprint,crypto.createHash('sha256').update(bytes).digest('hex'));
+});
+test('GIF image requires a global or local color table',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gif-table-')),file=path.join(dir,'image');
+ const bytes=Buffer.from('474946383961010001000000002c00000000010001000002014c003b','hex');
+ try{fs.writeFileSync(file,bytes);await assert.rejects(validateProjectImage(file,{ext:'gif',expectedSize:bytes.length}));}finally{fs.rmSync(dir,{recursive:true,force:true});}
+});

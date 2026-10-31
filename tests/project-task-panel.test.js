@@ -81,7 +81,7 @@ test('upload progress does not claim conversion has completed at 100%', () => {
 
 test('poll queued work every four seconds, partial uploads more slowly, and stop polling paused work', () => {
   const timers=[];
-  const ctx=context(['scheduleProjectUploadPoll'],{projectUploadPollTimer:null,setTimeout:(fn,delay)=>{timers.push(delay);return 1;},clearTimeout:()=>{}});
+  const ctx=context(['projectUploadUnresolved','scheduleProjectUploadPoll'],{projectUploadPollTimer:null,setTimeout:(fn,delay)=>{timers.push(delay);return 1;},clearTimeout:()=>{}});
   ctx.state.projectUploadSessions=[{status:'queued'}];ctx.scheduleProjectUploadPoll('p');
   ctx.state.projectUploadSessions=[{status:'uploading'}];ctx.scheduleProjectUploadPoll('p');
   ctx.state.projectUploadSessions=[{status:'paused'}];ctx.scheduleProjectUploadPoll('p');
@@ -91,7 +91,7 @@ test('poll queued work every four seconds, partial uploads more slowly, and stop
 
 test('queued-to-completed refreshes album media, not just processing-to-completed', async () => {
   const loaded=[];
-  const ctx=context(['refreshProjectUploadSessions'],{api:async()=>({sessions:[{sessionId:'q',status:'completed'}]}),syncProjectUploadControls:()=>{},refreshProjectAlbumMedia:id=>loaded.push(id),reconcileProjectUploadBatch:()=>{},persistProjectUploadBatch:()=>{},syncProjectUploadProgress:()=>{},bindProjectUploadSessionActions:()=>{},scheduleProjectUploadPoll:()=>{}});
+  const ctx=context(['projectUploadUnresolved','refreshProjectUploadSessions'],{api:async()=>({sessions:[{sessionId:'q',status:'completed'}]}),syncProjectUploadControls:()=>{},refreshProjectAlbumMedia:id=>loaded.push(id),reconcileProjectUploadBatch:()=>{},persistProjectUploadBatch:()=>{},syncProjectUploadProgress:()=>{},bindProjectUploadSessionActions:()=>{},scheduleProjectUploadPoll:()=>{}});
   ctx.state.projectUploadSessions=[{sessionId:'q',status:'queued'}];
   await ctx.refreshProjectUploadSessions('p');
   assert.deepEqual(loaded,['p']);

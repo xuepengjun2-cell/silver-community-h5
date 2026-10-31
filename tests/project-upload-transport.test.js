@@ -179,4 +179,41 @@ test('paused photo and video reselection requery authoritative metadata after mi
  }
 });
 
+test('receipts separate accounts and legacy migration requires actual ownership',async()=>{
+ const paths=[];const env=harness({projectMediaFileType:()=> 'image',fetch:async url=>{paths.push(url);return response(url.endsWith('/status')?{sessionId:'admin-session',status:'queued',ownedByCurrentUser:false}:{sessionId:'member-session',status:'queued'});}});
+ env.ctx.state.user={id:'admin'};const first=env.ctx.projectUploadStateKey('p',photo);
+ env.ctx.state.user={id:'member'};assert.notEqual(env.ctx.projectUploadStateKey('p',photo),first);
+ const legacy=first.replace('account:admin:','');env.storage.set(legacy,JSON.stringify({sessionId:'admin-session'}));
+ assert.equal((await env.ctx.uploadProjectMediaFile('p',photo)).sessionId,'member-session');assert.ok(paths.some(x=>x.endsWith('/init')));
+});
+for(const code of ['UPLOAD_SESSION_TERMINAL','UPLOAD_SESSION_EXPIRED'])test(code+' permits same-original new identity',async()=>{
+ let inits=0;const env=harness({projectMediaFileType:()=> 'image',fetch:async url=>url.endsWith('/status')?response({error:'terminal',code},409):(inits++,response({sessionId:'new',status:'queued'}))});
+ env.storage.set(env.ctx.projectUploadStateKey('p',photo),JSON.stringify({sessionId:'old'}));
+ assert.equal((await env.ctx.uploadProjectMediaFile('p',photo)).sessionId,'new');assert.equal(inits,1);
+});
+test('accepted final PUT with lost response reconciles automatic completion and keeps early batch session',async()=>{
+ let statusCalls=0;const env=harness({projectMediaFileType:()=> 'image',fetch:async url=>{
+ if(url.endsWith('/init'))return response({sessionId:'s',status:'uploading',partSize:10,partCount:1});
+ if(url.endsWith('/status')){statusCalls++;return response(statusCalls===1?{sessionId:'s',status:'uploading',completedParts:[]}:{sessionId:'s',status:'completed',duplicate:false,media:{url:'u'}});}
+ if(url.includes('part-url'))return response(env.requests.length?{error:'ended'}:{url:'https://tos/p'},env.requests.length?409:200);
+ return response({sessionId:'s',status:'completed',media:{url:'u'}});
+ }});env.ctx.refreshProjectAlbumMedia=async()=>{};
+ const pending=env.ctx.runProjectUploadBatch('p',[photo]);await flush();
+ assert.equal(env.ctx.state.projectUploadBatch.items[0].sessionId,'s');env.requests[0].onerror();await pending;
+ assert.equal(statusCalls,2);assert.equal(env.ctx.state.projectUploadBatch.items[0].status,'published');
+});
+
+test('owned legacy receipt migrates; ambiguous legacy lookup never initializes',async()=>{
+ for(const owned of [true,'unavailable']) {
+ let inits=0;const env=harness({projectMediaFileType:()=> 'image',fetch:async url=>{
+ if(url.endsWith('/init'))inits++;
+ return owned===true?response({sessionId:'legacy',status:'queued',ownedByCurrentUser:true}):response({error:'unavailable'},502);
+ }});env.ctx.state.user={id:'owner'};
+ const key=env.ctx.projectUploadStateKey('p',photo);env.storage.set(key.replace('account:owner:',''),JSON.stringify({sessionId:'legacy',clientUploadId:'a'.repeat(32)}));
+ if(owned===true) {assert.equal((await env.ctx.uploadProjectMediaFile('p',photo)).sessionId,'legacy');assert.equal(JSON.parse(env.storage.get(key)).sessionId,'legacy');}
+ else await assert.rejects(env.ctx.uploadProjectMediaFile('p',photo),/unavailable/);
+ assert.equal(inits,0);
+ }
+});
+
 }

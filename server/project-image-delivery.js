@@ -128,6 +128,7 @@ function structure(b, ext) {
     if (b.length < 8 || b.readUInt16BE(0) !== 0xffd8) invalid();
     let p = 2,
       frame = false,
+      components = new Set(),
       scan = false,
       end = false;
     while (p < b.length) {
@@ -145,23 +146,43 @@ function structure(b, ext) {
       if (n < 2 || p + n > b.length) invalid();
       if ([0xc0, 0xc1, 0xc2].includes(marker)) {
         if (n < 8 || !b.readUInt16BE(p + 3) || !b.readUInt16BE(p + 5)) invalid();
+        const count=b[p+7];
+        if(!count || count>4 || n!==8+3*count)invalid();
+        components=new Set();
+        for(let i=0;i<count;i++) {
+          const at=p+8+3*i, id=b[at], sampling=b[at+1];
+          if(components.has(id) || !(sampling>>4) || (sampling>>4)>4 || !(sampling&15) || (sampling&15)>4 || b[at+2]>3)invalid();
+          components.add(id);
+        }
         frame = true;
+      }
+      if(marker===0xda) {
+        const count=b[p+2], seen=new Set();
+        if(!frame || !count || count>components.size || n!==6+2*count)invalid();
+        for(let i=0;i<count;i++) {
+          const id=b[p+3+2*i], tables=b[p+4+2*i];
+          if(!components.has(id) || seen.has(id) || (tables>>4)>3 || (tables&15)>3)invalid();
+          seen.add(id);
+        }
       }
       p += n;
       if (marker === 0xda) {
         scan = true;
+        let payload=0;
         while (p < b.length) {
           if (b[p] !== 255) {
-            p++;
+            payload++;p++;
             continue;
           }
           const m = b[p + 1];
           if (m === 0 || (m >= 0xd0 && m <= 0xd7)) {
+            if(m===0)payload++;
             p += 2;
             continue;
           }
           break;
         }
+        if(!payload)invalid();
       }
     }
     if (!frame || !scan || !end) invalid();
@@ -177,11 +198,12 @@ function structure(b, ext) {
       image = false,
       end = false;
     const blocks = () => {
+      let bytes=0;
       while (p < b.length) {
         const n = b[p++];
-        if (!n) return;
+        if (!n) return bytes;
         if (p + n > b.length) invalid();
-        p += n;
+        p += n;bytes+=n;
       }
       invalid();
     };
@@ -197,11 +219,12 @@ function structure(b, ext) {
       } else if (tag === 0x2c) {
         if (p + 9 > b.length || !b.readUInt16LE(p + 4) || !b.readUInt16LE(p + 6)) invalid();
         const packed = b[p + 8];
+        if(!(b[10]&128) && !(packed&128))invalid();
         p += 9;
         if (packed & 128) p += 3 * 2 ** ((packed & 7) + 1);
         if (p >= b.length || b[p] < 2 || b[p] > 8) invalid();
         p++;
-        blocks();
+        if(!blocks())invalid();
         image = true;
       } else invalid();
     }

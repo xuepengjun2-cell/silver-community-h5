@@ -1561,7 +1561,7 @@ function syncProjectUploadControls() {
 }
 
 function projectUploadStateKey(projectId, file) {
-  return `${PROJECT_VIDEO_UPLOAD_STATE_PREFIX}${projectId}:${file.name || "video"}:${file.size || 0}:${file.lastModified || 0}`;
+  return `${PROJECT_VIDEO_UPLOAD_STATE_PREFIX}account:${state.user?.id || "anonymous"}:${projectId}:${file.name || "video"}:${file.size || 0}:${file.lastModified || 0}`;
 }
 
 function readProjectUploadState(key) {
@@ -1700,12 +1700,30 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress, controll
   const name = String(file.name || "file");
   const ext = name.split(".").pop().toLowerCase();
   const storageKey = projectUploadStateKey(projectId, file);
-  const saved = readProjectUploadState(storageKey) || {};
+  let saved = readProjectUploadState(storageKey);
+  // Legacy storage was shared across accounts. Only a private ownership verdict
+  // permits importing it; admin visibility alone is insufficient.
+  if (!saved && allowRemovedReset) {
+    const legacyKey = `${PROJECT_VIDEO_UPLOAD_STATE_PREFIX}${projectId}:${file.name || "video"}:${file.size || 0}:${file.lastModified || 0}`;
+    const legacy = readProjectUploadState(legacyKey);
+    if (legacy?.sessionId) {
+      try {
+        const status = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(legacy.sessionId)}/status`, {signal:controller.signal}, 1);
+        if (status.ownedByCurrentUser === true) saved = legacy;
+      } catch (error) { if(controller.signal.aborted || (error.status!==403 && !["UPLOAD_SESSION_TERMINAL","UPLOAD_SESSION_EXPIRED","UPLOAD_RESULT_REMOVED"].includes(error.code)))throw error; }
+    }
+  }
+  saved ||= {};
   const random = new Uint8Array(16);
   if (typeof crypto !== "undefined" && crypto.getRandomValues) crypto.getRandomValues(random);
   else random.forEach((_,i) => { random[i] = Math.floor(Math.random()*256); });
   const receipt = { ...saved, clientUploadId: saved.clientUploadId || Array.from(random,x=>x.toString(16).padStart(2,"0")).join(""), projectId, fileName:name, fileSize:file.size, lastModified:file.lastModified || 0, type };
   const persist = () => {
+    if (receipt.sessionId && state.projectUploadTransfer?.projectId === projectId) {
+      state.projectUploadTransfer.sessionId = receipt.sessionId;
+      const item=state.projectUploadBatch?.projectId===projectId ? state.projectUploadBatch.items[state.projectUploadTransfer.index-1] : null;
+      if(item) {item.sessionId=receipt.sessionId;persistProjectUploadBatch();}
+    }
     if(!writeProjectUploadState(storageKey, { ...receipt, updatedAt: Date.now() }))throw new Error("无法保存本地续传凭据，请允许浏览器本地存储后重试");
   };
   persist(); // Survives even a lost initialization response.
@@ -1763,9 +1781,9 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress, controll
     const persistParts = () => {receipt.completedParts=[...completed].sort((a,b)=>a-b);persist();};
     persistParts();progress();
     const pending = Array.from({length:init.partCount},(_,i)=>i+1).filter(n=>!completed.has(n));
-    let cursor=0, failure;
+    let cursor=0, failure, authoritativeResult;
     const worker = async () => {
-      while(cursor<pending.length && !failure) {
+      while(cursor<pending.length && !failure && !authoritativeResult) {
         const part = pending[cursor++];
         for(let attempt=1;attempt<=PROJECT_VIDEO_PART_RETRIES;attempt++) {
           try {
@@ -1776,6 +1794,13 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress, controll
             inflight.delete(part);completed.add(part);persistParts();progress();break;
           } catch(error) {
             inflight.delete(part);progress("等待重试",attempt);
+            if (!controller.signal.aborted && (projectUploadRetryable(error) || error.status===409)) {
+              try {
+                const status=await control(route("status"),{},1);
+                if(["completed","queued","processing","receiving"].includes(status.status)) {authoritativeResult=status;return;}
+                if(status.status==="uploading" && (status.completedParts || []).includes(part)) {completed.add(part);persistParts();break;}
+              } catch {} // An unavailable receipt is not proof of acceptance.
+            }
             if(controller.signal.aborted || attempt===PROJECT_VIDEO_PART_RETRIES || !projectUploadRetryable(error)) {failure ||= error;throw error;}
           }
         }
@@ -1783,6 +1808,7 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress, controll
     };
     // All workers settle before releasing this file's controller or batch slot.
     const results=await Promise.allSettled(Array.from({length:Math.min(PROJECT_VIDEO_UPLOAD_WORKERS,Math.max(1,pending.length))},()=>worker().catch(error=>{failure ||= error;controller.abort();throw error;})));
+    if(authoritativeResult) {receipt.status=authoritativeResult.status;persist();return authoritativeResult;}
     if(failure)throw failure;
     if(results.some(x=>x.status==='rejected') || controller.signal.aborted)throw projectUploadPausedError();
     progress("等待合并 / 后台接收");
@@ -1790,17 +1816,18 @@ async function uploadProjectVideoMultipart(projectId, file, onProgress, controll
     for(let attempt=1;attempt<=3;attempt++) {
       try {result=await control(route("complete?delivery=1"),{method:"POST",body:{}},1);break;}
       catch(error) {
-        if(!projectUploadRetryable(error) || attempt===3)throw error;
+        if(!projectUploadRetryable(error))throw error;
         const status=await control(route("status"));
-        if(["queued","processing","receiving"].includes(status.status)){result=status;break;}
-        // Completed still uses complete to obtain the server-verified media receipt.
+        if(["completed","queued","processing","receiving"].includes(status.status)){result=status;break;}
+        if(attempt===3)throw error;
+        // An uploading receipt permits a bounded repeat of the merge request.
       }
     }
     receipt.status=result.status;persist();return result;
   } catch(error) {
-    // Only this explicit server verdict proves the old published result is gone.
+    // Only an explicit authenticated verdict permits replacing the old identity.
     // Reselection supplies real bytes again; never recover from a stored URL.
-    if(error.code === "UPLOAD_RESULT_REMOVED" && allowRemovedReset && (saved.sessionId || saved.clientUploadId) && !controller.signal.aborted) {
+    if(["UPLOAD_RESULT_REMOVED","UPLOAD_SESSION_TERMINAL","UPLOAD_SESSION_EXPIRED"].includes(error.code) && allowRemovedReset && (saved.sessionId || saved.clientUploadId) && !controller.signal.aborted) {
       clearProjectUploadState(storageKey);
       return await uploadProjectVideoMultipart(projectId,file,onProgress,controller,false);
     }
@@ -1910,6 +1937,7 @@ async function runProjectUploadBatch(projectId, files) {
           try {await refreshProjectAlbumMedia(projectId);}catch(error){item.albumRefreshPending=true;item.message=`结果已确认；相册数量待刷新：${error.message}`;state.projectUploadSessionsError=error.message || "相册数量待刷新";}
         }
       } catch(error) {
+        item.sessionId ||= transfer.sessionId;
         item.status=error.code === "UPLOAD_PAUSED" ? transfer.stopAction === "skip" ? "skipped" : "paused" : "failed";
         item.message=error.message || "暂未完成，请重新选择同一原文件继续";
       } finally {
@@ -2264,7 +2292,7 @@ async function loadProjectManager(id) {
       try {
         const uploads = await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(id)}/media/upload-sessions`);
         state.projectUploadSessions = uploads.sessions || [];
-        state.projectUploadSessionsTotal = Number(uploads.total) || state.projectUploadSessions.length;
+        state.projectUploadSessionsTotal = Number.isFinite(Number(uploads.total)) ? Number(uploads.total) : state.projectUploadSessions.filter(item=>item.status!=="completed").length;
         reconcileProjectUploadBatch(id);
       } catch (error) { state.projectUploadSessionsError = error.message || "读取失败"; }
     }
@@ -2383,20 +2411,25 @@ function scheduleProjectUploadPoll(projectId) {
   clearTimeout(projectUploadPollTimer);
   if(state.projectUploadPollProject===projectId)return;
   const tasks=state.projectUploadSessions || [];
-  if(!state.projectAlbumRefreshPending?.[projectId] && !state.projectUploadSessionsError && !tasks.some(item=>["uploading","receiving","queued","processing","stopping"].includes(item.status)))return;
+  if(!projectUploadUnresolved(projectId).length && !state.projectAlbumRefreshPending?.[projectId] && !state.projectUploadSessionsError && !tasks.some(item=>["uploading","receiving","queued","processing","stopping"].includes(item.status)))return;
   const interval=state.projectUploadSessionsError ? 15000 : tasks.some(item=>["queued","processing","stopping"].includes(item.status)) ? 4000 : 12000;
   projectUploadPollTimer=setTimeout(()=>{
     if(state.projectView === "manager" && state.currentProject?.id===projectId) refreshProjectUploadSessions(projectId).catch(()=>{});
   },interval);
 }
 
-function reconcileProjectUploadBatch(projectId) {
+function projectUploadUnresolved(projectId) {
+  return state.projectUploadBatch?.projectId===projectId ? state.projectUploadBatch.items.filter(item=>item.sessionId && !item.receiptTerminal && ["processing","failed","uploading","paused","skipped"].includes(item.status)) : [];
+}
+
+function reconcileProjectUploadBatch(projectId, receipts = state.projectUploadSessions) {
     if(state.projectUploadBatch?.projectId===projectId) {
       for(const item of state.projectUploadBatch.items) {
-        if(item.status!=="processing")continue;
-        const task=state.projectUploadSessions.find(task=>task.sessionId===item.sessionId);
+        if(!["processing","failed","uploading","paused","skipped"].includes(item.status))continue;
+        const task=receipts.find(task=>task.sessionId===item.sessionId);
         if(task?.status==="completed")item.status=task.duplicate ? "duplicate" : "published";
-        else if(["failed","delivery_failed","paused","stopped","dismissed","aborted"].includes(task?.status)) {item.status=["paused","stopped"].includes(task.status) ? "paused" : "failed";item.message=task.error || "请在任务列表处理或重新选择同一原文件";}
+        else if(["queued","processing","receiving"].includes(task?.status)) {item.status="processing";item.receiptTerminal=false;}
+        else if(["failed","delivery_failed","paused","stopped","dismissed","aborted"].includes(task?.status)) {item.status=["paused","stopped"].includes(task.status) ? "paused" : "failed";item.receiptTerminal=true;item.message=task.error || "请在任务列表处理或重新选择同一原文件";}
       }
       persistProjectUploadBatch();syncProjectUploadProgress(projectId);
     }
@@ -2409,9 +2442,24 @@ async function refreshProjectUploadSessions(projectId) {
   try {
     const data=await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-sessions`);
     if(state.projectView!=="manager" || state.currentProject?.id!==projectId)return;
-    state.projectUploadSessions=data.sessions || [];state.projectUploadSessionsTotal=Number(data.total) || state.projectUploadSessions.length;state.projectUploadSessionsError="";
-    reconcileProjectUploadBatch(projectId);
-    if(state.projectUploadSessions.some(item=>previous.has(item.sessionId) && item.status==="completed") || state.projectAlbumRefreshPending?.[projectId])await refreshProjectAlbumMedia(projectId);
+    state.projectUploadSessions=data.sessions || [];state.projectUploadSessionsTotal=Number.isFinite(Number(data.total)) ? Number(data.total) : state.projectUploadSessions.filter(item=>item.status!=="completed").length;state.projectUploadSessionsError="";
+    const receipts=[...state.projectUploadSessions];
+    const missing=projectUploadUnresolved(projectId).filter(item=>!receipts.some(task=>task.sessionId===item.sessionId));
+    // Two bounded control requests at a time; the panel's recent-three window
+    // never determines which durable batch receipts can be resolved.
+    for(let offset=0;offset<missing.length;offset+=2) {
+      await Promise.all(missing.slice(offset,offset+2).map(async item=>{
+        try {receipts.push(await projectUploadControl(`/api/my/activity-projects/${encodeURIComponent(projectId)}/media/upload-session/${encodeURIComponent(item.sessionId)}/status`,{},1));}
+        catch(error) {
+          if(["UPLOAD_SESSION_TERMINAL","UPLOAD_SESSION_EXPIRED","UPLOAD_RESULT_REMOVED"].includes(error.code)) receipts.push({sessionId:item.sessionId,status:"aborted",error:error.message});
+          else state.projectUploadSessionsError=error.message || "读取失败";
+        }
+      }));
+    }
+    if(state.projectView!=="manager" || state.currentProject?.id!==projectId)return;
+    const batchCompleted=projectUploadUnresolved(projectId).some(item=>receipts.some(task=>task.sessionId===item.sessionId && task.status==="completed"));
+    reconcileProjectUploadBatch(projectId,receipts);
+    if(batchCompleted || state.projectUploadSessions.some(item=>previous.has(item.sessionId) && item.status==="completed") || state.projectAlbumRefreshPending?.[projectId])await refreshProjectAlbumMedia(projectId);
   } catch(error) {
     if(state.projectView==="manager" && state.currentProject?.id===projectId)state.projectUploadSessionsError=error.message || "读取失败";
     throw error;

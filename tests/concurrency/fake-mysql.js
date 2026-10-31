@@ -59,6 +59,10 @@ async function query(sql, params = []) {
       else if ((m = where.match(/^project_id = \? AND status = '([^']+)'$/i))) {
         rows = rows.filter(r => r.project_id === params[0] && r.status === m[1]);
       }
+      else if ((m = where.match(/^status IN \((.+)\) AND updated_at < \?$/i))) {
+        const statuses=[...m[1].matchAll(/'([^']+)'/g)].map(hit=>hit[1]);
+        rows=rows.filter(r=>statuses.includes(r.status) && String(r.updated_at||'')<String(params[0]));
+      }
       else if ((m = where.match(/^status IN \((.+)\)$/i))) {
         const statuses = [...m[1].matchAll(/'([^']+)'/g)].map(hit => hit[1]);
         rows = rows.filter(r => statuses.includes(r.status));
@@ -73,6 +77,11 @@ async function query(sql, params = []) {
       else if ((m = where.match(/^status <> '(\w+)'$/i))) rows = rows.filter(r => r.status !== m[1]);
       else rows = [];
     }
+    if(name==='project_upload_sessions') {
+      const order=s.match(/ORDER BY (\w+) (ASC|DESC)/i), limit=s.match(/LIMIT (\d+)$/i);
+      if(order)rows=[...rows].sort((a,b)=>String(a[order[1]]||'').localeCompare(String(b[order[1]]||''))*(order[2].toUpperCase()==='DESC'?-1:1));
+      if(limit)rows=rows.slice(0,Number(limit[1]));
+    }
     return [rows.map(r => ({ ...r })), []];
   }
   if ((m = s.match(/^DELETE FROM (\w+)(?: WHERE (.+))?$/i))) {
@@ -82,6 +91,10 @@ async function query(sql, params = []) {
     else if (/^id NOT IN/i.test(where)) tables[name] = table(name).filter(r => params.includes(r.id));
     else if (/^token = \?$/i.test(where)) tables[name] = table(name).filter(r => r.token !== params[0]);
     else if (/^expires_at < \?$/i.test(where)) tables[name] = table(name).filter(r => !(String(r.expires_at) < String(params[0])));
+    else if(name==='project_upload_sessions' && (m=where.match(/^status IN \((.+)\) AND updated_at < \? LIMIT (\d+)$/i))) {
+      const statuses=[...m[1].matchAll(/'([^']+)'/g)].map(hit=>hit[1]);let removed=0;
+      tables[name]=table(name).filter(r=>!(statuses.includes(r.status) && String(r.updated_at||'')<String(params[0]) && removed++<Number(m[2])));
+    }
     dump();
     return [{ affectedRows: before - table(name).length }, []];
   }

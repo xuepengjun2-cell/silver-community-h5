@@ -671,6 +671,12 @@ test("concurrent complete requests and identical photo sessions persist one cano
       (await ctx.api(route(album), { token })).data.project.media.length,
       1,
     );
+    const receipts=await Promise.all([a,b].map(r=>ctx.api(`${route(album)}/media/upload-session/${r.data.sessionId}/status`,{token})));
+    assert.deepEqual(receipts.map(r=>r.data.duplicate).sort(),[false,true]);
+    const completeReceipts=await Promise.all([a,b].map(r=>ctx.api(`${route(album)}/media/upload-session/${r.data.sessionId}/complete?delivery=1`,{token,method:'POST',body:{}})));
+    assert.deepEqual(completeReceipts.map(r=>r.data.duplicate).sort(),[false,true]);
+    const listed=await ctx.api(`${route(album)}/media/upload-sessions`,{token});
+    assert.deepEqual(listed.data.sessions.map(r=>r.duplicate).sort(),[false,true]);
     assert.equal(
       row(ctx, a.data.sessionId).media_url,
       row(ctx, b.data.sessionId).media_url,
@@ -843,4 +849,67 @@ test("part signature reloads current album owner and authenticated requester aft
     );
     assert.equal(response.data.url, undefined);
   }
+});
+test('actual recent-three API reconciles a reopened40 batch with one published and39 merged receipts',()=>withServer({},async ctx=>{
+ const {token,album}=await setup(ctx);const sessions=[];
+ for(let i=0;i<40;i++) {
+   const r=await init(ctx,token,album,{clientUploadId:i.toString(16).padStart(32,'0')});sessions.push(r.data.sessionId);
+   fs.writeFileSync(object(ctx,row(ctx,r.data.sessionId).object_key),PNG);
+   assert.equal((await finish(ctx,token,album,r.data.sessionId)).data.status,'completed');
+ }
+ const listed=await ctx.api(`${route(album)}/media/upload-sessions`,{token});assert.equal(listed.data.sessions.length,3);assert.equal(listed.data.total,0);
+ const {harness,response}=require('./project-upload-transport.test');
+ const env=harness({fetch:async url=>{const r=await ctx.api(url.replace(/^\/api/,''),{token});return response(r.data,r.status);}});
+ env.ctx.state.projectView='manager';env.ctx.state.currentProject={id:album};env.ctx.refreshProjectAlbumMedia=async()=>{};
+ env.ctx.state.projectUploadBatch={projectId:album,items:sessions.map(sessionId=>({sessionId,status:'processing'}))};
+ await env.ctx.refreshProjectUploadSessions(album);
+ assert.equal(env.ctx.state.projectUploadBatch.items.filter(i=>i.status==='published').length,1);
+ assert.equal(env.ctx.state.projectUploadBatch.items.filter(i=>i.status==='duplicate').length,39);
+ assert.equal((await ctx.api(route(album),{token})).data.project.media.length,1);
+}));
+test('dismissed and absent receipts explicitly permit recovery but foreign project remains ambiguous',()=>withServer({},async ctx=>{
+ const {token,album}=await setup(ctx);const old=await init(ctx,token,album);const id=old.data.sessionId;
+ assert.equal((await ctx.api(`${route(album)}/media/upload-session/${id}/dismiss`,{method:'POST',token,body:{}})).status,200);
+ const terminal=await ctx.api(`${route(album)}/media/upload-session/${id}/status`,{token});assert.equal(terminal.data.code,'UPLOAD_SESSION_TERMINAL');
+ assert.equal(row(ctx,id).status,'dismissed');
+ const absent=await ctx.api(`${route(album)}/media/upload-session/aged-out/status`,{token});assert.equal(absent.data.code,'UPLOAD_SESSION_EXPIRED');
+ const second=await setup(ctx);
+ const foreign=await ctx.api(`${route(second.album)}/media/upload-session/${id}/status`,{token});assert.equal(foreign.status,404);assert.equal(foreign.data.code,undefined);
+}));
+test('admin legacy receipt cannot be controlled or imported by album member who can initialize independently',()=>withServer({},async ctx=>{
+ const hq=await ctx.login();const made=await ctx.api('/admin/users',{method:'POST',token:hq,body:{username:'receipt-owner',name:'Owner',role:'operator',password:'photo-password'}});assert.equal(made.status,201);
+ const token=(await ctx.api('/login',{method:'POST',body:{username:'receipt-owner',password:'photo-password'}})).data.token;
+ const album=(await ctx.api('/my/activity-projects',{method:'POST',token,body:{title:'Member album'}})).data.project.id;
+ const admin=await init(ctx,hq,album,{clientUploadId:'a'.repeat(32)});const id=admin.data.sessionId;
+ assert.equal((await ctx.api(`${route(album)}/media/upload-session/${id}/status`,{token})).status,403);
+ assert.equal((await ctx.api(`${route(album)}/media/upload-session/${id}/dismiss`,{method:'POST',token,body:{}})).status,403);
+ const {harness,photo,response}=require('./project-upload-transport.test');const env=harness({projectMediaFileType:()=> 'image',fetch:async(url,opts)=>{const r=await ctx.api(url.replace(/^\/api/,''),{token,method:opts.method,body:opts.body?JSON.parse(opts.body):undefined});return response(r.data,r.status);}});
+ env.ctx.state.user={id:'member'};const file={...photo,name:'photo.png',type:'image/png',size:PNG.length};
+ const key=env.ctx.projectUploadStateKey(album,file);env.storage.set(key.replace('account:member:',''),JSON.stringify({sessionId:id,clientUploadId:'a'.repeat(32)}));
+ const pending=env.ctx.uploadProjectMediaFile(album,file);pending.catch(()=>{});
+ for(let i=0;i<100 && !env.requests.length;i++)await sleep(20);
+ assert.equal(env.requests.length,1);const own=JSON.parse(env.storage.get(key));assert.notEqual(own.sessionId,id);assert.notEqual(row(ctx,own.sessionId).owner_id,row(ctx,id).owner_id);
+ env.requests[0].done(400);await assert.rejects(pending);assert.equal(row(ctx,id).status,'uploading');
+}));
+test('TTL-aborted receipt and aged-out completed receipt each allow fresh same-file upload',()=>{
+ const ts=new Date(Date.now()-40*86400000).toISOString(),salt='ttl-test';
+ const admin={id:'u_admin',username:'admin',name:'Admin',role:'admin',status:'active',salt,passwordHash:crypto.createHash('sha256').update(`${salt}:admin123`).digest('hex')};
+ const album='ttl-album',doc={id:album,title:'TTL album',ownerId:admin.id,status:'published',shareEnabled:true,media:[]};
+ const seed={users:[{id:admin.id,username:admin.username,role:admin.role,doc:JSON.stringify(admin)}],activity_projects:[{id:album,owner_id:admin.id,status:'published',doc:JSON.stringify(doc)}],project_upload_sessions:[{id:'ttl-upload',project_id:album,owner_id:admin.id,type:'image',ext:'.png',title:'photo.png',filename:'photo.png',object_key:'retained-source',upload_id:'fake',file_size:PNG.length,part_size:8388608,part_count:1,status:'uploading',created_at:ts,updated_at:ts},{id:'aged-completed',project_id:album,owner_id:admin.id,type:'image',status:'completed',updated_at:ts,created_at:ts}]};
+ return withServer({seed},async ctx=>{
+  const token=await ctx.login();
+  assert.equal((await ctx.api(`${route(album)}/media/upload-session/ttl-upload/status`,{token})).data.code,'UPLOAD_SESSION_TERMINAL');
+  assert.equal(row(ctx,'ttl-upload').status,'aborted');
+  assert.equal((await ctx.api(`${route(album)}/media/upload-session/aged-completed/status`,{token})).data.code,'UPLOAD_SESSION_EXPIRED');
+  assert.equal(row(ctx,'aged-completed'),undefined);
+  for(const id of ['ttl-upload','aged-completed']) {
+   const {harness,photo,response}=require('./project-upload-transport.test');
+   const env=harness({projectMediaFileType:()=> 'image',fetch:async(url,opts)=>{const r=await ctx.api(url.replace(/^\/api/,''),{token,method:opts.method,body:opts.body?JSON.parse(opts.body):undefined});return response(r.data,r.status);}});
+   const file={...photo,name:'photo.png',type:'image/png',size:PNG.length};const key=env.ctx.projectUploadStateKey(album,file);env.storage.set(key,JSON.stringify({sessionId:id}));
+   const pending=env.ctx.uploadProjectMediaFile(album,file);pending.catch(()=>{});
+   for(let i=0;i<100 && !env.requests.length;i++)await sleep(20);
+   assert.equal(env.requests.length,1);assert.notEqual(JSON.parse(env.storage.get(key)).sessionId,id);env.requests[0].done(400);await assert.rejects(pending);
+  }
+  assert.equal(row(ctx,'ttl-upload').status,'aborted');
+ });
 });
