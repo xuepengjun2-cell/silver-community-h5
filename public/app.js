@@ -2005,6 +2005,7 @@ function clearPhotoView() {
   const browsing = state.photoBrowsing;
   if (!browsing) return;
   clearTimeout(browsing.poll); clearTimeout(browsing.expiry);
+  browsing.caseEpoch = (browsing.caseEpoch || 0) + 1;
   browsing.poll = null; browsing.expiry = null;
   for (const node of browsing.nodes || []) { node.onload = null; node.onerror = null; node.removeAttribute?.("src"); }
   browsing.nodes = [];
@@ -2016,7 +2017,7 @@ function clearPhotoView() {
 
 function invalidatePhotoBrowsing() {
   const browsing = photoBrowsing();
-  clearPhotoView(); browsing.snapshot = null; browsing.generation++; browsing.originalUrl = null;
+  clearPhotoView(); browsing.snapshot = null; browsing.generation++; browsing.originalUrl = null;browsing.casePendingId = null;
 }
 
 function rememberPhotoProject(project, manager, requestedAt = Date.now()) {
@@ -2090,6 +2091,9 @@ function bindPhotoImages(project, index = null, manager = false) {
 }
 
 function revalidatePhotoView() {
+  if (state.caseView && state.activeCaseId) {
+    invalidatePhotoBrowsing();renderCasePage(state.activeCaseId);return;
+  }
   const project = state.currentProject;
   const index = state.projectPreviewIndex;
   const view = state.projectView;
@@ -2098,7 +2102,7 @@ function revalidatePhotoView() {
   const manager = state.projectPreviewMode;
   invalidatePhotoBrowsing();
   if (preview && expectedUrl) void loadProjectPreview(project.id, index, manager, {expectedUrl});
-  else if (view === "album" && project) void loadPublicProject(project.id).catch(error => { state.currentProject = null; app.innerHTML = `<div class="error">${esc(error.message)}</div>`; });
+  else if (view === "album" && project) void loadPublicProject(project.id);
   else if (view === "manager" && project) void refreshProjectAlbumMedia(project.id).catch(() => {});
 }
 
@@ -2798,9 +2802,15 @@ function renderProjectPreview(project, index, manager = false) {
 
 async function loadPublicProject(id, mediaIndex = null) {
   invalidatePhotoBrowsing();
-  const browsing = photoBrowsing(), generation = browsing.generation, requestedAt = Date.now();
-  const data = await api(`/api/public/activity-projects/${encodeURIComponent(id)}`);
-  if (photoBrowsing().generation !== generation) return;
+  const browsing = photoBrowsing(), generation = browsing.generation, actor = browsing.actor, requestedAt = Date.now();
+  const isCurrent = () => photoBrowsing().actor === actor && browsing.generation === generation;
+  let data;
+  try { data = await api(`/api/public/activity-projects/${encodeURIComponent(id)}`); }
+  catch (error) {
+    if (!isCurrent()) return;
+    state.currentProject = null;app.innerHTML = `<div class="error">${esc(error.message)}</div>`;return;
+  }
+  if (!isCurrent()) return;
   rememberPhotoProject(data.project, false, requestedAt);
   state.currentProject = data.project;
   state.projectView = "album";
@@ -3014,6 +3024,7 @@ function caseCard(c) {
 }
 
 function renderCases() {
+  clearPhotoView();photoBrowsing().casePendingId = null;
   state.caseView = true;
   state.currentActivity = null;
   const cats = state.caseCategories;
@@ -3084,7 +3095,35 @@ function caseShareAction(caseId, m) {
   return `<button class="btn secondary small" type="button" data-share-case-media="${m.index}">📤 分享</button>`;
 }
 
+function bindCasePhotoViews(c, visibleMedia) {
+  const browsing = photoBrowsing(), actor = browsing.actor, epoch = browsing.caseEpoch, generation = browsing.generation;
+  const isCurrent = () => photoBrowsing().actor === actor && browsing.generation === generation && browsing.caseEpoch === epoch
+    && state.caseView && state.activeCaseId === c.id;
+  document.querySelectorAll("[data-case-photo-original]").forEach(button => button.addEventListener("click", () => {
+    if (!isCurrent()) return;
+    const media = c.media[Number(button.dataset.casePhotoOriginal)];
+    browsing.originalUrl = browsing.originalUrl === media.url ? null : media.url;
+    renderCasePage(c.id);
+  }));
+  for (const node of document.querySelectorAll("[data-photo-image]")) browsing.nodes.push(node);
+  if (browsing.casePendingId !== c.id) { browsing.casePendingId = c.id;browsing.casePendingSince = Date.now(); }
+  if (!visibleMedia.some(m => m.type === "image" && m.imageViewState === "pending" && browsing.originalUrl !== m.url)
+    || Date.now() - browsing.casePendingSince >= 30000) return;
+  browsing.poll = setTimeout(async () => {
+    if (!isCurrent() || Date.now() - browsing.casePendingSince >= 30000) return;
+    try {
+      const data = await api("/api/public/cases");
+      if (!isCurrent()) return;
+      state.cases = data.cases || [];
+      renderCasePage(c.id);
+    } catch {
+      if (isCurrent()) renderCasePage(c.id);
+    }
+  }, 2000);
+}
+
 function renderCasePage(caseId) {
+  clearPhotoView();
   const c = state.cases.find(x => x.id === caseId);
   if (!c) {
     state.activeCaseId = "";
@@ -3149,6 +3188,7 @@ function renderCasePage(caseId) {
           <div class="case-media-actions">
             ${caseShareAction(c.id, m)}
             ${caseDownloadAction(c.id, m)}
+            ${m.type === "image" ? photoOriginalButton(m).replace("data-photo-original-toggle", `data-case-photo-original="${m.index}"`) : ""}
           </div>
         </div>
       </article>`;
@@ -3283,6 +3323,7 @@ function renderCasePage(caseId) {
   }));
   bindAuthEvents();
   bindPhotoImages(c);
+  bindCasePhotoViews(c, activeGroup.items);
   if (shouldAuditCase) void trackMediaView("case", c.id, null);
 }
 

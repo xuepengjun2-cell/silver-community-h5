@@ -141,3 +141,39 @@ test('case detail image cards use lazy1600 while retaining the original login-ga
  const f=fixture(),c=project();f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;f.ctx.state.cases=[c];f.ctx.renderCasePage('p');
  assert.match(f.app.innerHTML,/<img[^>]*data-case-image-view="0"[^>]*w_1600[^>]*loading="lazy"/);assert.match(f.app.innerHTML,/data-case-login/);assert.equal(c.media[0].url,original);
 });
+test('delayed album focus rejection cannot erase a newer preview or account',async()=>{
+ for(const changeActor of [false,true]){
+  const f=fixture();f.ctx.state.currentProject=project();f.ctx.state.projectView='album';let reject;
+  f.ctx.api=()=>new Promise((yes,no)=>reject=no);f.handlers.focus();
+  if(changeActor){f.ctx.state.user={id:'new'};f.app.innerHTML='new account';}else{f.ctx.api=async()=>({project:project()});await f.ctx.loadProjectPreview('p',1);}
+  const before=f.app.innerHTML;reject(Error('old focus failure'));await new Promise(r=>setImmediate(r));assert.equal(f.app.innerHTML,before);assert.ok(f.ctx.state.currentProject);
+ }
+});
+test('case pending refresh becomes lazy preview; unavailable allows original independent of download login',async()=>{
+ const f=fixture(),c=project();c.media=[{...photo(),size:30e6,imageViewState:'pending'}];
+ const button={dataset:{casePhotoOriginal:'0'},addEventListener:(_e,fn)=>button.click=fn};
+ f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;
+ f.ctx.document.querySelectorAll=s=>s==='[data-case-photo-original]'?[button]:[];
+ f.ctx.state.cases=[c];f.ctx.renderCasePage('p');assert.match(f.app.innerHTML,/data-case-photo-original="0"/);assert.match(f.app.innerHTML,/data-case-login/);
+ const poll=f.timers.find(t=>t.delay===2000&&!t.cancelled);assert.ok(poll);
+ f.ctx.api=async()=>({cases:[{...c,media:[{...c.media[0],imageViewState:'ready',previewUrl:'https://example.com/1600.jpg'}]}]});await poll.fn();
+ assert.match(f.app.innerHTML,/<img[^>]+1600.jpg[^>]+loading="lazy"/);
+ f.ctx.state.cases=[{...c,media:[{...c.media[0],imageViewState:'unavailable'}]}];f.ctx.renderCasePage('p');button.click();assert.match(f.app.innerHTML,/<img[^>]+src="https:\/\/proj2.likeduoduiyi.cn\/silver-project-images\/a.jpg"/);assert.match(f.app.innerHTML,/data-case-login/);
+});
+test('case readiness poll is bounded and navigation cancels stale responses',async()=>{
+ const f=fixture(),c=project();c.media=[{...photo(),size:30e6,imageViewState:'pending'}];f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;f.ctx.state.cases=[c];f.ctx.renderCasePage('p');
+ const poll=f.timers.find(t=>t.delay===2000&&!t.cancelled);assert.ok(poll);let resolve;f.ctx.api=()=>new Promise(r=>resolve=r);const pending=poll.fn();f.ctx.renderCases();const before=f.app.innerHTML;resolve({cases:[c]});await pending;assert.equal(f.app.innerHTML,before);assert.ok(poll.cancelled);
+ f.ctx.renderCasePage('p');f.advance(30000);const next=f.timers.filter(t=>t.delay===2000&&!t.cancelled).at(-1);let requests=0;f.ctx.api=async()=>{requests++;return {cases:[c]};};await next.fn();assert.equal(requests,0);
+});
+test('animated WebP service DTO displays original with zero derived uploads',async t=>{
+ const os=require('node:os'),path=require('node:path'),{createPhotoViews}=require('../server/photo-views');const dir=fs.mkdtempSync(path.join(os.tmpdir(),'animated-browser-'));let uploads=0;
+ const bytes=fs.readFileSync(path.join(__dirname,'fixtures/photo-views/animated.webp')),url=original.replace('.jpg','.webp'),media={type:'image',url,size:bytes.length};
+ const service=createPhotoViews({stateFile:path.join(dir,'state.json'),stagingRoot:path.join(dir,'stage'),resolveSource:m=>({key:'photos/a.webp',url:m.url}),isReferenced:()=>true,canRun:async()=>true,io:{head:async()=>({size:bytes.length,etag:'animation'}),download:async(_key,file)=>fs.writeFileSync(file,bytes),upload:async()=>uploads++}});
+ t.after(async()=>{await service.stop();fs.rmSync(dir,{recursive:true,force:true});});service.request(media);
+ for(let i=0;i<100&&service.decorate(media).imageViewState==='pending';i++)await new Promise(r=>setTimeout(r,10));
+ const dto=service.decorate(media),f=fixture();assert.equal(f.ctx.photoSource(dto,'preview'),url);assert.equal(uploads,0);
+});
+test('case focus retains case context and resumes readiness checks instead of reopening an old album',()=>{
+ const f=fixture(),c=project();c.media=[{...photo(),size:30e6,imageViewState:'pending'}];f.ctx.document.querySelector=s=>s==='#caseBackList'?{addEventListener(){}}:null;f.ctx.state.cases=[c];f.ctx.state.currentProject=project();f.ctx.state.projectView='album';f.ctx.renderCasePage('p');
+ let albums=0;f.ctx.loadPublicProject=()=>albums++;f.handlers.focus();assert.equal(albums,0);assert.ok(f.timers.some(t=>t.delay===2000&&!t.cancelled));assert.match(f.app.innerHTML,/case-media-card/);
+});

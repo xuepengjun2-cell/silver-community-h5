@@ -79,3 +79,27 @@ test('same-length corrupted cached output repairs in the same job with exclusive
  let renders=0;const recovered=createPhotoViews({stateFile:path.join(w.dir,'views.json'),stagingRoot:path.join(w.dir,'staging'),resolveSource:m=>({key:'photos/a.jpg',url:m.url}),isReferenced:()=>true,canRun:async()=>true,io,render:async(_source,dir)=>{renders++;return [640,1600].map(size=>{const file=path.join(dir,size+'.jpg');fs.writeFileSync(file,`render ${size}`);return {size,file,ext:'jpg'};});}});
  t.after(()=>recovered.stop());recovered.request(w.media);await wait(()=>['ready','unavailable'].includes(recovered.decorate(w.media).imageViewState));assert.equal(recovered.decorate(w.media).imageViewState,'ready');assert.equal(renders,1);assert.deepEqual(w.objects.get(firstKey),original);await recovered.stop();
 });
+test('verified pair refreshes by HEAD while video busy and survives transient IO without regeneration',async t=>{
+ const w=worker(t);let downloads=0,heads=0,fail=false;const head=w.io.head,download=w.io.download;
+ w.io.head=async(...args)=>{heads++;if(fail)throw Error('temporary network');return head(...args);};w.io.download=async(...args)=>{downloads++;return download(...args);};
+ w.service.request(w.media);await wait(()=>w.service.decorate(w.media).imageViewState==='ready');await wait(()=>!w.service.isBusy());
+ const realNow=Date.now;let now=realNow();Date.now=()=>now;t.after(()=>{Date.now=realNow;});w.allow(false);const baseline=downloads;heads=0;now+=16000;
+ assert.equal(w.service.decorate(w.media).imageViewState,'ready');await wait(()=>heads>=3&&!w.service.isBusy());assert.equal(downloads,baseline);
+ fail=true;now+=16000;w.service.request(w.media);await wait(()=>!w.service.isBusy()&&heads>3);await new Promise(r=>setTimeout(r,20));
+ assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(w.dir,'views.json'))).entries)[0].state,'ready');
+ fail=false;now+=61000;w.service.request(w.media);await wait(()=>w.service.decorate(w.media).imageViewState==='ready');assert.equal(downloads,baseline);assert.equal(w.renders(),1);
+ w.replace();now+=16000;w.service.request(w.media);await new Promise(r=>setTimeout(r,30));assert.equal(w.service.decorate(w.media).previewUrl,undefined);assert.equal(w.renders(),1);
+});
+test('ready revalidation is not starved behind a resource-blocked new image',async t=>{
+ const w=worker(t);w.service.request(w.media);await wait(()=>w.service.decorate(w.media).imageViewState==='ready');await wait(()=>!w.service.isBusy());
+ const realNow=Date.now;Date.now=()=>realNow()+16000;t.after(()=>{Date.now=realNow;});w.allow(false);
+ let heads=0;const head=w.io.head;w.io.head=async(...args)=>{heads++;return head(...args);};
+ w.service.request({...w.media,url:base+'new.jpg'});w.service.request(w.media);await wait(()=>heads>=4);assert.equal(w.renders(),1);
+});
+test('restart transient readback preserves pair and retries without original download',async t=>{
+ const w=worker(t);w.service.request(w.media);await wait(()=>w.service.decorate(w.media).imageViewState==='ready');await w.service.stop();
+ let fail=true,originalDownloads=0;const io={...w.io,download:async(key,...args)=>{if(key==='photos/a.jpg')originalDownloads++;if(fail)throw Error('transient readback');return w.io.download(key,...args);}};
+ const recovered=createPhotoViews({stateFile:path.join(w.dir,'views.json'),stagingRoot:path.join(w.dir,'staging'),resolveSource:m=>({key:'photos/a.jpg',url:m.url}),isReferenced:()=>true,canRun:async()=>true,io,render:async()=>{throw Error('must reuse');}});t.after(()=>recovered.stop());
+ recovered.request(w.media);await new Promise(r=>setTimeout(r,40));assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(w.dir,'views.json'))).entries)[0].state,'ready');assert.equal(recovered.decorate(w.media).previewUrl,undefined);
+ fail=false;const realNow=Date.now;Date.now=()=>realNow()+61000;t.after(()=>{Date.now=realNow;});recovered.request(w.media);await wait(()=>recovered.decorate(w.media).imageViewState==='ready');assert.equal(originalDownloads,0);
+});

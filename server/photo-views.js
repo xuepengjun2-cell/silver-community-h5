@@ -25,7 +25,7 @@ function storageIO(getStorage) {
   return {
     async head(key,signal) {
       const response=await fetch(signed(key,'HEAD'),{method:'HEAD',signal});
-      if(!response.ok) throw Error('Photo HEAD failed');
+      if(!response.ok) throw Object.assign(Error('Photo HEAD failed'),{code:response.status===404?'PHOTO_INVALID':'PHOTO_IO'});
       return {size:Number(response.headers.get('content-length')),etag:response.headers.get('etag')};
     },
     download:(key,file,size,signal)=>downloadVideo(signed(key,'GET'),file,size,50*MiB,{signal}),
@@ -38,13 +38,13 @@ function storageIO(getStorage) {
   };
 }
 async function renderPhoto(source,dir,signal,ext) {
+  if(ext==='webp') {
+    const h=Buffer.alloc(32);const fd=await fs.promises.open(source,'r');try{await fd.read(h,0,32,0);}finally{await fd.close();}
+    if(h.toString('ascii',0,4)==='RIFF' && h.toString('ascii',8,12)==='WEBP' && h.toString('ascii',12,16)==='VP8X' && (h[20]&2))return {bypass:true};
+  }
   const info=await probe(source,{signal});
   const picture=info.streams?.find(s=>s.codec_type==='video');
   if(!picture || picture.codec_name!==({jpg:'mjpeg',png:'png',webp:'webp'}[ext]) || !(picture.width>0 && picture.height>0) || picture.width*picture.height>64000000)throw Error('Photo exceeds decode bounds');
-  if(ext==='webp') {
-    const h=Buffer.alloc(32);const fd=await fs.promises.open(source,'r');try{await fd.read(h,0,32,0);}finally{await fd.close();}
-    if(h.toString('ascii',12,16)==='VP8X' && h[20]&2)throw Error('Animated WebP bypass');
-  }
   const outputs=[];
   for(const size of [640,1600]){
     const file=path.join(dir,`${size}.${ext}`);
@@ -60,7 +60,8 @@ function createPhotoViews(options) {
   const io=options.io || storageIO(options.getStorage);
   const render=options.render || renderPhoto;
   let stopped=false, active=null, timer=null;
-  const queue=new Map(), entries={}, validated=new Map();
+  const queue=new Map(), entries={}, validated=new Map(), verified=new Set();
+  const invalid=message=>Object.assign(Error(message),{code:"PHOTO_INVALID"});
   // Durable entries are hints until this process rechecks source and both objects.
   try {
     if(fs.lstatSync(options.stateFile).isSymbolicLink())throw Error('Unsafe sidecar');
@@ -89,7 +90,9 @@ function createPhotoViews(options) {
     const ref=source(media);if(!ref || stopped)return;
     const id=digest(ref.url),saved=entries[id];
     if(active?.id===id || validated.get(id)>Date.now() || saved?.retryAt>Date.now())return;
-    if(queue.size<128)queue.set(id,{...media});schedule();
+    if(queue.size<128)queue.set(id,{...media});
+    if(verified.has(id) && timer){clearTimeout(timer);timer=null;}
+    schedule();
   }
   function decorate(media) {
     if(media?.type!=='image')return {...media};
@@ -98,25 +101,43 @@ function createPhotoViews(options) {
     if(dto.size>0 && dto.size<=20*MiB && !/\.webp$/i.test(ref.key))return {...dto,thumbnailUrl:online(ref.url,640),previewUrl:online(ref.url,1600),imageViewState:'ready'};
     const id=digest(ref.url),saved=entries[id];request(dto);
     if(saved?.state==='online' && validated.get(id)>Date.now())return {...dto,thumbnailUrl:online(ref.url,640),previewUrl:online(ref.url,1600),imageViewState:'ready'};
-    if(saved?.state==='ready' && validated.get(id)>Date.now())return {...dto,thumbnailUrl:saved.outputs[0].url,previewUrl:saved.outputs[1].url,imageViewState:'ready'};
+    if(saved?.state==='original' && validated.has(id))return {...dto,thumbnailUrl:ref.url,previewUrl:ref.url,imageViewState:'ready'};
+    if(saved?.state==='ready' && validated.has(id))return {...dto,thumbnailUrl:saved.outputs[0].url,previewUrl:saved.outputs[1].url,imageViewState:'ready'};
     return {...dto,imageViewState:saved?.state==='unavailable'?'unavailable':'pending'};
   }
   async function pump() {
     if(stopped || active || !queue.size)return;
-    const [id,media]=queue.entries().next().value;
+    const [id,media]=[...queue.entries()].find(([key])=>verified.has(key)) || queue.entries().next().value;
     // The claim covers the asynchronous guard too, preventing parallel pumps.
     const controller=new AbortController();const job={id,controller,done:null};active=job;
     let scheduleAfter=false;
     job.done=(async()=>{
       let dir,deadline,release;
+      const previous=entries[id];
       try {
+        const signal=controller.signal, ref=source(media);
+        deadline=setTimeout(()=>controller.abort(),180000);deadline.unref?.();
+        const check=async()=>{if(signal.aborted || !ref || !await options.isReferenced(media))throw invalid('Photo source no longer referenced');};
+        // Already verified immutable objects need only identity HEADs, not codec resources.
+        if(verified.has(id) && ['ready','original'].includes(previous?.state)) {
+          queue.delete(id);await check();
+          const before=await io.head(ref.key,signal);
+          const revision=digest(`${ref.url}\n${before.etag}\n${before.size}\nphoto-v1`);
+          if(revision===previous.revision) {
+            for(const output of previous.outputs || []) {
+              const head=await io.head(output.key,signal);
+              if(head.size!==output.bytes || !head.etag || head.etag!==output.etag)throw invalid('Derivative identity changed');
+            }
+            const after=await io.head(ref.key,signal);await check();
+            if(before.etag!==after.etag || before.size!==after.size)throw invalid('Photo source changed');
+            delete previous.retryAt;delete previous.attempts;
+            validated.set(id,Date.now()+15000);return;
+          }
+          verified.delete(id);validated.delete(id);queue.set(id,media);
+        }
         if(!await options.canRun()) {scheduleAfter=true;return;}
         if(stopped)return;
         queue.delete(id);
-        const signal=controller.signal;
-        deadline=setTimeout(()=>controller.abort(),180000);deadline.unref?.();
-        const ref=source(media);
-        const check=async()=>{if(signal.aborted || !ref || !await options.isReferenced(media))throw Error('Photo source no longer referenced');};
         await check();
         if(options.reserve) release=await options.reserve();
         await check();
@@ -135,12 +156,13 @@ function createPhotoViews(options) {
         const expected=[640,1600].map(size=>({key:`${prefix}photo-views/${revision}-${size}.${ext}`,url:`${urlPrefix}photo-views/${revision}-${size}.${ext}`}));
         async function verify(outputs) {
           for(let i=0;i<2;i++){
-            const output=outputs[i];if(output.key!==expected[i].key || output.url!==expected[i].url || !/^[a-f0-9]{64}$/.test(output.sha256) || !Number.isSafeInteger(output.bytes) || output.bytes<=0 || output.bytes>20*MiB)throw Error('Invalid cached derivative');
-            const head=await io.head(output.key,signal);if(head.size!==output.bytes)throw Error('Derivative HEAD mismatch');
+            const output=outputs[i];if(!output || output.key!==expected[i].key || output.url!==expected[i].url || !/^[a-f0-9]{64}$/.test(output.sha256) || !Number.isSafeInteger(output.bytes) || output.bytes<=0 || output.bytes>20*MiB)throw invalid('Invalid cached derivative');
+            const head=await io.head(output.key,signal);if(head.size!==output.bytes || !head.etag)throw invalid('Derivative HEAD mismatch');
+            output.etag=head.etag;
             const file=path.join(dir,`readback-${i}`);
             try {
               await io.download(output.key,file,head.size,signal);
-              if(digest(await fs.promises.readFile(file))!==output.sha256)throw Error('Derivative readback mismatch');
+              if(digest(await fs.promises.readFile(file))!==output.sha256)throw invalid('Derivative readback mismatch');
             } finally {
               // A failed cached readback must not block this job's repair: the
               // downloader exclusively creates its destination with wx.
@@ -149,12 +171,16 @@ function createPhotoViews(options) {
           }
         }
         let outputs;
-        const previous=entries[id];
-        if(previous?.state==='ready' && previous.revision===revision && previous.outputs?.length===2){try{await verify(previous.outputs);outputs=previous.outputs;}catch{if(signal.aborted)throw Error('Cancelled');}}
+        if(previous?.state==='ready' && previous.revision===revision && previous.outputs?.length===2){try{await verify(previous.outputs);outputs=previous.outputs;}catch(error){if(signal.aborted || error.code!=='PHOTO_INVALID')throw error;}}
         if(!outputs){
           const input=path.join(dir,`source.${ext}`);await io.download(ref.key,input,before.size,signal);
           await check();
           const made=await render(input,dir,signal,ext);
+          if(made.bypass) {
+            const after=await io.head(ref.key,signal);await check();
+            if(before.etag!==after.etag || before.size!==after.size)throw invalid('Photo source changed');
+            entries[id]={state:'original',revision};persist();verified.add(id);validated.set(id,Date.now()+15000);return;
+          }
           if(made.length!==2 || made[0].size!==640 || made[1].size!==1600)throw Error('Incomplete derivative pair');
           outputs=[];
           for(let i=0;i<2;i++){
@@ -167,11 +193,14 @@ function createPhotoViews(options) {
         }
         const after=await io.head(ref.key,signal);await check();
         if(before.etag!==after.etag || before.size!==after.size)throw Error('Photo source changed');
-        entries[id]={state:'ready',revision,outputs};persist();validated.set(id,Date.now()+15000);
+        entries[id]={state:'ready',revision,outputs};persist();verified.add(id);validated.set(id,Date.now()+15000);
       }catch(error){
         validated.delete(id);
         const attempts=Math.min(6,(entries[id]?.attempts||0)+1);
-        entries[id]={state:'unavailable',attempts,retryAt:Date.now()+Math.min(3600000,30000*2**(attempts-1))};
+        if(error.code==='PHOTO_INVALID')verified.delete(id);
+        const retryAt=Date.now()+Math.min(3600000,30000*2**(attempts-1));
+        entries[id]=previous && ['ready','original'].includes(previous.state) && error.code!=='PHOTO_INVALID'
+          ? {...previous,attempts,retryAt} : {state:'unavailable',attempts,retryAt};
         try{persist();}catch{}
       }finally{
         clearTimeout(deadline);

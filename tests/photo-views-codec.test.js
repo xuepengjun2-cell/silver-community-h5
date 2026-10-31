@@ -40,6 +40,6 @@ test('real static WebP generates two previews and animated WebP never flattens t
  const fixture=name=>path.join(__dirname,'fixtures/photo-views',name);
  const outputs=await renderPhoto(fixture('static.webp'),dir,new AbortController().signal,'webp');assert.equal(outputs.length,2);
  for(const output of outputs){const info=await probe(output.file);assert.equal(info.streams[0].codec_name,'webp');assert.equal(info.streams[0].width,80);assert.equal(info.streams[0].height,40);fs.unlinkSync(output.file);}
- await assert.rejects(renderPhoto(fixture('animated.webp'),dir,new AbortController().signal,'webp'));
+ assert.deepEqual(await renderPhoto(fixture('animated.webp'),dir,new AbortController().signal,'webp'),{bypass:true});
  assert.deepEqual(fs.readdirSync(dir),[]);
 });
