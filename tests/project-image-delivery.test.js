@@ -325,3 +325,10 @@ test('MPF rejects malformed tables, ambiguous ranges, truncated pictures and uni
     }
   }
 });
+for(const little of [true,false])for(const [name,positions] of [['identifier',[6,7,8,9]],['endian',[10,11]],['version',[28,29,30,31]]])test(`MPF ${little?'LE':'BE'} rejects high-bit ${name} aliases`, async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mpf-signatures-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'image.jpeg');
+  for(const position of positions){
+    const {bytes}=mpfFixture(little);bytes[position]|=0x80;fs.writeFileSync(file,bytes);
+    await assert.rejects(validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length}),undefined,`${little?'LE':'BE'} ${name} byte${position}`);
+  }
+});

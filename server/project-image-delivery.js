@@ -124,7 +124,7 @@ function jpegImage(b, collectIndex = false) {
       if (p + 2 > b.length) invalid();
       const n = b.readUInt16BE(p);
       if (n < 2 || p + n > b.length) invalid();
-      if (collectIndex && marker === 0xe2 && n >= 6 && b.toString("ascii", p + 2, p + 6) === "MPF\0") {
+      if (collectIndex && marker === 0xe2 && n >= 6 && b.toString("latin1", p + 2, p + 6) === "MPF\0") {
         if (mpf || scan) invalid();
         mpf = { start: p + 6, end: p + n };
       }
@@ -181,7 +181,7 @@ function jpegStructure(b) {
   const { start, end } = primary.mpf;
   const tiff = b.subarray(start, end);
   if (tiff.length < 8) invalid();
-  const endian = tiff.toString("ascii", 0, 2);
+  const endian = tiff.toString("latin1", 0, 2);
   if (endian !== "II" && endian !== "MM") invalid();
   const u16 = p => endian === "II" ? tiff.readUInt16LE(p) : tiff.readUInt16BE(p);
   const u32 = p => endian === "II" ? tiff.readUInt32LE(p) : tiff.readUInt32BE(p);
@@ -198,7 +198,7 @@ function jpegStructure(b) {
     const entry = index.offset + 2 + n * 12;
     const tag = u16(entry), type = u16(entry + 2), count = u32(entry + 4);
     if (tag === 0xb000) {
-      if (version || type !== 7 || count !== 4 || tiff.toString("ascii", entry + 8, entry + 12) !== "0100") invalid();
+      if (version || type !== 7 || count !== 4 || tiff.toString("latin1", entry + 8, entry + 12) !== "0100") invalid();
       version = true;
     } else if (tag === 0xb001) {
       if (images !== null || type !== 4 || count !== 1) invalid();
