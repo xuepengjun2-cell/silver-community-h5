@@ -111,3 +111,19 @@ test('restart regenerates legacy JPEG recipe even with intact source and derivat
  let renders=0;const recovered=createPhotoViews({stateFile:file,stagingRoot:path.join(w.dir,'staging'),resolveSource:m=>({key:'photos/a.jpg',url:m.url}),isReferenced:()=>true,canRun:async()=>true,io:w.io,render:async(_source,dir)=>{renders++;return [640,1600].map(size=>{const file=path.join(dir,size+'.jpg');fs.writeFileSync(file,'new recipe');return {size,file,ext:'jpg'};});}});t.after(()=>recovered.stop());
  recovered.request(w.media);await wait(()=>recovered.decorate(w.media).imageViewState==='ready');assert.equal(renders,1);
 });
+for(const ext of ['jpg','png'])test(`verified unknown-size ${ext} stays online during busy video, preserves transient metadata, and fences changed source/restart`,async t=>{
+ let allowed=true,fail=false,heads=0,downloads=0,etag='small-original',size=3000;
+ const io={head:async()=>{heads++;if(fail)throw Error('temporary HEAD failure');return {size,etag};},download:async()=>{downloads++;throw Error('unexpected original transfer');}};
+ const {service,dir}=fixture(t,{canRun:async()=>allowed,io});const media={type:'image',url:base+'a.'+ext};
+ service.request(media);await wait(()=>service.decorate(media).imageViewState==='ready');await wait(()=>!service.isBusy());
+ const realNow=Date.now;let now=realNow();Date.now=()=>now;t.after(()=>{Date.now=realNow;});allowed=false;const baseline=heads;now+=16000;
+ assert.equal(service.decorate(media).imageViewState,'ready');await wait(()=>heads>=baseline+2&&!service.isBusy());assert.equal(downloads,0);
+ fail=true;now+=16000;const beforeFailure=heads;service.request(media);await wait(()=>heads>beforeFailure&&!service.isBusy());
+ assert.equal(service.decorate(media).previewUrl,undefined);assert.equal(Object.values(JSON.parse(fs.readFileSync(path.join(dir,'views.json'))).entries)[0].state,'online');
+ fail=false;now+=61000;service.request(media);await wait(()=>service.decorate(media).imageViewState==='ready');assert.equal(downloads,0);
+ // A restart cannot trust persisted online status without rechecking storage.
+ const recovered=createPhotoViews({stateFile:path.join(dir,'views.json'),stagingRoot:path.join(dir,'staging'),resolveSource:m=>({key:'photos/a.'+ext,url:m.url}),isReferenced:()=>true,canRun:async()=>false,io});
+ assert.equal(recovered.decorate(media).imageViewState,'pending');await recovered.stop();
+ etag='replaced-original';size=21*1024*1024;now+=16000;const beforeReplacement=heads;service.request(media);await wait(()=>heads>beforeReplacement&&!service.isBusy());
+ assert.equal(service.decorate(media).previewUrl,undefined);assert.equal(downloads,0);
+});

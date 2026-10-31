@@ -149,7 +149,7 @@ function createPhotoViews(options) {
     const ref=source(dto);if(!ref)return dto;
     if(dto.size>0 && dto.size<=20*MiB && !/\.webp$/i.test(ref.key))return {...dto,thumbnailUrl:online(ref.url,640),previewUrl:online(ref.url,1600),imageViewState:'ready'};
     const id=digest(ref.url),saved=entries[id];request(dto);
-    if(saved?.state==='online' && validated.get(id)>Date.now())return {...dto,thumbnailUrl:online(ref.url,640),previewUrl:online(ref.url,1600),imageViewState:'ready'};
+    if(saved?.state==='online' && validated.has(id))return {...dto,thumbnailUrl:online(ref.url,640),previewUrl:online(ref.url,1600),imageViewState:'ready'};
     if(saved?.state==='original' && validated.has(id))return {...dto,thumbnailUrl:ref.url,previewUrl:ref.url,imageViewState:'ready'};
     if(saved?.state==='ready' && validated.has(id))return {...dto,thumbnailUrl:saved.outputs[0].url,previewUrl:saved.outputs[1].url,imageViewState:'ready'};
     return {...dto,imageViewState:saved?.state==='unavailable'?'unavailable':'pending'};
@@ -168,7 +168,7 @@ function createPhotoViews(options) {
         deadline=setTimeout(()=>controller.abort(),180000);deadline.unref?.();
         const check=async()=>{if(signal.aborted || !ref || !await options.isReferenced(media))throw invalid('Photo source no longer referenced');};
         // Already verified immutable objects need only identity HEADs, not codec resources.
-        if(verified.has(id) && ['ready','original'].includes(previous?.state)) {
+        if(verified.has(id) && ['ready','original','online'].includes(previous?.state)) {
           queue.delete(id);await check();
           const before=await io.head(ref.key,signal);
           const revision=photoRevision(ref,before);
@@ -195,10 +195,12 @@ function createPhotoViews(options) {
         fs.writeFileSync(path.join(dir,'active.json'),JSON.stringify({pid:process.pid,id}),{flag:'wx',mode:0o600});
         const before=await io.head(ref.key,signal);
         if(!before.etag || !Number.isSafeInteger(before.size) || before.size<=0 || before.size>50*MiB)throw Error('Photo size or ETag unavailable');
-        if(before.size<=20*MiB && !/\.webp$/i.test(ref.key)) {
-          await check();entries[id]={state:'online',size:before.size,etag:before.etag};persist();validated.set(id,Date.now()+15000);return;
-        }
         const revision=photoRevision(ref,before);
+        if(before.size<=20*MiB && !/\.webp$/i.test(ref.key)) {
+          const after=await io.head(ref.key,signal);await check();
+          if(before.etag!==after.etag || before.size!==after.size)throw invalid('Photo source changed');
+          entries[id]={state:'online',size:before.size,etag:before.etag,revision};persist();verified.add(id);validated.set(id,Date.now()+15000);return;
+        }
         const prefix=ref.key.slice(0,ref.key.lastIndexOf('/')+1);
         const urlPrefix=ref.url.slice(0,ref.url.lastIndexOf('/')+1);
         const ext=/\.png$/i.test(ref.key)?'png':/\.webp$/i.test(ref.key)?'webp':'jpg';
@@ -248,7 +250,7 @@ function createPhotoViews(options) {
         const attempts=Math.min(6,(entries[id]?.attempts||0)+1);
         if(error.code==='PHOTO_INVALID')verified.delete(id);
         const retryAt=Date.now()+Math.min(3600000,30000*2**(attempts-1));
-        entries[id]=previous && ['ready','original'].includes(previous.state) && error.code!=='PHOTO_INVALID'
+        entries[id]=previous && ['ready','original','online'].includes(previous.state) && error.code!=='PHOTO_INVALID'
           ? {...previous,attempts,retryAt} : {state:'unavailable',attempts,retryAt};
         try{persist();}catch{}
       }finally{
