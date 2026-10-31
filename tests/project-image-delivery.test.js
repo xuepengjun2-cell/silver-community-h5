@@ -222,3 +222,37 @@ test("animated WebP validates real multi-frame bytes and rejects empty, truncate
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("WebP unknown chunk traversal validates a modest file within a capped child heap", () => {
+  const { spawnSync } = require("node:child_process");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "webp-memory-")),
+    file = path.join(dir, "image.webp");
+  // 131072 legal empty unknown chunks in only1MiB: retaining a descriptor per
+  // chunk exceeds this child's small heap, while streaming descriptors does not.
+  const unknown = Buffer.alloc(1024 * 1024);
+  for (let p = 0; p < unknown.length; p += 8) unknown.write("JUNK", p);
+  const bytes = webpContainer([samples.webp.subarray(12), unknown]);
+  fs.writeFileSync(file, bytes);
+  try {
+    const script = `const fs=require('node:fs');const {validateProjectImage}=require(process.argv[1]);validateProjectImage(process.argv[2],{ext:'webp',expectedSize:fs.statSync(process.argv[2]).size}).then(result=>process.stdout.write(String(result.size))).catch(error=>{process.stderr.write(error.message);process.exitCode=1;});`;
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--max-old-space-size=12",
+        "-e",
+        script,
+        path.join(__dirname, "../server/project-image-delivery"),
+        file,
+      ],
+      { cwd: dir, encoding: "utf8", timeout: 10000, maxBuffer: 64 * 1024 },
+    );
+    assert.equal(
+      child.status,
+      0,
+      `bounded child failed: signal=${child.signal}, ${child.stderr?.slice(0, 150)}`,
+    );
+    assert.equal(child.stdout, String(bytes.length));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

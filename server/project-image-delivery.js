@@ -15,19 +15,18 @@ function crc32(bytes) {
   for (const byte of bytes) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
-// Walk only bounded RIFF chunks; ANMF frame data is another padded chunk list.
-function webpChunks(b, start, end) {
-  const chunks = [];
+// Yield one bounded chunk at a time, including nested ANMF frame data.
+// A file may contain millions of empty unknown chunks; never retain their descriptors.
+function* webpChunks(b, start, end) {
   for (let p = start; p < end;) {
     if (p + 8 > end) invalid();
     const size = b.readUInt32LE(p + 4),
       data = p + 8,
       next = data + size + (size % 2);
     if (next > end || (size % 2 && b[data + size] !== 0)) invalid();
-    chunks.push({ type: b.toString("ascii", p, p + 4), data, size, end: data + size });
+    yield { type: b.toString("ascii", p, p + 4), data, size, end: data + size };
     p = next;
   }
-  return chunks;
 }
 function webpBitstream(b, chunk) {
   const { type, data, size } = chunk;
@@ -55,16 +54,17 @@ function webpStructure(b) {
   )
     invalid();
   const chunks = webpChunks(b, 12, b.length);
-  let canvas = null,
+  let index = 0,
+    canvas = null,
     animated = false,
     animation = false,
     frames = 0,
     still = false;
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i],
-      { type, data, size } = chunk;
+  for (const chunk of chunks) {
+    const { type, data, size } = chunk;
+    const first = index++ === 0;
     if (type === "VP8X") {
-      if (i !== 0 || size !== 10) invalid();
+      if (!first || size !== 10) invalid();
       canvas = { width: b.readUIntLE(data + 4, 3) + 1, height: b.readUIntLE(data + 7, 3) + 1 };
       if (canvas.width * canvas.height > 0xffffffff) invalid();
       animated = Boolean(b[data] & 2);
