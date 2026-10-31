@@ -104,6 +104,10 @@ async function query(sql, params = []) {
       await tick();
     }
     dump();
+    if(name==='project_upload_sessions' && rows.some(values=>values[cols.indexOf('status')]==='completed') && process.env.FAKE_TOS_DIR){
+      const fault=require('path').join(require('path').dirname(process.env.FAKE_TOS_DIR),'interrupt-completed-receipt');
+      if(fs.existsSync(fault)){fs.rmSync(fault);throw new Error('test: connection lost after completed receipt insert');}
+    }
     return [{ affectedRows: rows.length }, []];
   }
   if ((m = s.match(/^UPDATE (\w+) SET (.+) WHERE id = \?$/i))) {

@@ -3852,7 +3852,7 @@ async function handleApi(req, res, pathname) {
         const ts = now();
         try {
           await pool.query(
-            `INSERT INTO project_upload_sessions (id, project_id, owner_id, type, ext, title, filename, object_key, upload_id, file_size, part_size, part_count, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            `INSERT INTO project_upload_sessions (id, project_id, owner_id, type, ext, title, filename, object_key, upload_id, file_size, part_size, part_count, status, created_at, updated_at, media_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
             [
               sessionId,
               projectId,
@@ -3869,9 +3869,9 @@ async function handleApi(req, res, pathname) {
               duplicate ? "completed" : "uploading",
               ts,
               ts,
+              duplicate ? duplicate.url : null,
             ],
           );
-          if (duplicate) await updateProjectUploadSession(sessionId, { media_url: duplicate.url });
         } catch (error) {
           if (uploadId) await client.abortMultipartUpload({ bucket, key: object.key, uploadId }).catch(() => {});
           throw error;
@@ -3886,14 +3886,18 @@ async function handleApi(req, res, pathname) {
   }
   const projectVideoPartUrl = pathname.match(/^\/api\/my\/activity-projects\/([^/]+)\/media\/upload-session\/([^/]+)\/part-url$/);
   if (req.method === "GET" && projectVideoPartUrl) {
-    const user = requireRole(req, res, ["admin", "operator", "member"]);
+    let user = requireRole(req, res, ["admin", "operator", "member"]);
     if (!user) return;
     const projectId = decodeURIComponent(projectVideoPartUrl[1]);
     const db = readDb();
-    const project = (db.activityProjects || []).find(p => p.id === projectId);
+    let project = (db.activityProjects || []).find(p => p.id === projectId);
     if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     const session = await readProjectUploadSession(decodeURIComponent(projectVideoPartUrl[2]));
     if (!session || session.project_id !== projectId) return sendJson(res, 404, { error: "上传会话不存在" });
+    // SQL may yield while an album is deleted/transferred or the requester is revoked.
+    user = getAuthedUser(req);
+    project = (readDb().activityProjects || []).find(p => p.id === projectId);
+    if (!projectCanRead(user, project)) return sendJson(res, 404, { error: "活动相册不存在或没有查看权限" });
     if (!projectCanManage(user, project) || session.owner_id !== user.id && user.role !== "admin") {
       return sendJson(res, 403, { error: "当前账号不能使用这个上传会话" });
     }
@@ -3975,7 +3979,7 @@ async function handleApi(req, res, pathname) {
       });
     }
     if (["queued", "processing", "delivery_failed"].includes(session.status)) {
-      return sendJson(res, 200, { ok: true, status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectTasksFor(session).getProgress(session) });
+      return sendJson(res, 200, { ok: true, type:session.type||"video", status: session.status, sessionId: session.id, error: session.error || "", mediaUrl: session.media_url || "", progress: projectTasksFor(session).getProgress(session) });
     }
     if (["aborted", "dismissed"].includes(session.status)) return sendJson(res, 409, { error: "上传任务已移出", status: session.status });
     try {
@@ -3995,6 +3999,8 @@ async function handleApi(req, res, pathname) {
       return sendJson(res, 200, {
         ok: true,
         status: session.status,
+        type: session.type || "video",
+        progress: projectTasksFor(session).getProgress(session),
         sessionId: session.id,
         filename: session.filename,
         fileSize: Number(session.file_size),

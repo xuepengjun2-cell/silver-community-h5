@@ -676,3 +676,171 @@ test("concurrent complete requests and identical photo sessions persist one cano
       row(ctx, b.data.sessionId).media_url,
     );
   }));
+
+test("duplicate init response lost after committed INSERT still has an atomic canonical receipt", () =>
+  withServer({}, async (ctx) => {
+    const { token, album } = await setup(ctx),
+      initial = await init(ctx, token, album),
+      source = row(ctx, initial.data.sessionId);
+    fs.writeFileSync(object(ctx, source.object_key), PNG);
+    const ready = await finish(ctx, token, album, source.id);
+    const canonical = ready.data.media;
+    fs.writeFileSync(
+      path.join(ctx.dir, "interrupt-completed-receipt"),
+      "interrupt",
+    );
+    const input = {
+      clientUploadId: "d".repeat(32),
+      fingerprint: canonical.fingerprint,
+    };
+    const lost = await init(ctx, token, album, input);
+    assert.equal(lost.status, 502);
+    const retry = await init(ctx, token, album, input);
+    assert.equal(retry.status, 200, JSON.stringify(retry));
+    assert.equal(retry.data.status, "completed");
+    assert.equal(retry.data.media.url, canonical.url);
+    assert.equal(row(ctx, retry.data.sessionId).media_url, canonical.url);
+  }));
+for (const change of ["delete"])
+  test(`part signature rechecks album ${change} after session SQL read`, () =>
+    withServer({}, async (ctx) => {
+      const hq = await ctx.login();
+      const made = await ctx.api("/admin/users", {
+        method: "POST",
+        token: hq,
+        body: {
+          username: "gated-photo",
+          name: "Owner",
+          role: "operator",
+          password: "photo-password",
+        },
+      });
+      assert.equal(made.status, 201);
+      const token = (
+        await ctx.api("/login", {
+          method: "POST",
+          body: { username: "gated-photo", password: "photo-password" },
+        })
+      ).data.token;
+      const album = (
+        await ctx.api("/my/activity-projects", {
+          method: "POST",
+          token,
+          body: { title: "Gated album" },
+        })
+      ).data.project.id;
+      const initial = await init(ctx, token, album);
+      const id = initial.data.sessionId;
+      const entered = path.join(ctx.dir, "signature.entered"),
+        release = path.join(ctx.dir, "signature.release");
+      fs.writeFileSync(
+        path.join(ctx.dir, "db-gate.json"),
+        JSON.stringify({
+          id: "signature-read",
+          sqlIncludes: "SELECT * FROM project_upload_sessions WHERE id = ?",
+          paramsInclude: [id],
+          enteredFile: entered,
+          releaseFile: release,
+        }),
+      );
+      const signing = ctx.api(
+        `${route(album)}/media/upload-session/${id}/part-url?partNumber=1`,
+        { token },
+      );
+      for (let i = 0; i < 120 && !fs.existsSync(entered); i++) await sleep(10);
+      assert.ok(fs.existsSync(entered));
+      const changed = await ctx.api(route(album), {
+        method: "DELETE",
+        token: hq,
+      });
+      assert.equal(changed.status, 200, JSON.stringify(changed));
+      fs.writeFileSync(release, "release");
+      const result = await signing;
+      assert.ok([403, 404].includes(result.status), JSON.stringify(result));
+      assert.equal(result.data.url, undefined);
+    }));
+test("ordinary uploading and paused photo status include type and progress", () =>
+  withServer({}, async (ctx) => {
+    const { token, album } = await setup(ctx),
+      r = await init(ctx, token, album),
+      base = `${route(album)}/media/upload-session/${r.data.sessionId}`;
+    let status = await ctx.api(`${base}/status`, { token });
+    assert.equal(status.data.type, "image");
+    assert.ok(Object.hasOwn(status.data, "progress"));
+    await ctx.api(`${base}/pause`, { method: "POST", token, body: {} });
+    status = await ctx.api(`${base}/status`, { token });
+    assert.equal(status.data.type, "image");
+    assert.equal(status.data.progress.stage, "paused");
+  }));
+
+test("part signature reloads current album owner and authenticated requester after gated SQL", async () => {
+  const vm = require("node:vm"),
+    source = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
+  const code = source.slice(
+    source.indexOf("  const projectVideoPartUrl ="),
+    source.indexOf("  const projectVideoUploadSessions ="),
+  );
+  for (const change of ["transfer", "requester-revocation"]) {
+    const uploader = { id: "owner", role: "operator", status: "active" };
+    let project = { id: "album", ownerId: "owner" },
+      user = change === "transfer" ? uploader : { id: "manager", role: "admin", status: "active" },
+      release,
+      entered;
+    const gate = new Promise((r) => (release = r)),
+      readStarted = new Promise((r) => (entered = r));
+    const response = {};
+    const ctx = {
+      pathname:
+        "/api/my/activity-projects/album/media/upload-session/session/part-url",
+      req: {
+        method: "GET",
+        url: "/api/my/activity-projects/album/media/upload-session/session/part-url?partNumber=1",
+      },
+      res: {},
+      URL,
+      decodeURIComponent,
+      Number,
+      requireRole: () => user,
+      getAuthedUser: () => user,
+      readDb: () => ({ activityProjects: [project], users: [uploader, user] }),
+      projectCanRead: (u, p) =>
+        !!u && !!p && (u.id === p.ownerId || u.role === "admin"),
+      projectCanManage: (u, p) =>
+        !!u &&
+        !!p &&
+        (u.role === "admin" ||
+          (["operator", "member"].includes(u.role) && u.id === p.ownerId)),
+      readProjectUploadSession: async () => {
+        entered();
+        await gate;
+        return {
+          id: "session",
+          project_id: "album",
+          owner_id: "owner",
+          status: "uploading",
+          part_count: 1,
+          part_size: 8388608,
+          object_key: "source",
+          upload_id: "upload",
+        };
+      },
+      sendJson: (_res, status, data) =>
+        Object.assign(response, { status, data }),
+      getCaseVideoTosClient: () => ({
+        bucket: "test",
+        client: { getPreSignedUrl: () => "/SHOULD-NOT-SIGN" },
+      }),
+    };
+    const running = vm.runInNewContext(`(async()=>{${code}})()`, ctx);
+    await readStarted;
+    if (change === "transfer") project = { id: "album", ownerId: "other" };
+    else user = { ...user, role: "viewer" };
+    release();
+    await running;
+    assert.ok(
+      [403, 404].includes(response.status),
+      JSON.stringify({ change, response }),
+    );
+    assert.equal(response.data.url, undefined);
+  }
+});

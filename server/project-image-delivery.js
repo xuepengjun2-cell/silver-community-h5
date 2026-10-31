@@ -15,6 +15,92 @@ function crc32(bytes) {
   for (const byte of bytes) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
   return (crc ^ 0xffffffff) >>> 0;
 }
+// Walk only bounded RIFF chunks; ANMF frame data is another padded chunk list.
+function webpChunks(b, start, end) {
+  const chunks = [];
+  for (let p = start; p < end;) {
+    if (p + 8 > end) invalid();
+    const size = b.readUInt32LE(p + 4),
+      data = p + 8,
+      next = data + size + (size % 2);
+    if (next > end || (size % 2 && b[data + size] !== 0)) invalid();
+    chunks.push({ type: b.toString("ascii", p, p + 4), data, size, end: data + size });
+    p = next;
+  }
+  return chunks;
+}
+function webpBitstream(b, chunk) {
+  const { type, data, size } = chunk;
+  if (type === "VP8 ") {
+    if (size <= 10 || b[data] & 1 || !b.subarray(data + 3, data + 6).equals(Buffer.from("9d012a", "hex"))) invalid();
+    const width = b.readUInt16LE(data + 6) & 0x3fff,
+      height = b.readUInt16LE(data + 8) & 0x3fff;
+    if (!width || !height) invalid();
+    return { width, height };
+  }
+  if (type === "VP8L") {
+    if (size <= 5 || b[data] !== 0x2f) invalid();
+    const bits = b.readUInt32LE(data + 1);
+    if (bits >>> 29) invalid();
+    return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+  }
+  invalid();
+}
+function webpStructure(b) {
+  if (
+    b.length < 20 ||
+    b.toString("ascii", 0, 4) !== "RIFF" ||
+    b.toString("ascii", 8, 12) !== "WEBP" ||
+    b.readUInt32LE(4) + 8 !== b.length
+  )
+    invalid();
+  const chunks = webpChunks(b, 12, b.length);
+  let canvas = null,
+    animated = false,
+    animation = false,
+    frames = 0,
+    still = false;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i],
+      { type, data, size } = chunk;
+    if (type === "VP8X") {
+      if (i !== 0 || size !== 10) invalid();
+      canvas = { width: b.readUIntLE(data + 4, 3) + 1, height: b.readUIntLE(data + 7, 3) + 1 };
+      if (canvas.width * canvas.height > 0xffffffff) invalid();
+      animated = Boolean(b[data] & 2);
+    } else if (type === "ANIM") {
+      if (!animated || !canvas || animation || frames || size !== 6) invalid();
+      animation = true;
+    } else if (type === "ANMF") {
+      if (!canvas || !animated || !animation || still || size < 16) invalid();
+      const x = b.readUIntLE(data, 3) * 2,
+        y = b.readUIntLE(data + 3, 3) * 2,
+        width = b.readUIntLE(data + 6, 3) + 1,
+        height = b.readUIntLE(data + 9, 3) + 1;
+      if (x + width > canvas.width || y + height > canvas.height) invalid();
+      let bitstream = null,
+        alpha = false;
+      for (const nested of webpChunks(b, data + 16, chunk.end)) {
+        if (nested.type === "ALPH") {
+          if (alpha || bitstream || nested.size < 2) invalid();
+          alpha = true;
+        } else if (["VP8 ", "VP8L"].includes(nested.type)) {
+          if (bitstream || (alpha && nested.type === "VP8L")) invalid();
+          bitstream = webpBitstream(b, nested);
+        } else if (["ANMF", "ANIM", "VP8X"].includes(nested.type)) invalid();
+      }
+      if (!bitstream || bitstream.width !== width || bitstream.height !== height) invalid();
+      frames++;
+    } else if (["VP8 ", "VP8L"].includes(type)) {
+      if (animated || still || frames) invalid();
+      const dimensions = webpBitstream(b, chunk);
+      if (canvas && (dimensions.width !== canvas.width || dimensions.height !== canvas.height)) invalid();
+      still = true;
+    }
+  }
+  if (animated ? !animation || !frames || still : !still) invalid();
+}
+
 function structure(b, ext) {
   if (ext === "png") {
     if (b.length < 45 || !b.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"))) invalid();
@@ -121,34 +207,7 @@ function structure(b, ext) {
     }
     if (!image || !end) invalid();
   } else if (ext === "webp") {
-    if (
-      b.length < 20 ||
-      b.toString("ascii", 0, 4) !== "RIFF" ||
-      b.toString("ascii", 8, 12) !== "WEBP" ||
-      b.readUInt32LE(4) + 8 !== b.length
-    )
-      invalid();
-    let p = 12,
-      image = false;
-    while (p + 8 <= b.length) {
-      const type = b.toString("ascii", p, p + 4),
-        n = b.readUInt32LE(p + 4);
-      if (!n || p + 8 + n > b.length) invalid();
-      if (type === "VP8 ") {
-        if (n < 10 || !b.subarray(p + 11, p + 14).equals(Buffer.from("9d012a", "hex"))) invalid();
-        image = true;
-      }
-      if (type === "VP8L") {
-        if (n < 5 || b[p + 8] !== 0x2f) invalid();
-        image = true;
-      }
-      if (type === "ANMF") {
-        if (n < 24) invalid();
-        image = true;
-      }
-      p += 8 + n + (n % 2);
-    }
-    if (!image || p !== b.length) invalid();
+    webpStructure(b);
   } else invalid();
 }
 async function validateProjectImage(file, { ext, expectedSize, signal } = {}) {

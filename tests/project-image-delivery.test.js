@@ -137,3 +137,88 @@ test("same-size local file replacement between hash and final stat is rejected",
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+function webpChunk(type, payload) {
+  const header = Buffer.alloc(8);
+  header.write(type);
+  header.writeUInt32LE(payload.length, 4);
+  return Buffer.concat([
+    header,
+    payload,
+    ...(payload.length % 2 ? [Buffer.from([0])] : []),
+  ]);
+}
+function webpContainer(chunks) {
+  const payload = Buffer.concat([Buffer.from("WEBP"), ...chunks]);
+  const head = Buffer.alloc(8);
+  head.write("RIFF");
+  head.writeUInt32LE(payload.length, 4);
+  return Buffer.concat([head, payload]);
+}
+const vp8x = () =>
+  webpChunk("VP8X", Buffer.from("02000000010000010000", "hex"));
+const anim = () => webpChunk("ANIM", Buffer.alloc(6));
+const frameHeader = () =>
+  Buffer.from("00000000000000000000000064000000", "hex");
+test("animated WebP validates real multi-frame bytes and rejects empty, truncated or headerless frames", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "animated-validate-")),
+    file = path.join(dir, "image");
+  const valid = fs.readFileSync(
+    path.join(__dirname, "fixtures/project-animated.webp"),
+  );
+  try {
+    fs.writeFileSync(file, valid);
+    assert.equal(
+      (
+        await validateProjectImage(file, {
+          ext: "webp",
+          expectedSize: valid.length,
+        })
+      ).size,
+      valid.length,
+    );
+    const bad = [
+      Buffer.from(
+        "524946462400000057454250414e4d4618000000000000000000000000000000000000000000000000000000",
+        "hex",
+      ),
+      webpContainer([
+        vp8x(),
+        anim(),
+        webpChunk("ANMF", Buffer.concat([frameHeader(), Buffer.alloc(8)])),
+      ]),
+      webpContainer([
+        vp8x(),
+        anim(),
+        webpChunk(
+          "ANMF",
+          Buffer.concat([
+            frameHeader(),
+            Buffer.from("56503820160000003001", "hex"),
+          ]),
+        ),
+      ]),
+      webpContainer([
+        webpChunk(
+          "ANMF",
+          Buffer.concat([frameHeader(), samples.webp.subarray(12)]),
+        ),
+      ]),
+      webpContainer([
+        vp8x(),
+        webpChunk(
+          "ANMF",
+          Buffer.concat([frameHeader(), samples.webp.subarray(12)]),
+        ),
+      ]),
+    ];
+    for (const bytes of bad) {
+      fs.writeFileSync(file, bytes);
+      await assert.rejects(
+        validateProjectImage(file, { ext: "webp", expectedSize: bytes.length }),
+      );
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
