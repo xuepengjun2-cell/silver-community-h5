@@ -54,6 +54,15 @@ node deploy/release-from-github.cjs --base=<现网GitHub40位SHA> --sha=<目标m
 
 第一条仅预检。工具从GitHub同SHA取代码和远端执行器，核验CI、现网代码基线、依赖不变、空间/队列/PM2；私有备份后短暂停服务，仅替换白名单代码文件，再启动并核对健康JSON、代码哈希和五张业务表哈希。失败只回滚代码，从不回滚业务数据。密钥留在本机和服务器，不提交仓库。
 
+纯后端修复可显式加 `--backend-only`，默认发布范围不变：
+
+```sh
+node deploy/release-from-github.cjs --base=<现网后端GitHub40位SHA> --sha=<目标main40位SHA> --backend-only
+node deploy/release-from-github.cjs --base=<现网后端GitHub40位SHA> --sha=<目标main40位SHA> --backend-only --apply
+```
+
+此范围只在基线到目标的整个 `public/` 文件集合和完整字节哈希均未改变、`package.json` 完整字节也未改变时允许。本机和远端均从 GitHub 基线与目标归档重新核对；远端另核验基线归档哈希及目标范围的完整文件清单。只部署全部 `server.js`、`server/*.js` 与 `package.json`，不读取运行目录的静态文件作为后端基线，不备份、覆盖或回滚 `public/`。后端及 package 的现网、目标哈希仍须逐项匹配；此模式不接受默认全量模式已有的 package 版本/测试脚本漂移例外。依赖锁、initDb、上传空闲、备份、业务快照、启动、回滚与同 SHA main CI 守卫继续执行。若有任何静态修改，必须采用默认全量后端发布并另行执行静态发布；不能用此标志夹带静态变更或掩盖后端漂移。
+
 此工具只完成后端发布。公网静态站由独立 TOS 对象提供，继续执行：
 
 ```sh

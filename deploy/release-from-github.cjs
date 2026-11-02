@@ -18,6 +18,8 @@ const hash = value => crypto.createHash("sha256").update(value).digest("hex");
 const stable = value => Array.isArray(value) ? `[${value.map(stable).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${stable(value[k])}`).join(",")}}` : JSON.stringify(value);
 const sha = value => { if (!/^[a-f0-9]{40}$/.test(value || "")) fail("Expected exact lowercase 40-character GitHub SHA"); return value; };
 const allowed = file => file === "server.js" || /^server\/[a-zA-Z0-9_-]+\.js$/.test(file) || ["public/app.js", "public/admin.js", "public/styles.css", "public/app.css", "public/admin.css", "public/index.html", "public/admin.html", "package.json"].includes(file);
+const releaseScope = value => { if (!["full", "backend-only"].includes(value)) fail("Unknown release scope"); return value; };
+const inScope = (file, scope) => allowed(file) && (scope === "full" || !file.startsWith("public/"));
 function identityOptions(env = process.env) {
   const identity = env.SILVER_DEPLOY_IDENTITY ?? "/Users/a1234/.ssh/kkhc_hq_deploy_ed25519";
   if (typeof identity !== "string" || !path.isAbsolute(identity) || path.resolve(identity) !== identity || /[\x00-\x1f]/.test(identity)) fail("SILVER_DEPLOY_IDENTITY must be an absolute normalized path");
@@ -28,12 +30,13 @@ function assertCodeHash(file, actual, expected, context) {
   if (actual !== expected) fail(`${context}: ${file}; expected=${expected ?? "absent"}; actual=${actual ?? "absent"}`);
 }
 function options(args) {
-  const out = { apply: false };
+  const out = { apply: false, scope: "full" };
   for (const arg of args) {
     if (arg === "--apply" && !out.apply) out.apply = true;
+    else if (arg === "--backend-only" && out.scope === "full") out.scope = "backend-only";
     else if (/^--(sha|base)=[a-f0-9]{40}$/.test(arg)) {
       const [key, value] = arg.slice(2).split("="); if (out[key]) fail("Duplicate option"); out[key] = sha(value);
-    } else fail("Use --base=<40SHA> [--sha=<main40SHA>] [--apply]; default is dry-run");
+    } else fail("Use --base=<40SHA> [--sha=<main40SHA>] [--backend-only] [--apply]; default is dry-run");
   }
   if (!out.base) fail("Explicit reviewed production --base=<40SHA> required");
   return out;
@@ -63,10 +66,27 @@ function extract(archive, directory) {
   fs.mkdirSync(directory, { mode: 0o700 });
   run("tar", ["-xzf", archive, "--strip-components=1", "-C", directory]);
 }
-function codeFiles(directory) {
-  const list = ["server.js", "package.json", ...fs.readdirSync(`${directory}/server`).map(f => `server/${f}`), ...fs.readdirSync(`${directory}/public`).map(f => `public/${f}`)].filter(allowed).sort();
+function codeFiles(directory, scope = "full") {
+  releaseScope(scope);
+  const list = ["server.js", "package.json", ...fs.readdirSync(`${directory}/server`).map(f => `server/${f}`), ...(scope === "full" ? fs.readdirSync(`${directory}/public`).map(f => `public/${f}`) : [])].filter(file => inScope(file, scope)).sort();
   for (const name of list) if (!fs.lstatSync(`${directory}/${name}`).isFile()) fail("Release files must be regular files");
   return list;
+}
+function publicHashes(directory) {
+  const result = [];
+  function visit(relative) {
+    const stat = fs.lstatSync(`${directory}/${relative}`);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      for (const name of fs.readdirSync(`${directory}/${relative}`).sort()) visit(`${relative}/${name}`);
+    } else if (stat.isFile()) result.push([relative, hash(fs.readFileSync(`${directory}/${relative}`))]);
+    else fail("Public source must contain only regular files and directories");
+  }
+  visit("public");
+  return result;
+}
+function assertBackendOnly(before, after) {
+  if (stable(publicHashes(before)) !== stable(publicHashes(after))) fail("Backend-only release requires unchanged complete public file set and hashes");
+  if (hash(fs.readFileSync(`${before}/package.json`)) !== hash(fs.readFileSync(`${after}/package.json`))) fail("Backend-only release requires unchanged complete package.json");
 }
 function assertPackages(before, after) {
   const clean = value => { const result = { ...value }; delete result.version; delete result.scripts; return result; };
@@ -89,25 +109,34 @@ function assertStartup(rows, source, env = {}) {
   const output = new vm.Script(script).runInNewContext({ rows: JSON.parse(JSON.stringify(docs)), now: () => fail("Startup would add timestamp"), createId: () => fail("Startup would add identifier"), PROJECT_IMAGE_PUBLIC_BASE: env.PROJECT_IMAGE_PUBLIC_BASE || "https://proj2.likeduoduiyi.cn/silver-project-images" }, { timeout: 1000 });
   if (stable(output) !== stable(docs)) fail("Startup would normalize existing project data; release refused");
 }
-function plan(before, after, target, base, ci, archiveHash) {
-  sha(target); sha(base);
+function plan(before, after, target, base, ci, archiveHash, scope = "full", baseArchiveHash) {
+  sha(target); sha(base); releaseScope(scope);
+  if (scope === "backend-only") assertBackendOnly(before, after);
   assertPackages(JSON.parse(fs.readFileSync(`${before}/package.json`)), JSON.parse(fs.readFileSync(`${after}/package.json`)));
   if (hash(fs.readFileSync(`${before}/package-lock.json`)) !== hash(fs.readFileSync(`${after}/package-lock.json`))) fail("package-lock changes forbidden");
   if (functionText(fs.readFileSync(`${before}/server.js`, "utf8"), "initDb") !== functionText(fs.readFileSync(`${after}/server.js`, "utf8"), "initDb")) fail("Startup/schema changes require a separate reviewed release");
-  const oldFiles = codeFiles(before), files = codeFiles(after);
+  const oldFiles = codeFiles(before, scope), files = codeFiles(after, scope);
   if (oldFiles.some(file => !files.includes(file))) fail("Runtime file deletion forbidden");
-  return { version: 1, target, base, ci, archiveHash, executorHash: hash(fs.readFileSync(`${after}/${EXECUTOR}`)), lockHash: hash(fs.readFileSync(`${after}/package-lock.json`)), files: files.map(file => ({ file, before: oldFiles.includes(file) ? hash(fs.readFileSync(`${before}/${file}`)) : null, after: hash(fs.readFileSync(`${after}/${file}`)) })) };
+  return { version: 1, scope, ...(scope === "backend-only" ? { baseArchiveHash } : {}), target, base, ci, archiveHash, executorHash: hash(fs.readFileSync(`${after}/${EXECUTOR}`)), lockHash: hash(fs.readFileSync(`${after}/package-lock.json`)), files: files.map(file => ({ file, before: oldFiles.includes(file) ? hash(fs.readFileSync(`${before}/${file}`)) : null, after: hash(fs.readFileSync(`${after}/${file}`)) })) };
 }
 function validatePlan(value) {
   if (!value || value.version !== 1) fail("Invalid release plan"); sha(value.target); sha(value.base);
+  releaseScope(value.scope);
   if (value.ci?.head_sha !== value.target || value.ci?.conclusion !== "success") fail("CI evidence mismatch");
   for (const field of ["archiveHash", "executorHash", "lockHash"]) if (!/^[a-f0-9]{64}$/.test(value[field] || "")) fail("Invalid artifact hash");
+  if (value.scope === "backend-only" && !/^[a-f0-9]{64}$/.test(value.baseArchiveHash || "")) fail("Invalid base archive hash");
   if (!Array.isArray(value.files) || !value.files.length || !value.files.some(f => f.file === "server.js") || !value.files.some(f => f.file === "package.json")) fail("Incomplete release plan");
   const seen = new Set();
   for (const item of value.files) {
-    if (typeof item.file !== "string" || !allowed(item.file) || seen.has(item.file) || !/^[a-f0-9]{64}$/.test(item.after || "") || item.before !== null && !/^[a-f0-9]{64}$/.test(item.before || "")) fail("Unsafe release file"); seen.add(item.file);
+    if (typeof item.file !== "string" || !inScope(item.file, value.scope) || seen.has(item.file) || !/^[a-f0-9]{64}$/.test(item.after || "") || item.before !== null && !/^[a-f0-9]{64}$/.test(item.before || "")) fail("Unsafe release file"); seen.add(item.file);
   }
+  if (value.scope === "backend-only" && value.files.find(item => item.file === "package.json").before !== value.files.find(item => item.file === "package.json").after) fail("Backend-only package hash mismatch");
   return value;
+}
+function assertManifestFiles(manifest, source) {
+  validatePlan(manifest);
+  if (stable(manifest.files.map(item => item.file).sort()) !== stable(codeFiles(source, manifest.scope))) fail("Incomplete release scope file set");
+  for (const item of manifest.files) assertCodeHash(item.file, hash(fs.readFileSync(`${source}/${item.file}`)), item.after, "GitHub scope hash mismatch");
 }
 function runtime() {
   const matches = json("pm2", ["jlist"]).filter(p => p.name === "silver");
@@ -187,9 +216,17 @@ async function remote(stage, apply = false) {
   if (hash(fs.readFileSync(`${stage}/target.tar.gz`)) !== manifest.archiveHash || hash(fs.readFileSync(__filename)) !== manifest.executorHash) fail("GitHub archive/executor mismatch");
   const source = `${stage}/source`;
   if (path.resolve(__filename) !== `${source}/${EXECUTOR}`) fail("Execute only GitHub archive release tool");
+  assertManifestFiles(manifest, source);
+  if (manifest.scope === "backend-only") {
+    if (hash(fs.readFileSync(`${stage}/base.tar.gz`)) !== manifest.baseArchiveHash) fail("GitHub base archive mismatch");
+    const before = `${stage}/base-source`;
+    extract(`${stage}/base.tar.gz`, before);
+    const expected = plan(before, source, manifest.target, manifest.base, manifest.ci, manifest.archiveHash, manifest.scope, manifest.baseArchiveHash);
+    if (stable(expected) !== stable(manifest)) fail("Backend-only plan differs from GitHub sources");
+  }
   if (fs.existsSync(`${ROOT}/.git`) || fs.realpathSync(ROOT) !== ROOT) fail("Unexpected runtime root");
   for (const item of manifest.files) {
-    if (item.file === "package.json" && fileHash(`${ROOT}/${item.file}`) !== item.before) {
+    if (manifest.scope === "full" && item.file === "package.json" && fileHash(`${ROOT}/${item.file}`) !== item.before) {
       assertPackages(JSON.parse(fs.readFileSync(`${ROOT}/package.json`)), JSON.parse(fs.readFileSync(`${source}/package.json`)));
       item.before = fileHash(`${ROOT}/${item.file}`); // Bind known version/test-script drift for exact rollback.
     }
@@ -256,15 +293,15 @@ async function local(args) {
       fs.writeFileSync(`${directory}/${name}.tar.gz`, run("gh", ["api", `repos/${REPO}/tarball/${commit}`]), { mode: 0o600 }); extract(`${directory}/${name}.tar.gz`, `${directory}/${name}`);
     }
     if (hash(fs.readFileSync(__filename)) !== hash(fs.readFileSync(`${directory}/target/${EXECUTOR}`))) fail("Local executor differs from reviewed GitHub SHA");
-    const manifest = plan(`${directory}/base`, `${directory}/target`, target, o.base, ci, hash(fs.readFileSync(`${directory}/target.tar.gz`))); validatePlan(manifest);
+    const manifest = plan(`${directory}/base`, `${directory}/target`, target, o.base, ci, hash(fs.readFileSync(`${directory}/target.tar.gz`)), o.scope, hash(fs.readFileSync(`${directory}/base.tar.gz`))); validatePlan(manifest);
     fs.writeFileSync(`${directory}/plan.json`, JSON.stringify(manifest), { mode: 0o600 });
-    console.log(JSON.stringify({ dryRun: !o.apply, target, base: o.base, ci, files: manifest.files, note: "No private keys or environment files uploaded; business database is never restored" }));
+    console.log(JSON.stringify({ dryRun: !o.apply, scope: manifest.scope, target, base: o.base, ci, files: manifest.files, note: "No private keys or environment files uploaded; business database is never restored" }));
     // Recheck GitHub immediately before dispatch; do not publish superseded main.
     if (json("gh", ["api", `repos/${REPO}/commits/main`]).sha !== target) fail("GitHub main moved during preparation");
     validateCi(json("gh", ["api", `repos/${REPO}/actions/runs?head_sha=${target}&event=push&per_page=100`]), target);
     const stage = `/var/tmp/silver-release-${target}-${Date.now()}`, connection = identityOptions(), ssh = [...connection, HOST];
     run("ssh", [...ssh, `umask 077; mkdir -m 700 ${stage}`]);
-    run("scp", ["-q", ...connection, `${directory}/target.tar.gz`, `${directory}/plan.json`, `${HOST}:${stage}/`]);
+    run("scp", ["-q", ...connection, `${directory}/target.tar.gz`, ...(o.scope === "backend-only" ? [`${directory}/base.tar.gz`] : []), `${directory}/plan.json`, `${HOST}:${stage}/`]);
     // Only the executor from the exact GitHub tarball is run remotely.
     try {
       run("ssh", [...ssh, `umask 077; mkdir -m 700 ${stage}/source && tar -xzf ${stage}/target.tar.gz --strip-components=1 -C ${stage}/source && node ${stage}/source/${EXECUTOR} --remote ${stage}${o.apply ? " --apply" : ""}`], { timeout: 10 * 60 * 1000, stdio: ["ignore", "inherit", "pipe"] });
@@ -279,5 +316,5 @@ async function local(args) {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 async function main(args) { if (args[0] === "--remote" && (args.length === 2 || args.length === 3 && args[2] === "--apply")) return remote(args[1], args[2] === "--apply"); return local(args); }
-module.exports = { sha, options, identityOptions, assertCodeHash, allowed, validateCi, archiveNames, assertPackages, functionText, assertStartup, plan, validatePlan, stable, hash, sameData, atomicCopy, idle, assertPhotoIdle };
+module.exports = { sha, options, identityOptions, assertCodeHash, allowed, validateCi, archiveNames, assertPackages, functionText, assertStartup, plan, validatePlan, assertManifestFiles, stable, hash, sameData, atomicCopy, idle, assertPhotoIdle };
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(JSON.stringify({ ok: false, error: error instanceof ReleaseError ? error.message : "Release command failed; raw output withheld to protect credentials" })); process.exitCode = 1; });

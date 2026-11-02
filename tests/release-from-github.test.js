@@ -77,6 +77,47 @@ test("远端清单拒绝篡改CI、非法路径、重复文件及不完整哈希
     const value = clone(original); edit(value); assert.throws(() => release.validatePlan(value));
   }
 });
+test("backend-only显式选择后端完整清单且默认仍包含public", t => {
+  const f = fixture(t);
+  fs.writeFileSync(`${f.after}/server/new-module.js`, "void 1;\n");
+  assert.equal(release.options([`--base=${base}`, "--backend-only"]).scope, "backend-only");
+  assert.throws(() => release.options([`--base=${base}`, "--backend-only", "--backend-only"]));
+  const p = release.plan(f.before, f.after, target, base, ci, digest, "backend-only", digest);
+  assert.equal(p.scope, "backend-only");
+  assert.deepEqual(p.files.map(item => item.file), ["package.json", "server.js", "server/helper.js", "server/new-module.js"]);
+  assert.equal(release.validatePlan(p), p);
+  assert.equal(release.assertManifestFiles(p, f.after), undefined);
+  assert.equal(release.plan(f.before, f.after, target, base, ci, digest).files.some(item => item.file === "public/app.js"), true);
+});
+test("backend-only不能夹带public增删改或package完整字节变化", t => {
+  for (const change of [
+    f => fs.writeFileSync(`${f.after}/public/app.js`, "changed"),
+    f => fs.writeFileSync(`${f.after}/public/admin.html`, "new"),
+    f => fs.unlinkSync(`${f.after}/public/app.js`),
+    f => { fs.mkdirSync(`${f.after}/public/assets`); fs.writeFileSync(`${f.after}/public/assets/new.jpg`, "new image"); },
+    f => fs.appendFileSync(`${f.after}/package.json`, "\n"),
+    f => fs.writeFileSync(`${f.after}/package.json`, JSON.stringify({ name: "test", version: "1.0.1", dependencies: { x: "1" } }))
+  ]) {
+    const f = fixture(t); change(f);
+    assert.throws(() => release.plan(f.before, f.after, target, base, ci, digest, "backend-only", digest));
+  }
+});
+test("远端拒绝未知scope、backend夹带public及任何遗漏后端模块", t => {
+  const f = fixture(t), p = release.plan(f.before, f.after, target, base, ci, digest, "backend-only", digest);
+  for (const edit of [
+    value => value.scope = "unsafe",
+    value => value.files.push({ file: "public/app.js", before: digest, after: digest }),
+    value => value.baseArchiveHash = "invalid"
+  ]) { const value = clone(p); edit(value); assert.throws(() => release.validatePlan(value)); }
+  const missing = clone(p); missing.files = missing.files.filter(item => item.file !== "server/helper.js");
+  assert.throws(() => release.assertManifestFiles(missing, f.after), /complete|Incomplete/i);
+  const wrong = clone(p); wrong.files[0].after = "d".repeat(64);
+  assert.throws(() => release.assertManifestFiles(wrong, f.after), /hash|mismatch/i);
+  const packageDrift = clone(p); packageDrift.files.find(item => item.file === "package.json").before = "d".repeat(64);
+  assert.throws(() => release.validatePlan(packageDrift), /package hash mismatch/);
+  fs.writeFileSync(`${f.after}/server/late-module.js`, "void 2;");
+  assert.throws(() => release.assertManifestFiles(p, f.after), /complete|Incomplete/i);
+});
 test("启动前用实际server规范化函数确认完整相册不会被改写", () => {
   const source = fs.readFileSync(path.join(__dirname, "../server.js"), "utf8");
   const doc = { id: "project_test", title: "培训", activityId: "", ownerId: "user_a", ownerName: "甲", city: "北京", dateLabel: "", description: "", cover: "", media: [{ type: "video", url: "https://example.com/a.mp4", title: "", caption: "", createdAt: "2026-10-11" }], status: "published", shareEnabled: true, sourceCaseId: "", createdAt: "2026-10-11", updatedAt: "2026-10-11" };
