@@ -2115,6 +2115,10 @@ function reviewIsPending(item) {
   return item.status === "pending" && (item.kind !== "association" || item.permissions?.accountStatus === "active");
 }
 
+function reviewCanReopen(item) {
+  return item.kind === "association" && item.status === "rejected" && item.permissions?.accountStatus === "active";
+}
+
 function reviewGroup(item) {
   if (reviewIsPending(item)) return "pending";
   return ["approved", "active"].includes(item.status) && !["disabled", "rejected"].includes(item.permissions?.accountStatus) ? "active" : "processed";
@@ -2136,7 +2140,7 @@ function accountReviewCardHtml(item) {
   return `<article class="account-review-card" data-review-kind="${esc(item.kind)}" data-review-id="${esc(item.id)}" ${isLegacyWechat ? `data-wx-id="${esc(item.id)}"` : ""}>
     <div class="account-review-summary"><div><strong>${esc(item.name || "未留姓名")}</strong> <span class="account-review-source">${esc({ association: "微信自助开通", wechat: "历史微信申请", platform: "平台申请" }[item.kind] || item.kind)}</span>
       <p>联系方式：${esc(item.contact || "未留")} · 俱乐部／社群：${esc(item.organization || "未填")}</p><p>申请时间：${esc(item.submittedAt || "未记录")} · ${esc(reviewStatusLabel(item))}</p></div>
-      ${pending ? `<button class="btn small" data-review-action="approve" ${isLegacyWechat ? "data-wx-approve disabled" : ""} ${state.accountReviewBusy ? "disabled" : ""}>${association ? "确认关联并开放资料" : "核实并通过"}</button>` : ""}
+      ${pending ? `<button class="btn small" data-review-action="approve" ${isLegacyWechat ? "data-wx-approve disabled" : ""} ${state.accountReviewBusy ? "disabled" : ""}>${association ? "确认关联并开放资料" : "核实并通过"}</button>` : reviewCanReopen(item) ? `<button class="btn secondary small" data-review-action="reopen" ${state.accountReviewBusy ? "disabled" : ""}>重新开放关联审核</button>` : ""}
     </div>
     ${pending && association ? `<div class="account-review-fields"><label class="field"><span>俱乐部／社群</span><input class="input" data-review-organization maxlength="120" value="${esc(item.organization)}"></label><label class="field"><span>负责人</span><select class="select" data-review-manager><option value="">请选择负责人</option>${state.reviewManagers.map(manager => `<option value="${esc(manager.id)}" ${manager.id === managerId ? "selected" : ""}>${esc(manager.name || manager.id)} · ${esc(roleLabel(manager.role))}</option>`).join("")}</select></label></div>` : ""}
     <details class="account-review-details"><summary>查看详情${pending && !association ? "并核实权限" : ""}</summary>
@@ -2175,13 +2179,16 @@ function accountReviewViewCurrent(request) {
     && state.accountReviewView === request.reviewView && document.querySelector("#content") === request.content;
 }
 
-function finishAccountReviewRequest(request) {
+function finishAccountReviewRequest(request, nextReviewView = null) {
   if (state.accountReviewRequest !== request) return;
   const sameSession = accountReviewSessionCurrent(request);
   const repaint = accountReviewViewCurrent(request);
   state.accountReviewRequest = null;
   state.accountReviewBusy = false;
-  if (repaint) renderUsers();
+  if (repaint) {
+    if (nextReviewView) state.accountReviewView = nextReviewView;
+    renderUsers();
+  }
   else if (sameSession && state.activeTab === "users" && state.usersView === "reviews") {
     // A reopened review view may contain fresh edits: leave it intact, allow explicit reload.
     const refresh = document.querySelector("[data-review-refresh]");
@@ -2200,17 +2207,19 @@ async function refreshAccountReviews(request) {
   state.reviewManagers = result.managers || [];
   state.users = users.users || [];
   state.accountReviewsReady = true;
+  updateAccountReviewBadge();
 }
 
 async function submitAccountReview(btn, renderedItem) {
   if ((state.accountReviewBusy && accountReviewSessionCurrent(state.accountReviewRequest)) || !state.accountReviewsReady) return;
   const card = btn.closest("[data-review-kind]");
   const item = state.accountReviews.find(row => row.kind === card.dataset.reviewKind && row.id === card.dataset.reviewId);
-  if (!item || item !== renderedItem || !reviewIsPending(item)) return;
   const action = btn.dataset.reviewAction;
+  if (!item || item !== renderedItem || (action === "reopen" ? !reviewCanReopen(item)
+    : !["approve", "reject"].includes(action) || !reviewIsPending(item))) return;
   const body = { action, version: item.version };
   const field = name => card.querySelector(`[data-review-${name}]`);
-  body.note = field("note").value.trim();
+  body.note = action === "reopen" ? item.note || "" : field("note").value.trim();
   if (action === "approve" && item.kind === "association") {
     body.organization = field("organization").value.trim();
     body.managerId = field("manager").value;
@@ -2232,7 +2241,9 @@ async function submitAccountReview(btn, renderedItem) {
       role: card.querySelector("[data-wx-role]").value, canDownload: card.querySelector("[data-wx-download]").checked
     } : {});
   }
-  const message = action === "reject"
+  const message = action === "reopen"
+    ? `确认重新开放 ${item.name} 的总部关联审核？仅恢复待关联审核，不开放资料下载；仍需重新核实并单独批准。普通账户、相册和微信身份状态保持。`
+    : action === "reject"
     ? item.kind === "association" ? "确认拒绝总部关联？受限资料下载不开放，本人相册及普通账户仍可用。" : "确认拒绝该申请？审核记录会保留。"
     : item.kind === "association" ? `确认关联 ${item.name} 至“${body.organization}”，并开放受限资料下载？当前角色和相册归属保持。`
       : item.kind === "wechat" ? "确认已人工核实微信身份及所选原账号？绑定已启用账号将保留原权限，新建／待审账号按所选权限开通。" : "确认已逐人核实资料及所选权限，并开通该账号？";
@@ -2240,12 +2251,17 @@ async function submitAccountReview(btn, renderedItem) {
   const request = beginAccountReviewRequest();
   btn.disabled = true;
   let submitted = false;
+  let nextReviewView = null;
   try {
     await api(`/api/admin/account-reviews/${encodeURIComponent(item.kind)}/${encodeURIComponent(item.id)}/decision`, { method: "POST", body });
     submitted = true;
     if (!accountReviewSessionCurrent(request)) return;
     await refreshAccountReviews(request);
-    if (accountReviewViewCurrent(request)) flash(action === "reject" ? item.kind === "association" ? "已拒绝关联；普通账户和本人相册仍可用" : "已拒绝并保留审核记录" : "审核已通过，列表已刷新");
+    if (accountReviewViewCurrent(request)) {
+      if (action === "reopen") nextReviewView = "pending";
+      flash(action === "reopen" ? "已重新开放关联审核；资料下载尚未开放，请核实后另行批准"
+        : action === "reject" ? item.kind === "association" ? "已拒绝关联；普通账户和本人相册仍可用" : "已拒绝并保留审核记录" : "审核已通过，列表已刷新");
+    }
   } catch (err) {
     // A POST error can also be a response lost after commit. Re-read, never retry it automatically.
     if (!accountReviewSessionCurrent(request)) return;
@@ -2253,7 +2269,7 @@ async function submitAccountReview(btn, renderedItem) {
     if (!submitted) { try { await refreshAccountReviews(request); } catch (error) { refreshError = error; } }
     if (accountReviewViewCurrent(request)) flash(submitted ? `审核已提交，列表刷新失败：${err.message}。请刷新核对，勿重复提交。`
       : `${err.message}${refreshError ? `；刷新失败：${refreshError.message}，请刷新核对后再处理。` : "；列表已刷新，请核对当前状态。"}`, "error");
-  } finally { finishAccountReviewRequest(request); }
+  } finally { finishAccountReviewRequest(request, nextReviewView); }
 }
 
 function albumReadFieldsHtml(user = {}) {
@@ -2297,13 +2313,17 @@ function syncAlbumReadFields(container) {
   list.hidden = admin || scope.value !== "own-and-selected";
 }
 
-function renderUsers() {
+function updateAccountReviewBadge() {
   const badge = document.querySelector("[data-account-review-count]");
   if (badge) {
     const count = state.accountReviews.filter(reviewIsPending).length;
     badge.textContent = String(count);
     badge.hidden = !count;
   }
+}
+
+function renderUsers() {
+  updateAccountReviewBadge();
   const content = document.querySelector("#content");
   content.innerHTML = `
     <div class="topbar"><div><h1>账号管理</h1><p>集中处理总部关联和历史申请，逐人核实资料。</p></div></div>
