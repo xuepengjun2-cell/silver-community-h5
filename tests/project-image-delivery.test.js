@@ -272,26 +272,8 @@ test('GIF image requires a global or local color table',async()=>{
 });
 
 // Synthetic MPF container made solely from repository-owned, nonpersonal JPEGs.
-function mpfFixture(little = true, gapSize = 291) {
-  const primary = fs.readFileSync(path.join(__dirname, 'fixtures/project-baseline.jpg'));
-  const secondary = fs.readFileSync(path.join(__dirname, 'fixtures/project-progressive.jpg'));
-  const tiff = Buffer.alloc(82);
-  const u16 = (v, p) => little ? tiff.writeUInt16LE(v, p) : tiff.writeUInt16BE(v, p);
-  const u32 = (v, p) => little ? tiff.writeUInt32LE(v, p) : tiff.writeUInt32BE(v, p);
-  tiff.write(little ? 'II' : 'MM');u16(42, 2);u32(8, 4);u16(3, 8);
-  u16(0xb000, 10);u16(7, 12);u32(4, 14);tiff.write('0100', 18);
-  u16(0xb001, 22);u16(4, 24);u32(1, 26);u32(2, 30);
-  u16(0xb002, 34);u16(7, 36);u32(32, 38);u32(50, 42);
-  const segment = Buffer.alloc(90);segment.set([255, 226, 0, 88]);segment.write('MPF\0', 4);
-  const primaryEnd = primary.length + segment.length, secondaryStart = primaryEnd + gapSize;
-  u32(0x20030000, 50);u32(primaryEnd, 54);u32(0, 58);
-  u32(0, 66);u32(secondary.length, 70);u32(secondaryStart - 10, 74);
-  tiff.copy(segment, 8);
-  const bytes = Buffer.concat([primary.subarray(0, 2), segment, primary.subarray(2), Buffer.alloc(gapSize, 0x5a), secondary]);
-  const set16=(b,v,p)=>little?b.writeUInt16LE(v,10+p):b.writeUInt16BE(v,10+p);
-  const set32=(b,v,p)=>little?b.writeUInt32LE(v,10+p):b.writeUInt32BE(v,10+p);
-  return {bytes, primaryEnd, secondaryStart, set16, set32};
-}
+const {mpfFixture, cameraMpfFixture} = require('./support/mpf-fixture');
+
 for (const little of [true, false]) test(`MPF ${little?'little':'big'} endian preserves two indexed JPEGs and declared gap byte-for-byte`, async t => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mpf-valid-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'image.jpeg');
   for(const gap of [0,291]) {
@@ -330,5 +312,60 @@ for(const little of [true,false])for(const [name,positions] of [['identifier',[6
   for(const position of positions){
     const {bytes}=mpfFixture(little);bytes[position]|=0x80;fs.writeFileSync(file,bytes);
     await assert.rejects(validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length}),undefined,`${little?'LE':'BE'} ${name} byte${position}`);
+  }
+});
+
+// Synthetic DJI-style block padding, not customer content. Opaque suffix bytes
+// are intentionally not assumed to be zero or part of the JPEG bitstream.
+
+test('camera MPF block padding is accepted without rewriting either picture or original bytes', async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'camera-mpf-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'photo.jpeg'), {bytes}=cameraMpfFixture();
+  fs.writeFileSync(file,bytes);
+  const result=await validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length});
+  assert.equal(result.fingerprint,crypto.createHash('sha256').update(bytes).digest('hex'));
+  assert.deepEqual(fs.readFileSync(file),bytes);
+});
+test('camera hint never bypasses index, padding, size, dimension or actual entropy validation', async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'camera-invalid-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'photo.jpeg');
+  const mutations=[
+    ['different camera',b=>{b[30]=0;}],
+    ['nonzero padding',(b,f)=>{b[f.primaryEnd]=1;}],
+    ['primary range too small',(b,f)=>b.writeUInt32LE(f.primaryEnd-1,f.tiff+54)],
+    ['overlap',(b,f)=>b.writeUInt32LE(1,f.tiff+74)],
+    ['secondary truncated',(b,f)=>{b[f.secondaryEnd-1]=0;}],
+    ['primary entropy table',(b,f)=>{const p=b.indexOf(Buffer.from([255,196]));assert.ok(p<f.primaryEnd);b[p+5]=255;}],
+    ['secondary entropy table',(b,f)=>{const p=b.indexOf(Buffer.from([255,196]),f.secondaryStart);assert.ok(p>f.secondaryStart);b[p+5]=255;}],
+    ['dimension bound',b=>{const p=b.indexOf(Buffer.from([255,192]));assert.ok(p>0);b.writeUInt16BE(65535,p+5);}],
+  ];
+  for(const [name,mutate] of mutations){
+    const f=cameraMpfFixture();mutate(f.bytes,f);fs.writeFileSync(file,f.bytes);
+    await assert.rejects(validateProjectImage(file,{ext:'jpeg',expectedSize:f.bytes.length}),undefined,name);
+  }
+  const f=cameraMpfFixture();
+  for(const bytes of [f.bytes.subarray(0,-1),Buffer.concat([f.bytes,Buffer.alloc(4096)])]){
+    fs.writeFileSync(file,bytes);await assert.rejects(validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length}));
+  }
+});
+test('camera decoder timeout, cancellation and source replacement fail closed', async t => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'camera-control-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'photo.jpeg'), {bytes}=cameraMpfFixture();
+  const Module=require('node:module'), vm=require('node:vm');
+  const moduleFile=path.join(__dirname,'../server/project-image-delivery.js');
+  const realRequire=Module.createRequire(moduleFile);
+  for(const mode of ['timeout','cancel','replace']){
+    fs.writeFileSync(file,bytes);const controller=new AbortController(),module={exports:{}};
+    let calls=0;
+    const run=async(command,args,timeout,{signal})=>{
+      calls++;assert.equal(command,'ffmpeg');assert.equal(timeout,20000);assert.ok(args.includes('-xerror'));assert.ok(args.includes('-err_detect'));assert.equal(signal,controller.signal);
+      if(mode==='timeout')throw Object.assign(Error('bounded decode timeout'),{code:'VIDEO_TASK_TIMEOUT'});
+      if(mode==='cancel'){controller.abort();signal.throwIfAborted();}
+      if(calls===1){fs.renameSync(file,file+'.old');fs.writeFileSync(file,bytes);}
+    };
+    vm.runInNewContext('(function(require,module,exports,Buffer,process){'+fs.readFileSync(moduleFile,'utf8')+'\n})')(
+      id=>id==='./miniapp-media'?{run}:realRequire(id),module,module.exports,Buffer,process);
+    await assert.rejects(module.exports.validateProjectImage(file,{ext:'jpeg',expectedSize:bytes.length,signal:controller.signal}),undefined,mode);
+    assert.ok(calls>0);assert.deepEqual(fs.readFileSync(file),bytes);
   }
 });
