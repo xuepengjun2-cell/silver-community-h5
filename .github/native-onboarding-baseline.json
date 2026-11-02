@@ -1,0 +1,285 @@
+{
+  "base": "a74286340b14720e411adba7837b325e9a4d4eea",
+  "files": [
+    {
+      "path": "miniapp/README.md",
+      "sourceSha256": "3979c5574514cf4610f408d8318038035b672100698aa49e07f87a98eb4ae6a6",
+      "preservedSha256": "3979c5574514cf4610f408d8318038035b672100698aa49e07f87a98eb4ae6a6"
+    },
+    {
+      "path": "miniapp/app.js",
+      "sourceSha256": "0978a9fefdd3d15145543f540344982cdcf343d9fd280467700f5c347067155c",
+      "preservedSha256": "0978a9fefdd3d15145543f540344982cdcf343d9fd280467700f5c347067155c"
+    },
+    {
+      "path": "miniapp/app.json",
+      "sourceSha256": "91893da996c342fec35e37aa8dbbf53506b95e42068da5bec466413d71f28451",
+      "preservedSha256": "91893da996c342fec35e37aa8dbbf53506b95e42068da5bec466413d71f28451"
+    },
+    {
+      "path": "miniapp/app.wxss",
+      "sourceSha256": "b66df2464164aea91d672b3e7638371ec211b3401027c66ea0fb8a330921f6e5",
+      "preservedSha256": "b66df2464164aea91d672b3e7638371ec211b3401027c66ea0fb8a330921f6e5"
+    },
+    {
+      "path": "miniapp/config.js",
+      "sourceSha256": "71eadbfbed70b33e2d82ccfa913ff6d5720f15c631ed4595e55b3a6e62b6478b",
+      "preservedSha256": "4cfcbf2c1424d7ba4854616c9a49e13028cfdea8d75ece981ba4ab4cd30b9b8e"
+    },
+    {
+      "path": "miniapp/pages/album/index.js",
+      "sourceSha256": "f1fc10529ea7627c657f17eb8d7b579c53d8753cf3bd54f3bf5276f3236bb6e4",
+      "preservedSha256": "f1fc10529ea7627c657f17eb8d7b579c53d8753cf3bd54f3bf5276f3236bb6e4"
+    },
+    {
+      "path": "miniapp/pages/album/index.json",
+      "sourceSha256": "3fa2e2eb2206b143c160aba9de5b2f647398616baf57777f2731276a3ba0b751",
+      "preservedSha256": "3fa2e2eb2206b143c160aba9de5b2f647398616baf57777f2731276a3ba0b751"
+    },
+    {
+      "path": "miniapp/pages/album/index.wxml",
+      "sourceSha256": "0563ea9c031ab98d0d4b693f3a0dd97d9201b2fad6166a1a6ee0f97ae7a38974",
+      "preservedSha256": "0563ea9c031ab98d0d4b693f3a0dd97d9201b2fad6166a1a6ee0f97ae7a38974"
+    },
+    {
+      "path": "miniapp/pages/album/index.wxss",
+      "sourceSha256": "db037ff760fefc16186f8108b9cb25ab1e688b1eaf61344e2e34f1e30a28b2b9",
+      "preservedSha256": "db037ff760fefc16186f8108b9cb25ab1e688b1eaf61344e2e34f1e30a28b2b9"
+    },
+    {
+      "path": "miniapp/pages/catalog/index.js",
+      "sourceSha256": "f6fe97ddfb4784e238f5d1542cde5c22949fe75eef95706fd9fa0dedde8ac5ab",
+      "preservedSha256": "f6fe97ddfb4784e238f5d1542cde5c22949fe75eef95706fd9fa0dedde8ac5ab"
+    },
+    {
+      "path": "miniapp/pages/catalog/index.json",
+      "sourceSha256": "42a1a3bf4a4ae9f6f9e6e22182aaaeefeeec899b668d1b81e30eaf3ad958e01c",
+      "preservedSha256": "42a1a3bf4a4ae9f6f9e6e22182aaaeefeeec899b668d1b81e30eaf3ad958e01c"
+    },
+    {
+      "path": "miniapp/pages/catalog/index.wxml",
+      "sourceSha256": "30370fbcdad9743e5059b602e5f31bb329d3bac2bb99ce2b84a0a0aee35c7bf0",
+      "preservedSha256": "30370fbcdad9743e5059b602e5f31bb329d3bac2bb99ce2b84a0a0aee35c7bf0"
+    },
+    {
+      "path": "miniapp/pages/catalog/index.wxss",
+      "sourceSha256": "74aa3700ac3a49a3c3e34773927c5d6d2800f473a9817ca390ba9af491322839",
+      "preservedSha256": "74aa3700ac3a49a3c3e34773927c5d6d2800f473a9817ca390ba9af491322839"
+    },
+    {
+      "path": "miniapp/pages/entry/index.js",
+      "sourceSha256": "3ea5a56869c43f5d66644356c37d41c271840ad53ba3155dedad9ec694924b55",
+      "preservedSha256": "3ea5a56869c43f5d66644356c37d41c271840ad53ba3155dedad9ec694924b55"
+    },
+    {
+      "path": "miniapp/pages/entry/index.json",
+      "sourceSha256": "b4ccf0edf3c0e9476070c213f32da5a6e34690d6abd5106de935afb0885db853",
+      "preservedSha256": "b4ccf0edf3c0e9476070c213f32da5a6e34690d6abd5106de935afb0885db853"
+    },
+    {
+      "path": "miniapp/pages/entry/index.wxml",
+      "sourceSha256": "7079e4c35bdf4bcccc896610a59386908e6b80a7f7bf98342c1e4e659a538894",
+      "preservedSha256": "7079e4c35bdf4bcccc896610a59386908e6b80a7f7bf98342c1e4e659a538894"
+    },
+    {
+      "path": "miniapp/pages/entry/index.wxss",
+      "sourceSha256": "f47878ba85851b1e59244fbe21287961f1f7d5a8d0402d6e59825252d404ccb7",
+      "preservedSha256": "f47878ba85851b1e59244fbe21287961f1f7d5a8d0402d6e59825252d404ccb7"
+    },
+    {
+      "path": "miniapp/pages/login/index.js",
+      "sourceSha256": "50f3f196a33717bc8e167fa0e8805d9f9f759dc5b7a0e8ce86023bb1a2516aef",
+      "preservedSha256": "50f3f196a33717bc8e167fa0e8805d9f9f759dc5b7a0e8ce86023bb1a2516aef"
+    },
+    {
+      "path": "miniapp/pages/login/index.json",
+      "sourceSha256": "8a4e845fa0e0b511824799cf8a918c6bc4111fc4243725aad34719d2e1004cff",
+      "preservedSha256": "8a4e845fa0e0b511824799cf8a918c6bc4111fc4243725aad34719d2e1004cff"
+    },
+    {
+      "path": "miniapp/pages/login/index.wxml",
+      "sourceSha256": "890a78ccbe8021cafb0b9605672aa0722314c3f4efae46fd1aa2330ae613efe2",
+      "preservedSha256": "890a78ccbe8021cafb0b9605672aa0722314c3f4efae46fd1aa2330ae613efe2"
+    },
+    {
+      "path": "miniapp/pages/login/index.wxss",
+      "sourceSha256": "840384311c9a94e3851f4564ea090e4854a3083cbfcf4aa792fb27c3007953d1",
+      "preservedSha256": "840384311c9a94e3851f4564ea090e4854a3083cbfcf4aa792fb27c3007953d1"
+    },
+    {
+      "path": "miniapp/pages/manage/index.js",
+      "sourceSha256": "c62bcc441b5384e72c6ebd3261682d8b5c5089ee6c1e05f2145e852f55f5131a",
+      "preservedSha256": "c62bcc441b5384e72c6ebd3261682d8b5c5089ee6c1e05f2145e852f55f5131a"
+    },
+    {
+      "path": "miniapp/pages/manage/index.json",
+      "sourceSha256": "36665a34e05bd9ffceac9cc4c11143ec65d2cb3c64ef0c2ccb1b53dcd0460797",
+      "preservedSha256": "36665a34e05bd9ffceac9cc4c11143ec65d2cb3c64ef0c2ccb1b53dcd0460797"
+    },
+    {
+      "path": "miniapp/pages/manage/index.wxml",
+      "sourceSha256": "3d382dcd493575bbdfd1e7497177219a00a476e7686d99978df69683b334c20e",
+      "preservedSha256": "3d382dcd493575bbdfd1e7497177219a00a476e7686d99978df69683b334c20e"
+    },
+    {
+      "path": "miniapp/pages/manage/index.wxss",
+      "sourceSha256": "1203a76e0abe87ca3c0eb490c06660ab8d64700275380f54370e46fbaf445755",
+      "preservedSha256": "1203a76e0abe87ca3c0eb490c06660ab8d64700275380f54370e46fbaf445755"
+    },
+    {
+      "path": "miniapp/pages/media/index.js",
+      "sourceSha256": "d8c754cdc5c5dc5616acc420933fb85ad457fc474ff99aec914f5e26d7237b1d",
+      "preservedSha256": "d8c754cdc5c5dc5616acc420933fb85ad457fc474ff99aec914f5e26d7237b1d"
+    },
+    {
+      "path": "miniapp/pages/media/index.json",
+      "sourceSha256": "2433d9507c42df5e68322fcb2fd91106850926ab9433d8cb7ae6122e7bdc2ce4",
+      "preservedSha256": "2433d9507c42df5e68322fcb2fd91106850926ab9433d8cb7ae6122e7bdc2ce4"
+    },
+    {
+      "path": "miniapp/pages/media/index.wxml",
+      "sourceSha256": "0fcbc76b046ec69490bfe305b0b14b4a80e52403fb7819e87a57b0b229c15abd",
+      "preservedSha256": "0fcbc76b046ec69490bfe305b0b14b4a80e52403fb7819e87a57b0b229c15abd"
+    },
+    {
+      "path": "miniapp/pages/media/index.wxss",
+      "sourceSha256": "dc87f3a0862af44d7723d0c5e748fa9462df29315c5a259df7e12388aab9197a",
+      "preservedSha256": "dc87f3a0862af44d7723d0c5e748fa9462df29315c5a259df7e12388aab9197a"
+    },
+    {
+      "path": "miniapp/pages/workbench/index.js",
+      "sourceSha256": "fbd067c1a92214e48443ce31c3a67b44da4c38ecffba2b3138e524aea2ffb845",
+      "preservedSha256": "fbd067c1a92214e48443ce31c3a67b44da4c38ecffba2b3138e524aea2ffb845"
+    },
+    {
+      "path": "miniapp/pages/workbench/index.json",
+      "sourceSha256": "9bc39bd3bf1fc823d1bfe17705a4a333a6e6e6a031be745ce508f4fb15b0cb69",
+      "preservedSha256": "9bc39bd3bf1fc823d1bfe17705a4a333a6e6e6a031be745ce508f4fb15b0cb69"
+    },
+    {
+      "path": "miniapp/pages/workbench/index.wxml",
+      "sourceSha256": "310fbe72e63520dac8f118d60ef46596f93458b12d99b29fe8ece3d13dc9e4af",
+      "preservedSha256": "310fbe72e63520dac8f118d60ef46596f93458b12d99b29fe8ece3d13dc9e4af"
+    },
+    {
+      "path": "miniapp/pages/workbench/index.wxss",
+      "sourceSha256": "7204b347d3135f0d3819776f0e7f97bf0db2d7a99bd79fc9828bd5fb88df1995",
+      "preservedSha256": "7204b347d3135f0d3819776f0e7f97bf0db2d7a99bd79fc9828bd5fb88df1995"
+    },
+    {
+      "path": "miniapp/project.config.json",
+      "sourceSha256": "0517c42146fd793d4f2e8f3444dc39a37c20f12ed59fd0cf3add4db89256ecc9",
+      "preservedSha256": "a1ceb7e3869dd166249ce42a58083a533db1acf7561a153767950d55b69163c3"
+    },
+    {
+      "path": "miniapp/sitemap.json",
+      "sourceSha256": "09d2ad53f11249a98855e761d2d152a9a14dde5525a44c558bed0dace14f90b3",
+      "preservedSha256": "09d2ad53f11249a98855e761d2d152a9a14dde5525a44c558bed0dace14f90b3"
+    },
+    {
+      "path": "miniapp/test/album.test.js",
+      "sourceSha256": "730f583fa8b4c1e0c5c1d443cdd998a1a5a4e4f40cb67055ad9fa6bd84437c48",
+      "preservedSha256": "730f583fa8b4c1e0c5c1d443cdd998a1a5a4e4f40cb67055ad9fa6bd84437c48"
+    },
+    {
+      "path": "miniapp/test/auth-upload.test.js",
+      "sourceSha256": "4930bfea7733296c4e6c039baaf3903230f833fc92cc272384770a2de82d681c",
+      "preservedSha256": "4930bfea7733296c4e6c039baaf3903230f833fc92cc272384770a2de82d681c"
+    },
+    {
+      "path": "miniapp/test/catalog-download.test.js",
+      "sourceSha256": "c03dea4260ee3e9e48f4436e63fb0582b303da292be34f288a1e37e89fbe0aa2",
+      "preservedSha256": "c03dea4260ee3e9e48f4436e63fb0582b303da292be34f288a1e37e89fbe0aa2"
+    },
+    {
+      "path": "miniapp/test/catalog.test.js",
+      "sourceSha256": "b6f04dcddbbb7217cf8eb0c81193d4366bce5b2df98ecba361eb7bf5fa2ea685",
+      "preservedSha256": "b6f04dcddbbb7217cf8eb0c81193d4366bce5b2df98ecba361eb7bf5fa2ea685"
+    },
+    {
+      "path": "miniapp/test/entry-workbench.test.js",
+      "sourceSha256": "afe1d8b3278f9a378b428c4d03fa2aa4fc5f06b89f80b34c8a665d78900a82cf",
+      "preservedSha256": "afe1d8b3278f9a378b428c4d03fa2aa4fc5f06b89f80b34c8a665d78900a82cf"
+    },
+    {
+      "path": "miniapp/test/manage-album-pages.test.js",
+      "sourceSha256": "d5f9bc8edfecb8c9d1a5acf0122a099433e9d55355feef086373ad63d23902de",
+      "preservedSha256": "d5f9bc8edfecb8c9d1a5acf0122a099433e9d55355feef086373ad63d23902de"
+    },
+    {
+      "path": "miniapp/test/public-entry.test.js",
+      "sourceSha256": "7422f9ee3b95ead1d431fd61f5daf6bca3274b39b493609ca81fbd5a6824a241",
+      "preservedSha256": "7422f9ee3b95ead1d431fd61f5daf6bca3274b39b493609ca81fbd5a6824a241"
+    },
+    {
+      "path": "miniapp/test/save.test.js",
+      "sourceSha256": "ff9e0a39cef4b2c7f1125907a4c27107e49d7384fdecc86b9355876d09ac5c32",
+      "preservedSha256": "ff9e0a39cef4b2c7f1125907a4c27107e49d7384fdecc86b9355876d09ac5c32"
+    },
+    {
+      "path": "miniapp/test/session-resume.test.js",
+      "sourceSha256": "f3507d8cb1a33bd358494f05ed99dab029c237d573343b935befabae33a77aa9",
+      "preservedSha256": "f3507d8cb1a33bd358494f05ed99dab029c237d573343b935befabae33a77aa9"
+    },
+    {
+      "path": "miniapp/test/wechat-auth.test.js",
+      "sourceSha256": "02364dd61c5c399106bde9df31780fb62591abe95c089e26e526531d66a9cd35",
+      "preservedSha256": "02364dd61c5c399106bde9df31780fb62591abe95c089e26e526531d66a9cd35"
+    },
+    {
+      "path": "miniapp/utils/album.js",
+      "sourceSha256": "c2594cd52fb38b8f05913798098c65378cd0c4594d71fbde6c48637fef54e887",
+      "preservedSha256": "c2594cd52fb38b8f05913798098c65378cd0c4594d71fbde6c48637fef54e887"
+    },
+    {
+      "path": "miniapp/utils/api.js",
+      "sourceSha256": "fc0cda4969356683da31cc0bdfe2cba28d4d16deee19dee75f5908300d2ba042",
+      "preservedSha256": "fc0cda4969356683da31cc0bdfe2cba28d4d16deee19dee75f5908300d2ba042"
+    },
+    {
+      "path": "miniapp/utils/auth.js",
+      "sourceSha256": "125fc59ea7b4c0f89d2a593fe5ea1fbed3785beacbcb033f3ecb037ff46f3787",
+      "preservedSha256": "125fc59ea7b4c0f89d2a593fe5ea1fbed3785beacbcb033f3ecb037ff46f3787"
+    },
+    {
+      "path": "miniapp/utils/catalog-download.js",
+      "sourceSha256": "305d2ffcd20eab3e6fe42a24e79bf1761168ec5ae1d593f5ddd9d6f98439ef27",
+      "preservedSha256": "305d2ffcd20eab3e6fe42a24e79bf1761168ec5ae1d593f5ddd9d6f98439ef27"
+    },
+    {
+      "path": "miniapp/utils/catalog.js",
+      "sourceSha256": "f5970f44c7318937912d20d05be5a072a1a4f331e4cc37d3fc3a18b7c2dbc40b",
+      "preservedSha256": "f5970f44c7318937912d20d05be5a072a1a4f331e4cc37d3fc3a18b7c2dbc40b"
+    },
+    {
+      "path": "miniapp/utils/errors.js",
+      "sourceSha256": "515584f33fd3eb76a2fc8c3937d840a1e80e72654ff5e7718fa3c5cb1cb94ec1",
+      "preservedSha256": "515584f33fd3eb76a2fc8c3937d840a1e80e72654ff5e7718fa3c5cb1cb94ec1"
+    },
+    {
+      "path": "miniapp/utils/navigation.js",
+      "sourceSha256": "3c3d4b0361bb8dda2c72e617251719b13dd632927ed8539b605b3638c24b8cbd",
+      "preservedSha256": "3c3d4b0361bb8dda2c72e617251719b13dd632927ed8539b605b3638c24b8cbd"
+    },
+    {
+      "path": "miniapp/utils/save.js",
+      "sourceSha256": "cb18b63fe10e46ee875d63121f884832de6b4628ee501a8d41831fee86edee06",
+      "preservedSha256": "cb18b63fe10e46ee875d63121f884832de6b4628ee501a8d41831fee86edee06"
+    },
+    {
+      "path": "miniapp/utils/upload.js",
+      "sourceSha256": "7852b3f356431f4f488f96c08d643d2828b77f264d72b82238276fd86520eb3a",
+      "preservedSha256": "7852b3f356431f4f488f96c08d643d2828b77f264d72b82238276fd86520eb3a"
+    },
+    {
+      "path": "miniapp/utils/urls.js",
+      "sourceSha256": "605abebd3e31bb0e5eb0f07f4006b02e3eec03592dff2488f3a8a18385b523c0",
+      "preservedSha256": "605abebd3e31bb0e5eb0f07f4006b02e3eec03592dff2488f3a8a18385b523c0"
+    },
+    {
+      "path": "miniapp/\u4ea4\u4ed8\u7248\u89c6\u9891\u5b9e\u65bd\u65b9\u6848.md",
+      "sourceSha256": "d2ce5839fc9366418f4c2b4b5b83384b8eae5cfc7432d1bb57eba70a1b41e75a",
+      "preservedSha256": "d2ce5839fc9366418f4c2b4b5b83384b8eae5cfc7432d1bb57eba70a1b41e75a"
+    }
+  ]
+}

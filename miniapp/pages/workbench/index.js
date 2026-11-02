@@ -5,7 +5,7 @@ const { PUBLIC_HOME, loginPath } = require("../../utils/navigation");
 
 Page({
   data: {
-    loading: true, busy: false, error: "", user: null, guest: false, tab: "projects", canCreateProjects: false,
+    loading: true, busy: false, error: "", user: null, associationMessage: "", guest: false, tab: "projects", canCreateProjects: false,
     projects: [], activities: [], visibleActivities: [], activityQuery: "", cases: [], creating: false,
     title: "", dateLabel: "", city: "", description: ""
   },
@@ -31,7 +31,14 @@ Page({
         return wx.redirectTo({ url: "/pages/entry/index" });
       }
       if (session && !isSessionCurrent(wx, session)) return;
-      this.setData({ user: session && session.user, guest: Boolean(this.guestMode) });
+      const user = session && session.user;
+      const associationMessage = user && user.associationStatus === "pending"
+        ? "总部关联中：可管理自己的相册、上传和分享；资料下载需总部完成关联审核。"
+        : user && user.associationStatus === "rejected"
+          ? "总部关联未通过：自己的相册仍可使用；资料下载需总部完成关联审核，请联系总部核实。"
+          : user && user.associationStatus === "approved"
+            ? `总部已关联${user.associatedOrganization ? " · " + user.associatedOrganization : ""}，资料下载按账号权限开放。` : "";
+      this.setData({ user, associationMessage, guest: Boolean(this.guestMode) });
       const token = session && session.token;
       const [mine, activities, cases] = await Promise.all([
         this.guestMode ? Promise.resolve({ projects: [], canCreate: false }) : api(wx, "/my/activity-projects", { token }),

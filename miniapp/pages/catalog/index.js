@@ -1,4 +1,4 @@
-const { api, getSession } = require("../../utils/auth");
+const { api, getSession, validateSession, isSessionCurrent } = require("../../utils/auth");
 const { mediaUrl } = require("../../utils/urls");
 const { catalogPath, catalogCover, sharePayload } = require("../../utils/catalog");
 const { openSopPdf, saveCaseMedia, openCaseDocument } = require("../../utils/catalog-download");
@@ -44,7 +44,7 @@ Page({
     loading: true, error: "", item: null, type: "", cover: "", media: [],
     mediaTabs: [], activeTab: "", shownMedia: [], hasMore: false, playingIndex: -1,
     highlights: [], schedule: [], planSections: [], facts: [], activityImages: [], activityVideos: [],
-    loggedIn: false, canDownloadSop: false, pdfBusy: false, savingIndex: -1, downloadProgress: 0
+    loggedIn: false, associationStatus: "", canDownloadSop: false, pdfBusy: false, savingIndex: -1, downloadProgress: 0
   },
   onLoad(options) {
     try { catalogPath(options.type, options.id); }
@@ -54,15 +54,23 @@ Page({
     this.guestMode = options.guest === "1";
     this.load();
   },
-  onShow() {
-    const session = this.guestMode ? null : getSession(wx);
-    this.setData({ loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false) });
+  async onShow() {
+    try {
+      const session = this.guestMode ? null : await validateSession(wx);
+      if (session && !isSessionCurrent(wx, session)) return;
+      this.setData({ loggedIn: Boolean(session), associationStatus: session && session.user.associationStatus || "",
+        canDownloadSop: Boolean(session && session.user.canDownload !== false) });
+    } catch (error) {
+      if (!error.cancelled) this.setData({ canDownloadSop: false, ...([401, 403].includes(error.statusCode) ? { loggedIn: false } : {}) });
+    }
   },
   async load() {
     this.setData({ loading: true, error: "" });
     try {
-      const session = this.guestMode ? null : getSession(wx);
+      let session = this.guestMode ? null : getSession(wx);
       const result = await api(wx, `/public/${this.type}/${encodeURIComponent(this.id)}`, { token: session && session.token });
+      if (session && !isSessionCurrent(wx, session)) return;
+      session = this.guestMode ? null : getSession(wx);
       const item = result.activity || result.case;
       if (!item) throw new Error("该内容暂时无法查看。");
       wx.setNavigationBarTitle({ title: item.title || "活动详情" });
@@ -87,7 +95,7 @@ Page({
         ],
         activityImages: media.filter(entry => entry.type === "image"),
         activityVideos: media.filter(entry => entry.type === "video"),
-        playingIndex: -1, loggedIn: Boolean(session), canDownloadSop: Boolean(session && session.user.canDownload !== false)
+        playingIndex: -1, loggedIn: Boolean(session), associationStatus: session && session.user.associationStatus || "", canDownloadSop: Boolean(session && session.user.canDownload !== false)
       });
     } catch (error) { this.setData({ loading: false, error: error.message || "加载失败" }); }
   },
@@ -137,7 +145,7 @@ Page({
     if (this.data.pdfBusy || !this.data.item) return;
     if (!this.data.loggedIn) return this.onDownloadError(new Error("请先登录平台账号，再按账号权限下载活动方案。"));
     if (this.data.loggedIn && !this.data.canDownloadSop) {
-      return wx.showModal({ title: "无下载权限", content: "请联系总部开通 SOP 下载权限。", showCancel: false });
+      return wx.showModal({ title: "无下载权限", content: ["pending", "rejected"].includes(this.data.associationStatus) ? "资料下载需总部完成关联审核" : "请联系总部开通 SOP 下载权限。", showCancel: false });
     }
     this.setData({ pdfBusy: true, downloadProgress: 0 });
     try {

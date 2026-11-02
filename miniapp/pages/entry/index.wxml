@@ -2,56 +2,47 @@
 <view wx:else class="page entry-page">
   <view class="eyebrow">开开华彩 · 活动工作台</view>
   <view class="title">主办方登录</view>
-  <view class="muted entry-lead">公开活动与案例无需登录。管理相册、查看完整方案和下载资料时，请使用本平台账号。</view>
-  <view class="muted entry-remember">登录成功后，有效期内再次打开将自动进入，无需重复选择。</view>
-  <button wx:if="{{!loading}}" class="entry-secondary entry-guest" disabled="{{busy}}" bindtap="onGuest">继续浏览公开活动与案例</button>
+  <view class="muted entry-lead">登录后可管理自己的活动相册、上传和分享。资料下载需总部关联审核并开通权限。</view>
+  <view class="muted entry-remember">有效登录状态复核通过后，将自动进入，无需重复选择。</view>
   <view wx:if="{{loading}}" class="state">正在检查登录状态…</view>
-  <view wx:else class="card entry-card">
-    <view class="entry-card-title">{{authMode === 'bind' ? '绑定已有平台账号' : '平台账号密码登录'}}</view>
-    <view class="muted">{{authMode === 'bind' ? '验证账号后，将此微信绑定到原账号，保留原权限、相册和数据。之后可使用微信登录。总部管理员继续使用平台密码登录。' : '使用与网页工作台相同的账号和密码。密码登录不会自动绑定微信。'}}</view>
-    <view class="entry-label">平台账号</view>
-    <input class="entry-field" value="{{username}}" bindinput="onUser" placeholder="请输入本平台账号" maxlength="80"/>
-    <view class="entry-label">平台密码</view>
-    <input class="entry-field" value="{{password}}" bindinput="onPassword" placeholder="请输入平台密码，不是微信密码" password="true"/>
-    <view wx:if="{{error && !showApply}}" class="entry-error">{{error}}</view>
-    <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">{{authMode === 'bind' ? '确认绑定并进入' : '平台账号登录'}}</button>
-    <button wx:if="{{authMode === 'bind'}}" class="entry-secondary" disabled="{{busy}}" bindtap="onCancelWechat">取消绑定，返回密码登录</button>
-    <view wx:if="{{wechatLoginAvailable}}" class="entry-wechat-section">
-      <button class="entry-secondary entry-wechat" loading="{{busy}}" disabled="{{busy}}" bindtap="onWechatRetry">{{lastLoginMethod === 'wechat-miniapp' ? '使用微信登录（上次使用）' : '使用微信登录'}}</button>
-      <view wx:if="{{wechatStatus === 'pending'}}" class="entry-state">微信申请待总部审核。审核通过后，点击微信登录即可进入。已有平台账号也可直接使用密码登录。</view>
+  <block wx:else>
+    <view class="card entry-card">
+      <button wx:if="{{wechatLoginAvailable}}" class="button button-primary entry-wechat" loading="{{busy}}" disabled="{{busy}}" bindtap="onWechatRetry">微信登录</button>
+      <view wx:else class="entry-state">微信登录暂不可用，请稍后重试或使用其他登录方式。</view>
+      <view wx:if="{{wechatStatus === 'pending'}}" class="entry-state">原微信申请待总部核实，请联系总部处理。已有账号可绑定原账号，无需重复申请。</view>
       <view wx:if="{{wechatStatus === 'rejected' || wechatStatus === 'revoked' || wechatStatus === 'disabled'}}" class="entry-state">此微信身份暂不能进入工作台，请联系总部核实。</view>
-      <view wx:if="{{wechatStatus === 'password-required'}}" class="entry-state">总部管理员请使用账号密码登录，不开放微信免密进入。</view>
-      <view wx:if="{{wechatFingerprint}}" class="entry-state">联系总部时请提供微信核对码：{{wechatFingerprint}}。核对码仅用于定位申请，仍需总部人工核实身份。</view>
-      <view wx:if="{{wechatStatus === 'unavailable' && wechatMessage}}" class="entry-state">{{wechatMessage}} 可继续使用平台账号密码登录，或申请平台账号。</view>
-      <view wx:if="{{wechatStatus === 'unbound'}}" class="entry-state">此微信尚未绑定平台账号。已有账号可选择绑定；没有账号可申请开通。</view>
-      <view wx:if="{{wechatStatus === 'unbound' || wechatStatus === 'pending'}}" class="entry-identity-actions">
-        <button class="entry-secondary" disabled="{{busy}}" bindtap="onBindOpen">绑定已有平台账号到此微信</button>
-        <button wx:if="{{wechatStatus === 'unbound'}}" class="entry-secondary" disabled="{{busy}}" bindtap="onWechatApplyOpen">使用此微信申请账号</button>
+      <view wx:if="{{wechatStatus === 'password-required'}}" class="entry-state">总部管理员请展开其他登录方式，使用账号密码登录。</view>
+      <view wx:if="{{wechatFingerprint}}" class="entry-state">微信核对码：{{wechatFingerprint}}，仅供总部分辨申请，不代表已完成身份或关联核实。</view>
+      <view wx:if="{{wechatStatus === 'unavailable' && wechatMessage}}" class="entry-state">{{wechatMessage}}</view>
+      <view wx:if="{{showApply}}" class="entry-apply">
+        <view class="entry-card-title">开通普通账户</view>
+        <view class="muted">填写资料即可进入，管理自己的相册。总部后续核实俱乐部关联，完成后按权限开放资料下载。</view>
+        <view class="entry-label">姓名</view><input class="entry-field" data-field="applicantName" value="{{applicantName}}" bindinput="onApplicantField" maxlength="60"/>
+        <view class="entry-label">联系方式</view><input class="entry-field" data-field="applicantContact" value="{{applicantContact}}" bindinput="onApplicantField" maxlength="80"/>
+        <view class="entry-label">俱乐部／社群名称</view><input class="entry-field" data-field="applicantOrganization" value="{{applicantOrganization}}" bindinput="onApplicantField" maxlength="120"/>
+        <view class="entry-label">城市（选填）</view><input class="entry-field" data-field="applicantCity" value="{{applicantCity}}" bindinput="onApplicantField" maxlength="80"/>
+        <view class="muted entry-privacy">姓名、联系方式和俱乐部资料用于开通账户与总部关联核实，不作为公开相册内容。微信登录不代表手机号或实名已核验。</view>
+        <checkbox-group bindchange="onApplicantAgree" class="entry-consent"><label><checkbox value="agree" checked="{{applicantAgreed}}"/>我已阅读隐私保护指引，同意将上述资料用于账户开通和总部关联核实</label></checkbox-group>
+        <button class="entry-privacy-link" bindtap="onPrivacy">查看用户隐私保护指引</button>
+        <view wx:if="{{error}}" class="entry-error">{{error}}</view>
+        <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onApply">开通并进入</button>
+        <button class="entry-text-button" bindtap="onApplyClose">取消开通</button>
       </view>
-      <button wx:if="{{wechatStatus !== 'idle'}}" class="entry-text-button" disabled="{{busy}}" bindtap="onCancelWechat">取消微信流程，使用平台账号</button>
+      <button wx:if="{{wechatStatus === 'unbound' || wechatStatus === 'pending'}}" class="entry-text-button" disabled="{{busy}}" bindtap="onBindOpen">已有账号？绑定原账号</button>
+      <button class="entry-text-button" disabled="{{busy}}" bindtap="onOtherLogin">{{showOtherLogin ? '收起其他登录方式' : '其他登录方式'}}</button>
+      <view wx:if="{{showOtherLogin}}" class="entry-password">
+        <view class="entry-card-title">{{authMode === 'bind' ? '绑定原账号' : '账号密码登录'}}</view>
+        <view class="muted">{{authMode === 'bind' ? '验证原账号后绑定微信，保留原用户标识、权限与相册。总部管理员请使用密码登录。' : '使用原平台账号和密码；总部管理员也在此登录。密码登录不会自动绑定微信。'}}</view>
+        <view class="entry-label">平台账号</view><input class="entry-field" value="{{username}}" bindinput="onUser" placeholder="请输入本平台账号" maxlength="80"/>
+        <view class="entry-label">平台密码</view><input class="entry-field" value="{{password}}" bindinput="onPassword" placeholder="平台密码，不是微信密码" password="true"/>
+        <view wx:if="{{error && !showApply}}" class="entry-error">{{error}}</view>
+        <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onSubmit">{{authMode === 'bind' ? '确认绑定并进入' : '账号密码登录'}}</button>
+        <button wx:if="{{authMode === 'bind'}}" class="entry-text-button" bindtap="onCancelWechat">取消绑定，返回密码登录</button>
+      </view>
+      <view wx:if="{{!showOtherLogin && !showApply && error}}" class="entry-error">{{error}}</view>
+      <button wx:if="{{busy && !showApply && authMode !== 'bind'}}" class="entry-text-button" bindtap="onCancelWechat">取消登录</button>
     </view>
-  </view>
-  <view wx:if="{{!loading}}" class="card entry-card entry-apply">
-    <view wx:if="{{applicationMessage}}" class="entry-state">{{applicationMessage}}</view>
-    <view class="entry-card-title">{{showApply && applyMode === 'wechat' ? '微信账号申请' : '申请平台账号'}}</view>
-    <view class="muted">总部会核对是否已有账号，再匹配原账号或开通新账号并设置权限。若已有账号，请直接登录，避免重复申请。</view>
-    <button wx:if="{{!showApply}}" class="entry-secondary" disabled="{{busy}}" bindtap="onPlatformApplyOpen">申请平台账号</button>
-    <view wx:if="{{showApply}}">
-      <block wx:if="{{applyMode === 'platform'}}">
-        <view class="entry-label">设置平台账号</view><input class="entry-field" data-field="applicantUsername" value="{{applicantUsername}}" bindinput="onApplicantField" placeholder="3–80 位字母、数字、点、下划线或短横线" maxlength="80"/>
-        <view class="entry-label">设置平台密码</view><input class="entry-field" data-field="applicantPassword" value="{{applicantPassword}}" bindinput="onApplicantField" placeholder="至少 6 位，不要填写微信密码" password="true" maxlength="128"/>
-      </block>
-      <view class="entry-label">真实姓名</view><input class="entry-field" data-field="applicantName" value="{{applicantName}}" bindinput="onApplicantField" maxlength="60"/>
-      <view class="entry-label">联系方式</view><input class="entry-field" data-field="applicantContact" value="{{applicantContact}}" bindinput="onApplicantField" maxlength="80"/>
-      <view class="entry-label">城市</view><input class="entry-field" data-field="applicantCity" value="{{applicantCity}}" bindinput="onApplicantField" maxlength="80"/>
-      <view class="entry-label">所属机构</view><input class="entry-field" data-field="applicantOrganization" value="{{applicantOrganization}}" bindinput="onApplicantField" maxlength="120"/>
-      <view class="muted entry-privacy">申请资料仅供总部核实账号，不会作为公开相册内容。</view>
-      <checkbox-group bindchange="onApplicantAgree" class="entry-consent"><label><checkbox value="agree" checked="{{applicantAgreed}}"/>我同意按隐私保护指引用于账号申请核实</label></checkbox-group>
-      <button class="entry-privacy-link" bindtap="onPrivacy">查看用户隐私保护指引</button>
-      <view wx:if="{{error}}" class="entry-error">{{error}}</view>
-      <button class="button button-primary entry-open" loading="{{busy}}" disabled="{{busy}}" bindtap="onApply">提交申请</button>
-      <button class="entry-secondary" disabled="{{busy}}" bindtap="onApplyClose">取消申请</button>
-    </view>
-  </view>
-  <view class="notice entry-notice">客户从分享卡片直接进入对应相册，不经过本登录页；符合交付格式的照片和视频可免登录保存。</view>
+    <button class="entry-secondary entry-guest" bindtap="onGuest">继续浏览公开活动与案例</button>
+  </block>
+  <view class="notice entry-notice">分享相册可直接打开；符合交付格式的照片和视频可免登录保存。</view>
 </view>

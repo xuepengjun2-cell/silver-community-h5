@@ -8,13 +8,37 @@
     "enhance": true,
     "postcss": true,
     "minified": true,
-    "urlCheck": true
+    "urlCheck": true,
+    "compileWorklet": false,
+    "uglifyFileName": false,
+    "uploadWithSourceMap": true,
+    "packNpmManually": false,
+    "packNpmRelationList": [],
+    "minifyWXSS": true,
+    "minifyWXML": true,
+    "localPlugins": false,
+    "disableUseStrict": false,
+    "useCompilerPlugins": false,
+    "condition": false,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
   },
   "packOptions": {
     "ignore": [
-      { "type": "folder", "value": "test" },
-      { "type": "suffix", "value": ".md" }
+      {
+        "value": "test",
+        "type": "folder"
+      },
+      {
+        "value": ".md",
+        "type": "suffix"
+      }
     ],
     "include": []
-  }
+  },
+  "simulatorPluginLibVersion": {},
+  "editorSetting": {}
 }

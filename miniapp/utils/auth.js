@@ -48,7 +48,7 @@ function clearSession(wxApi) {
 
 function cancelSessionValidation(wxApi) {
   const state = runtime(wxApi);
-  if (!state.validating) return;
+  // 同时取消显式登录/开通，防止离开页面后的晚到响应写回会话。
   state.epoch++;
   state.validating = null;
 }
@@ -170,6 +170,16 @@ async function applyWechat(wxApi, details) {
   return api(wxApi, "/auth/wechat/apply", { method: "POST", data: { code, ...details } });
 }
 
+async function onboardWechat(wxApi, { name, contact, organization, city = "", agreed } = {}) {
+  const epoch = beginExplicitLogin(wxApi);
+  const code = await wechatCode(wxApi);
+  if (!operationCurrent(wxApi, epoch)) throw cancelledLogin();
+  const result = await api(wxApi, "/auth/wechat/onboard", {
+    method: "POST", data: { code, name, contact, organization, city, agreed }
+  });
+  return storeSession(wxApi, result, epoch, "wechat-miniapp");
+}
+
 async function bindWechat(wxApi, username, password) {
   const epoch = beginExplicitLogin(wxApi);
   const code = await wechatCode(wxApi);
@@ -254,5 +264,5 @@ async function logout(wxApi) {
 
 module.exports = {
   SESSION_KEY, MANUAL_LOGOUT_KEY, LAST_LOGIN_METHOD_KEY, api, login, logout, getSession, clearSession, validateSession, cancelSessionValidation, isSessionCurrent, getLastLoginMethod,
-  wechatSession, applyWechat, applyPlatform, bindWechat, canManageProjects
+  wechatSession, onboardWechat, applyWechat, applyPlatform, bindWechat, canManageProjects
 };

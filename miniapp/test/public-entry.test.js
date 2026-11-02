@@ -58,7 +58,7 @@ test("过期或离线会话默认降到公开浏览，离线时保留token且不
   }
 });
 
-test("显式登录页面以平台密码为主且申请表收起；微信能力未知、false、503均关闭", async () => {
+test("显式登录页其他方式收起；微信能力未知、false、503均不能获取身份", async () => {
   for (const readiness of [undefined, false, "true", "unavailable"]) {
     global.wx = fakeWx(options => readiness === "unavailable"
       ? options.success({ statusCode: 503, data: { error: "暂不可用" } })
@@ -69,10 +69,11 @@ test("显式登录页面以平台密码为主且申请表收起；微信能力�
     await entry.capabilitiesPromise;
     assert.equal(entry.data.loginPage, true);
     assert.equal(entry.data.showApply, false);
+    assert.equal(entry.data.showOtherLogin, false);
     assert.equal(entry.data.wechatLoginAvailable, false);
     await entry.onWechatRetry();
     entry.setData({ wechatStatus: "unbound" });
-    entry.onBindOpen(); entry.onWechatApplyOpen();
+    entry.onBindOpen();
     assert.equal(entry.data.authMode, "password");
     assert.equal(entry.data.showApply, false);
     assert.equal(wx.requests.length, 1);
@@ -80,25 +81,22 @@ test("显式登录页面以平台密码为主且申请表收起；微信能力�
     delete global.wx;
   }
   const wxml = fs.readFileSync(path.join(__dirname, "../pages/entry/index.wxml"), "utf8");
-  assert.match(wxml, /wx:if="\{\{wechatLoginAvailable\}\}" class="entry-wechat-section"/);
-  assert.ok(wxml.indexOf('bindtap="onSubmit"') < wxml.indexOf('bindtap="onWechatRetry"'));
+  assert.match(wxml, /wx:if="\{\{wechatLoginAvailable\}\}"[^>]*bindtap="onWechatRetry"/);
+  assert.ok(wxml.indexOf('bindtap="onWechatRetry"') < wxml.indexOf('bindtap="onSubmit"'));
 });
 
-test("微信能力请求挂起不阻塞平台密码登录和独立平台申请", async () => {
+test("微信能力请求挂起不阻塞展开其他方式后使用原账号密码登录", async () => {
   global.wx = fakeWx(options => {
     if (options.url.endsWith("/auth/capabilities")) return;
     if (options.url.endsWith("/login")) return ok(options, { token: "platform-token", user: { id: "u_existing", role: "member" } });
-    if (options.url.endsWith("/register")) return ok(options, { ok: true, status: "pending" });
     throw new Error(`unexpected request: ${options.url}`);
   });
   const entry = pageAt("../pages/entry/index.js");
   await entry.onLoad({ mode: "login" });
   assert.equal(entry.data.loading, false);
-  entry.onPlatformApplyOpen();
-  entry.setData({ applicantUsername: "new-host", applicantPassword: "host-secret", applicantName: "主办方", applicantContact: "人工核实联系方式", applicantAgreed: true });
-  await entry.onApply();
+  entry.onOtherLogin();
+  assert.equal(entry.data.showOtherLogin, true);
   assert.equal(getSession(wx), null);
-  assert.match(entry.data.applicationMessage, /总部核实并开通/);
   entry.setData({ username: "existing", password: "platform-secret" });
   await entry.onSubmit();
   assert.deepEqual(wx.navigations, [WORKBENCH]);

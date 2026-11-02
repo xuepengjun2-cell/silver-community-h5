@@ -1,12 +1,11 @@
 const { parseShareInput, albumPath } = require("../../utils/album");
-const { api, login, validateSession, cancelSessionValidation, isSessionCurrent, getLastLoginMethod, wechatSession, applyWechat, applyPlatform, bindWechat } = require("../../utils/auth");
+const { api, login, validateSession, cancelSessionValidation, isSessionCurrent, getLastLoginMethod, wechatSession, onboardWechat, bindWechat } = require("../../utils/auth");
 const { PUBLIC_HOME, WORKBENCH, catalogReturnTo } = require("../../utils/navigation");
 
 Page({
   data: {
     loading: true, loginPage: false, wechatLoginAvailable: false, username: "", password: "", busy: false, error: "",
-    authMode: "password", lastLoginMethod: "", wechatStatus: "idle", wechatMessage: "", wechatFingerprint: "", showApply: false,
-    applyMode: "platform", applicationMessage: "", applicantUsername: "", applicantPassword: "",
+    authMode: "password", showOtherLogin: false, lastLoginMethod: "", wechatStatus: "idle", wechatMessage: "", wechatFingerprint: "", showApply: false,
     applicantName: "", applicantContact: "", applicantCity: "", applicantOrganization: "", applicantAgreed: false
   },
   async onLoad(options) {
@@ -74,82 +73,79 @@ Page({
     }
     wx.openPrivacyContract({ fail() { wx.showModal({ title: "暂无法打开", content: "请联系总部核对小程序隐私保护指引。", showCancel: false }); } });
   },
-  onPlatformApplyOpen() {
+  onOtherLogin() {
     if (this.data.busy) return;
-    this.setData({ showApply: true, applyMode: "platform", authMode: "password", applicantAgreed: false, error: "", applicationMessage: "" });
-  },
-  onWechatApplyOpen() {
-    if (this.data.busy || !this.data.wechatLoginAvailable || this.data.wechatStatus !== "unbound") return;
-    this.setData({ showApply: true, applyMode: "wechat", authMode: "password", applicantAgreed: false, error: "", applicationMessage: "" });
+    this.setData({ showOtherLogin: !this.data.showOtherLogin, authMode: "password", showApply: false, password: "", error: "" });
   },
   onBindOpen() {
     if (this.data.busy || !this.data.wechatLoginAvailable || !["unbound", "pending"].includes(this.data.wechatStatus)) return;
-    this.setData({ authMode: "bind", showApply: false, password: "", error: "" });
+    this.setData({ authMode: "bind", showOtherLogin: true, showApply: false, password: "", error: "" });
+  },
+  cancelAuth() {
+    this.authAttempt = (this.authAttempt || 0) + 1;
+    cancelSessionValidation(wx);
   },
   onCancelWechat() {
-    if (this.data.busy) return;
-    this.setData({ authMode: "password", showApply: false, password: "", applicantPassword: "", wechatStatus: "idle", wechatMessage: "", wechatFingerprint: "", error: "" });
+    this.cancelAuth();
+    this.setData({ busy: false, authMode: "password", showOtherLogin: true, showApply: false, password: "", wechatStatus: "idle", wechatMessage: "", wechatFingerprint: "", error: "" });
   },
-  onApplyClose() {
-    if (this.data.busy) return;
-    this.setData({ showApply: false, applicantPassword: "", error: "" });
-  },
+  onApplyClose() { this.onCancelWechat(); },
+  onUnload() { this.guestEntry = true; this.cancelAuth(); },
   onGuest() {
-    if (this.data.busy) return;
     this.guestEntry = true;
-    cancelSessionValidation(wx);
+    this.cancelAuth();
     this.openPublicHome();
   },
   async onWechatRetry() {
-    if (this.data.busy || !this.data.wechatLoginAvailable) return;
-    this.setData({ busy: true, authMode: "password", showApply: false, error: "", wechatMessage: "" });
+    if (this.data.busy || !this.data.wechatLoginAvailable || this.guestEntry) return;
+    const attempt = this.authAttempt = (this.authAttempt || 0) + 1;
+    this.setData({ busy: true, authMode: "password", showOtherLogin: false, showApply: false, error: "", wechatMessage: "" });
     try {
       const result = await wechatSession(wx, { explicit: true });
+      if (attempt !== this.authAttempt || this.guestEntry) return;
       if (result.session) return this.enterSession(result.session);
-      this.setData({ wechatStatus: result.status, wechatFingerprint: result.fingerprint || "", wechatMessage: "" });
-    } catch (error) { if (!error.cancelled) this.setData({ wechatStatus: "unavailable", wechatMessage: error.message, error: "" }); }
-    finally { this.setData({ busy: false }); }
+      this.setData({ wechatStatus: result.status, wechatFingerprint: result.fingerprint || "", wechatMessage: "",
+        showApply: result.status === "unbound", authMode: result.status === "unbound" ? "onboard" : "password" });
+    } catch (error) {
+      if (attempt === this.authAttempt && !this.guestEntry && !error.cancelled) this.setData({ wechatStatus: "unavailable", wechatMessage: error.message, error: "" });
+    } finally { if (attempt === this.authAttempt) this.setData({ busy: false }); }
   },
   async onApply() {
-    if (this.data.busy) return;
-    if (this.data.applyMode === "wechat" && !this.data.wechatLoginAvailable) return this.setData({ error: "微信登录暂未开通，请申请平台账号。" });
+    if (this.data.busy || this.guestEntry) return;
     if (!this.data.applicantAgreed) return this.setData({ error: "请先阅读并同意用户隐私保护指引。" });
+    if (!this.data.wechatLoginAvailable || !this.data.showApply || this.data.wechatStatus !== "unbound" || this.data.authMode !== "onboard") return;
     const details = {
       name: this.data.applicantName.trim(), contact: this.data.applicantContact.trim(),
-      city: this.data.applicantCity.trim(), organization: this.data.applicantOrganization.trim()
+      city: this.data.applicantCity.trim(), organization: this.data.applicantOrganization.trim(), agreed: true
     };
-    if (!details.name || !details.contact) return this.setData({ error: "请填写真实姓名和联系方式，供总部核实。" });
-    const platformApplication = this.data.applyMode === "platform";
-    const username = this.data.applicantUsername.trim();
-    const password = this.data.applicantPassword.trim();
-    if (platformApplication && (!/^[A-Za-z0-9._-]{3,80}$/.test(username) || password.length < 6)) {
-      return this.setData({ error: "账号须为 3–80 位字母、数字、点、下划线或短横线；密码至少 6 位。" });
-    }
+    if (details.name.length < 2 || details.name.length > 60) return this.setData({ error: "请填写 2–60 字的姓名。" });
+    if (details.contact.length < 6 || details.contact.length > 80) return this.setData({ error: "请填写 6–80 字的联系方式，供总部核实。" });
+    if (!details.organization || details.organization.length > 120) return this.setData({ error: "请填写俱乐部／社群名称（不超过 120 字）。" });
+    if (details.city.length > 80) return this.setData({ error: "城市请填写不超过 80 字，也可留空。" });
+    const attempt = this.authAttempt = (this.authAttempt || 0) + 1;
     this.setData({ busy: true, error: "" });
     try {
-      if (platformApplication) {
-        await applyPlatform(wx, { ...details, username, password });
-        this.setData({ username, applicantPassword: "", password: "", showApply: false, applicationMessage: "平台账号申请已提交。总部核实并开通后，可使用此账号登录；审核前不能上传、删除或下载受限资料。" });
-      } else {
-        const result = await applyWechat(wx, details);
-        this.setData({ wechatStatus: result.status || "pending", wechatFingerprint: result.fingerprint || "", showApply: false, wechatMessage: "", applicationMessage: "微信账号申请已提交，请等待总部核实。审核通过后，点击微信登录进入。" });
-      }
-    } catch (error) { this.setData({ error: error.message || "申请失败" }); }
-    finally { this.setData({ busy: false }); }
+      const session = await onboardWechat(wx, details);
+      if (attempt === this.authAttempt && !this.guestEntry) this.enterSession(session);
+    } catch (error) {
+      if (attempt === this.authAttempt && !this.guestEntry && !error.cancelled) this.setData({ error: error.message || "开通失败，请稍后重试。" });
+    } finally { if (attempt === this.authAttempt) this.setData({ busy: false }); }
   },
   async onSubmit() {
-    if (this.data.busy) return;
+    if (this.data.busy || this.guestEntry) return;
     if (this.data.authMode === "bind" && !this.data.wechatLoginAvailable) return this.setData({ error: "微信绑定暂未开通，请返回平台账号登录。" });
     const username = this.data.username.trim();
     if (!username || !this.data.password) return this.setData({ error: "请输入本平台账号和密码，不是微信密码。" });
+    const attempt = this.authAttempt = (this.authAttempt || 0) + 1;
     this.setData({ busy: true, error: "" });
     try {
       const session = this.data.authMode === "bind"
         ? await bindWechat(wx, username, this.data.password)
         : await login(wx, username, this.data.password);
+      if (attempt !== this.authAttempt || this.guestEntry) return;
       this.setData({ password: "" });
       this.enterSession(session);
-    } catch (error) { if (!error.cancelled) this.setData({ error: error.message || "登录失败" }); }
-    finally { this.setData({ busy: false }); }
+    } catch (error) { if (attempt === this.authAttempt && !this.guestEntry && !error.cancelled) this.setData({ error: error.message || "登录失败" }); }
+    finally { if (attempt === this.authAttempt) this.setData({ busy: false }); }
   }
 });

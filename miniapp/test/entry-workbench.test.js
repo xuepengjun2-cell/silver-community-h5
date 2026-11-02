@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { SESSION_KEY } = require("../utils/auth");
+const { SESSION_KEY, applyPlatform, applyWechat } = require("../utils/auth");
 
 function pageAt(relativePath) {
   let definition;
@@ -160,7 +160,7 @@ test("点击微信登录才获取 code；未绑定状态不建立平台会话", 
   delete global.wx;
 });
 
-test("平台新申请无需微信服务，成功仅进入待审批提示而不建立登录态", async () => {
+test("兼容旧平台申请工具无需微信服务，成功仍不建立登录态", async () => {
   const storage = new Map();
   const requests = [];
   global.wx = {
@@ -169,20 +169,14 @@ test("平台新申请无需微信服务，成功仅进入待审批提示而不�
     login() { throw new Error("平台申请不应依赖微信服务"); },
     request(options) { requests.push(options); options.success({ statusCode: 201, data: { ok: true } }); }
   };
-  const entry = pageAt("../pages/entry/index.js");
-  entry.setData({ wechatStatus: "unavailable" });
-  entry.onPlatformApplyOpen();
-  entry.setData({ applicantUsername: "new-host", applicantPassword: "host-secret", applicantName: "新主办方", applicantContact: "13800000000", applicantAgreed: true });
-  await entry.onApply();
+  await applyPlatform(wx, { username: "new-host", password: "host-secret", name: "新主办方", contact: "13800000000", agreed: true });
   assert.equal(requests[0].url.endsWith("/register"), true);
   assert.equal(requests[0].data.username, "new-host");
   assert.equal(storage.has(SESSION_KEY), false);
-  assert.match(entry.data.applicationMessage, /总部核实并开通/);
-  assert.equal(entry.data.applicantPassword, "");
   delete global.wx;
 });
 
-test("微信新申请待审批不给 token，也不会自动转为平台新账号", async () => {
+test("兼容旧微信申请工具待审批不给 token，也不会自动转为平台新账号", async () => {
   const storage = new Map();
   const requests = [];
   global.wx = {
@@ -190,14 +184,10 @@ test("微信新申请待审批不给 token，也不会自动转为平台新账�
     removeStorageSync: key => storage.delete(key), login: options => options.success({ code: "apply-code" }),
     request(options) { requests.push(options); options.success({ statusCode: 201, data: { status: "pending", fingerprint: "a1b2c3d4e5f6" } }); }
   };
-  const entry = pageAt("../pages/entry/index.js");
-  entry.setData({ wechatLoginAvailable: true, wechatStatus: "unbound" });
-  entry.onWechatApplyOpen();
-  entry.setData({ applicantName: "主办方", applicantContact: "13800000000", applicantAgreed: true });
-  await entry.onApply();
+  const result = await applyWechat(wx, { name: "主办方", contact: "13800000000", agreed: true });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url.endsWith("/auth/wechat/apply"), true);
-  assert.equal(entry.data.wechatStatus, "pending");
+  assert.equal(result.status, "pending");
   assert.equal(storage.has(SESSION_KEY), false);
   delete global.wx;
 });

@@ -1,0 +1,24 @@
+name: Native video onboarding candidate
+on:
+  push:
+    branches: [codex/onboarding-video-client]
+permissions:
+  contents: read
+jobs:
+  native-candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify native syntax and preserved video baseline
+        run: node scripts/check-native-onboarding.js --syntax --manifest "$RUNNER_TEMP/native-candidate-manifest.json"
+      - name: Test native handlers, auth, uploads, players and public saves
+        run: node --test miniapp/test/*.test.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-onboarding-source-manifest
+          path: ${{ runner.temp }}/native-candidate-manifest.json
