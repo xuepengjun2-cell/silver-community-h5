@@ -5,6 +5,7 @@ const test = require("node:test"),
   path = require("node:path"),
   crypto = require("node:crypto");
 const { withServer, sleep } = require("./support/video-api-server");
+const {cameraMpfFixture}=require('./support/mpf-fixture');
 const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
   "base64",
@@ -34,6 +35,25 @@ const init = (ctx, token, album, body = {}) =>
 const row = (ctx, id) =>
   ctx.persisted().project_upload_sessions.find((r) => r.id === id);
 const object = (ctx, key) => path.join(ctx.dir, "tos", encodeURIComponent(key));
+test('camera MPF failed task resumes through API and publishes original bytes exactly once',()=>withServer({},async ctx=>{
+  const {token,album}=await setup(ctx), {bytes}=cameraMpfFixture();
+  const created=await init(ctx,token,album,{ext:'jpeg',title:'camera.jpeg',size:bytes.length});
+  const source=row(ctx,created.data.sessionId);
+  fs.writeFileSync(object(ctx,source.object_key),bytes);
+  fs.writeFileSync(path.join(ctx.dir,'reject-photo-db'),'fail');
+  assert.equal((await finish(ctx,token,album,source.id)).data.status,'delivery_failed');
+  assert.ok(fs.existsSync(object(ctx,source.object_key)));
+  assert.equal((await ctx.api(route(album),{token})).data.project.media.length,0);
+  fs.unlinkSync(path.join(ctx.dir,'reject-photo-db'));
+  const resumed=await ctx.api(`${route(album)}/media/upload-session/${source.id}/resume`,{method:'POST',token,body:{}});
+  assert.ok([200,202].includes(resumed.status),JSON.stringify(resumed));
+  assert.equal((await finish(ctx,token,album,source.id)).data.status,'completed',ctx.logs());
+  await ctx.api(`${route(album)}/media/upload-session/${source.id}/resume`,{method:'POST',token,body:{}});
+  const media=(await ctx.api(route(album),{token})).data.project.media;
+  assert.equal(media.length,1);
+  assert.equal(media[0].fingerprint,crypto.createHash('sha256').update(bytes).digest('hex'));
+  assert.deepEqual(fs.readFileSync(object(ctx,decodeURIComponent(new URL(media[0].url).pathname.slice(1)))),bytes);
+}));
 async function finish(ctx, token, album, id) {
   const r = await ctx.api(
     `${route(album)}/media/upload-session/${id}/complete?delivery=1`,
