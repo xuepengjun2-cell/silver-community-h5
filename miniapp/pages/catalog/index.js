@@ -65,12 +65,18 @@ Page({
     }
   },
   async load() {
+    const requestId = this.loadRequestId = (this.loadRequestId || 0) + 1;
+    const type = this.type, id = this.id, guestMode = this.guestMode;
+    const requestedSession = guestMode ? null : getSession(wx);
+    const contextChanged = () => type !== this.type || id !== this.id || guestMode !== this.guestMode
+      || !guestMode && (requestedSession ? !isSessionCurrent(wx, requestedSession) : Boolean(getSession(wx)));
     this.setData({ loading: true, error: "" });
     try {
-      let session = this.guestMode ? null : getSession(wx);
-      const result = await api(wx, `/public/${this.type}/${encodeURIComponent(this.id)}`, { token: session && session.token });
-      if (session && !isSessionCurrent(wx, session)) return;
-      session = this.guestMode ? null : getSession(wx);
+      const result = await api(wx, `/public/${type}/${encodeURIComponent(id)}`, { token: requestedSession && requestedSession.token });
+      if (requestId !== this.loadRequestId) return;
+      // 续验换 token、切换账号或退出后，按当前会话重取，避免沿用旧权限或悬停加载。
+      if (contextChanged()) return this.load();
+      const session = this.guestMode ? null : getSession(wx);
       const item = result.activity || result.case;
       if (!item) throw new Error("该内容暂时无法查看。");
       wx.setNavigationBarTitle({ title: item.title || "活动详情" });
@@ -97,7 +103,11 @@ Page({
         activityVideos: media.filter(entry => entry.type === "video"),
         playingIndex: -1, loggedIn: Boolean(session), associationStatus: session && session.user.associationStatus || "", canDownloadSop: Boolean(session && session.user.canDownload !== false)
       });
-    } catch (error) { this.setData({ loading: false, error: error.message || "加载失败" }); }
+    } catch (error) {
+      if (requestId !== this.loadRequestId) return;
+      if (contextChanged()) return this.load();
+      this.setData({ loading: false, error: error.message || "加载失败" });
+    }
   },
   onTab(event) {
     const activeTab = event.currentTarget.dataset.tab;

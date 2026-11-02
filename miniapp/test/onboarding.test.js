@@ -218,3 +218,85 @@ test('开通获取微信凭证期间取消，不再向服务器提交新账户',
   assert.equal(wxApi.requests.length, 0);
   assert.equal(auth.getSession(wxApi), null);
 });
+
+test('微信会话续验更换 token 时，详情重新使用新会话请求并结束加载', async () => {
+  const pending = [];
+  const old = { token:'old-token', user:account, loginMethod:'wechat-miniapp', sessionExpiresAt:new Date(Date.now()+3600000).toISOString() };
+  global.wx = fakeWx(request => {
+    if (request.url.endsWith('/me')) return ok(request, {user:{...account,canDownload:true,associationStatus:'approved'},loginMethod:'wechat-miniapp',sessionExpiresAt:old.sessionExpiresAt});
+    if (request.url.endsWith('/auth/wechat/session')) return ok(request, {token:'renewed-token',user:{...account,canDownload:true,associationStatus:'approved'},loginMethod:'wechat-miniapp',sessionExpiresAt:'2099-01-01T00:00:00.000Z'});
+    pending.push(request);
+  }, old);
+  const page = pageAt('catalog'); page.type='activities'; page.id='act_001';
+  const loading = page.load();
+  await page.onShow();
+  assert.equal(auth.getSession(wx).token, 'renewed-token');
+  ok(pending[0], {activity:{id:'act_001',title:'旧会话内容',plan:{target:'旧权限内容'}}});
+  await Promise.resolve();
+  assert.equal(pending.length, 2, '旧 token 响应后须使用现有 token 重取内容');
+  assert.equal(pending[1].header.Authorization, 'Bearer renewed-token');
+  ok(pending[1], {activity:{id:'act_001',title:'续验后的内容',plan:{target:'现有权限内容'}}});
+  await loading;
+  assert.equal(page.data.loading, false);
+  assert.equal(page.data.item.title, '续验后的内容');
+  assert.equal(page.data.planSections[0].content, '现有权限内容');
+  assert.equal(page.data.canDownloadSop, true);
+});
+
+test('旧账户详情晚到时使用新账户重新请求，不能显示旧账户方案', async () => {
+  const pending=[];
+  global.wx=fakeWx(request=>pending.push(request), {token:'old-token',user:account});
+  const page=pageAt('catalog'); page.type='activities'; page.id='act_001';
+  const loading=page.load();
+  wx.storage.set(auth.SESSION_KEY, {token:'other-token',user:{id:'u_other',role:'viewer',canDownload:false}});
+  ok(pending[0], {activity:{id:'act_001',title:'旧用户受限内容',plan:{target:'旧账号内容'}}});
+  await Promise.resolve();
+  assert.equal(pending.length, 2);
+  assert.equal(pending[1].header.Authorization, 'Bearer other-token');
+  assert.equal(page.data.item, null);
+  ok(pending[1], {activity:{id:'act_001',title:'新用户内容',planLocked:true}});
+  await loading;
+  assert.equal(page.data.loading, false);
+  assert.equal(page.data.item.title,'新用户内容');
+  assert.deepEqual(page.data.planSections,[]);
+});
+
+test('退出期间晚到的详情错误不能挂住页面，匿名重取不显示受限方案', async () => {
+  const pending=[];
+  global.wx=fakeWx(request => request.url.endsWith('/logout') ? ok(request,{ok:true}) : pending.push(request), {token:'old-token',user:account});
+  const page=pageAt('catalog'); page.type='activities'; page.id='act_001';
+  const loading=page.load();
+  await auth.logout(wx);
+  pending[0].success({statusCode:403,data:{error:'旧 token 已撤销'}});
+  await Promise.resolve();
+  assert.equal(pending.length,2);
+  assert.equal(pending[1].header.Authorization,undefined);
+  ok(pending[1],{activity:{id:'act_001',title:'公开内容',planLocked:true}});
+  await loading;
+  assert.equal(page.data.loading,false);
+  assert.equal(page.data.loggedIn,false);
+  assert.equal(page.data.item.title,'公开内容');
+  assert.deepEqual(page.data.planSections,[]);
+  assert.equal(page.data.error,'');
+});
+
+test('先发的详情或失败晚于新请求返回，均不能覆盖新页面内容和状态', async () => {
+  for(const failed of [false,true]) {
+    const pending=[];
+    global.wx=fakeWx(request=>pending.push(request),{token:'current',user:account});
+    const page=pageAt('catalog'); page.type='activities'; page.id='act_old';
+    const oldLoading=page.load();
+    page.id='act_new';
+    const newLoading=page.load();
+    ok(pending[1],{activity:{id:'act_new',title:'新详情',plan:{target:'新详情内容'}}});
+    await newLoading;
+    if(failed) pending[0].success({statusCode:403,data:{error:'旧请求错误'}});
+    else ok(pending[0],{activity:{id:'act_old',title:'旧详情',plan:{target:'旧详情内容'}}});
+    await oldLoading;
+    assert.equal(page.data.item.id,'act_new');
+    assert.equal(page.data.planSections[0].content,'新详情内容');
+    assert.equal(page.data.loading,false);
+    assert.equal(page.data.error,'');
+    assert.equal(pending.length,2);
+  }
+});
