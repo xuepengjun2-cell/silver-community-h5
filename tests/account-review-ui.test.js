@@ -121,9 +121,9 @@ test("新建和编辑账号共享相册范围控件，选择行为即时更新�
 // Breaks caught: missing unified review handlers, incorrect revision/payload,
 // re-submission of stale cards, unsafe interpolation, and lost legacy guards.
 function unifiedFixture(kind = "association", version = 3) {
-  const context = loadPage("admin.js", ["state", "renderUsers", "bindUserEvents", "refreshData"]);
+  const context = loadPage("admin.js", ["state", "renderUsers", "bindUserEvents", "refreshData", "renderShell", "showLogin"]);
   const review = { kind, id: "r/<one>", userId: "u_new", name: "王老师<script>", contact: '138"<img>', city: "北京", organization: '书画社"<svg>', status: "pending", version, submittedAt: "2026-11-02", permissions: { role: "member", accountStatus: "active", canDownload: false, albumReadScope: "own-and-selected", albumReadProjectIds: [] }, user: { id: "u_new", username: "wx_new", role: "member", status: "active" }, note: "<script>note</script>" };
-  Object.assign(context.page.state, { user: { id: "u_hq", name: "总部", role: "admin" }, users: [{ id: "u_old", name: "原账号", username: "old", role: "operator", status: "active", canDownload: true }], accountReviews: [review], reviewManagers: [{ id: "u_hq", name: "总部<script>", role: "admin" }], accountReviewView: "pending", usersView: "reviews", accountReviewsReady: true });
+  Object.assign(context.page.state, { user: { id: "u_hq", name: "总部", role: "admin" }, users: [{ id: "u_old", name: "原账号", username: "old", role: "operator", status: "active", canDownload: true }], accountReviews: [review], reviewManagers: [{ id: "u_hq", name: "总部<script>", role: "admin" }], accountReviewView: "pending", usersView: "reviews", activeTab: "users", accountReviewsReady: true });
   const nodes = Object.fromEntries(["data-review-organization", "data-review-manager", "data-review-related", "data-review-note", "data-review-role", "data-review-download", "data-wx-target", "data-wx-role", "data-wx-download", "data-wx-confirm", "data-wx-new-confirm", "data-wx-approve", "data-wx-selection-note"].map(key => [`[${key}]`, element()]));
   nodes["[data-review-organization]"].value = "书画社";
   nodes["[data-review-manager]"].value = "u_hq";
@@ -373,4 +373,154 @@ test("尚无平台账号的历史微信申请不会显示拥有全部相册权�
   assert.match(f.content.innerHTML, /当前角色：未开通/);
   assert.match(f.content.innerHTML, /相册范围：未开通/);
   assert.doesNotMatch(f.content.innerHTML, /相册范围：全部相册/);
+});
+
+function deferredResponse() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function navigateToEditor(f) {
+  const sidebar = element({ dataset: { tab: "activities" } });
+  const queryAll = f.context.document.querySelectorAll;
+  f.context.document.querySelectorAll = selector => selector === "[data-tab]" ? [sidebar] : queryAll(selector);
+  f.context.renderActivities = () => { f.content.innerHTML = '<textarea id="draft">尚未保存的活动方案</textarea>'; };
+  f.context.page.renderShell();
+  sidebar.handlers.click(); // actual global sidebar navigation handler
+  f.context.page.state.draft = { title: "正在编辑的活动" };
+  f.context.page.state.message = "当前活动编辑提示";
+  return f.content.innerHTML;
+}
+
+for (const action of ["decision", "refresh"]) {
+  for (const outcome of ["success", "failure"]) {
+    test(`延迟${action}/${outcome}完成后保留侧栏导航打开的活动编辑页和提示`, async () => {
+      const f = unifiedFixture(); f.bind();
+      const wait = deferredResponse(), api = f.context.api;
+      f.context.api = async (url, options) => {
+        const delayed = action === "decision" ? options?.method === "POST" : url === "/api/admin/account-reviews";
+        if (delayed) return wait.promise;
+        return api(url, options);
+      };
+      const pending = action === "decision" ? f.approve.handlers.click() : f.retry.handlers.click();
+      const editor = navigateToEditor(f);
+      if (outcome === "failure") wait.reject(new Error("延迟请求失败"));
+      else wait.resolve(action === "decision" ? { ok: true } : { reviews: [], managers: [] });
+      await pending;
+      assert.equal(f.context.page.state.activeTab, "activities");
+      assert.equal(f.content.innerHTML, editor, "old account request must not replace current editor DOM");
+      assert.equal(f.context.page.state.draft.title, "正在编辑的活动");
+      assert.equal(f.context.page.state.message, "当前活动编辑提示", "old request must not flash or clear current-view messages");
+      assert.equal(f.context.page.state.accountReviewBusy, false);
+    });
+  }
+}
+
+for (const action of ["decision", "refresh"]) {
+  test(`延迟${action}跨登录会话完成不读取或覆盖新账号数据、提示及页面`, async () => {
+    const f = unifiedFixture(); f.bind();
+    const wait = deferredResponse(), api = f.context.api;
+    let reviewReads = 0;
+    f.context.api = async (url, options) => {
+      if (url === "/api/admin/account-reviews") reviewReads++;
+      const delayed = action === "decision" ? options?.method === "POST" : url === "/api/admin/account-reviews";
+      return delayed ? wait.promise : api(url, options);
+    };
+    const pending = action === "decision" ? f.approve.handlers.click() : f.retry.handlers.click();
+    f.context.page.showLogin();
+    f.context.page.state.user = { id: "u_second_hq", name: "另一管理员", role: "admin" };
+    f.context.page.state.sessionToken = "later-session";
+    const laterReviews = [{ ...f.review, id: "later-review", version: 10 }];
+    f.context.page.state.accountReviews = laterReviews;
+    f.context.page.state.users = [{ id: "later-user" }];
+    f.context.page.state.reviewManagers = [{ id: "later-manager" }];
+    f.context.page.state.accountReviewsReady = true;
+    f.context.page.state.message = "新账号提示";
+    f.content.innerHTML = "新账号当前页面";
+    wait.resolve(action === "decision" ? { ok: true } : { reviews: [], managers: [] });
+    await pending;
+    assert.equal(reviewReads, action === "decision" ? 0 : 1, "old decision must not fetch using the later login");
+    assert.equal(f.context.page.state.accountReviews, laterReviews);
+    assert.equal(f.context.page.state.users[0].id, "later-user");
+    assert.equal(f.context.page.state.reviewManagers[0].id, "later-manager");
+    assert.equal(f.context.page.state.accountReviewsReady, true);
+    assert.equal(f.context.page.state.message, "新账号提示");
+    assert.equal(f.content.innerHTML, "新账号当前页面");
+    assert.equal(f.context.page.state.accountReviewBusy, false);
+  });
+}
+
+for (const action of ["decision", "refresh"]) {
+  test(`延迟${action}失败跨会话后不污染当前登录页提示`, async () => {
+    const f = unifiedFixture(); f.bind();
+    const wait = deferredResponse(), api = f.context.api;
+    f.context.api = async (url, options) => {
+      const delayed = action === "decision" ? options?.method === "POST" : url === "/api/admin/account-reviews";
+      return delayed ? wait.promise : api(url, options);
+    };
+    const pending = action === "decision" ? f.approve.handlers.click() : f.retry.handlers.click();
+    f.context.page.showLogin();
+    f.context.page.state.message = "请登录新会话";
+    f.content.innerHTML = "当前登录页";
+    wait.reject(new Error("旧会话请求失败"));
+    await pending;
+    assert.equal(f.context.page.state.message, "请登录新会话");
+    assert.equal(f.content.innerHTML, "当前登录页");
+    assert.equal(f.context.page.state.accountReviewBusy, false);
+  });
+}
+
+test("旧审批结束不会释放后来会话正在刷新的busy状态或覆盖其结果", async () => {
+  const f = unifiedFixture(); f.bind();
+  const oldPost = deferredResponse(), laterRead = deferredResponse(), api = f.context.api;
+  f.context.api = async (url, options) => {
+    if (options?.method === "POST") return oldPost.promise;
+    if (url === "/api/admin/account-reviews") return laterRead.promise;
+    return api(url, options);
+  };
+  const oldPending = f.approve.handlers.click();
+  f.context.page.showLogin();
+  f.context.page.state.user = { id: "later-hq", name: "新会话", role: "admin" };
+  f.context.page.state.sessionToken = "later-token";
+  f.context.page.renderShell();
+  const laterPending = f.retry.handlers.click();
+  const laterRequest = f.context.page.state.accountReviewRequest;
+  oldPost.resolve({ ok: true }); await oldPending;
+  assert.equal(f.context.page.state.accountReviewBusy, true);
+  assert.equal(f.context.page.state.accountReviewRequest, laterRequest);
+  laterRead.resolve({ reviews: [{ ...f.review, id: "later-row" }], managers: [] });
+  await laterPending;
+  assert.equal(f.context.page.state.accountReviewBusy, false);
+  assert.equal(f.context.page.state.accountReviews[0].id, "later-row");
+});
+
+test("同一管理员令牌更换后旧刷新结果不会回写", async () => {
+  const f = unifiedFixture(); f.bind();
+  const wait = deferredResponse(), api = f.context.api;
+  f.context.api = (url, options) => url === "/api/admin/account-reviews" ? wait.promise : api(url, options);
+  const pending = f.retry.handlers.click();
+  f.context.page.state.sessionToken = "renewed-token";
+  const laterRows = [{ ...f.review, id: "renewed-session-row" }];
+  f.context.page.state.accountReviews = laterRows;
+  f.context.page.state.message = "新令牌提示";
+  wait.resolve({ reviews: [], managers: [] }); await pending;
+  assert.equal(f.context.page.state.accountReviews, laterRows);
+  assert.equal(f.context.page.state.message, "新令牌提示");
+  assert.equal(f.context.page.state.accountReviewBusy, false);
+});
+
+test("离开后重进审核页的新表单不被旧请求重绘，仍可手动刷新恢复", async () => {
+  const f = unifiedFixture(); f.bind();
+  const wait = deferredResponse(), api = f.context.api;
+  f.context.api = (url, options) => url === "/api/admin/account-reviews" ? wait.promise : api(url, options);
+  const pending = f.retry.handlers.click();
+  const laterContent = element({ innerHTML: "重新打开审核页后输入的组织资料" });
+  const query = f.context.document.querySelector;
+  f.context.document.querySelector = selector => selector === "#content" ? laterContent : selector === "[data-review-refresh]" ? f.retry : query(selector);
+  f.context.page.state.message = "新页面提示";
+  wait.resolve({ reviews: [], managers: [] }); await pending;
+  assert.equal(laterContent.innerHTML, "重新打开审核页后输入的组织资料");
+  assert.equal(f.context.page.state.message, "新页面提示");
+  assert.equal(f.retry.disabled, false, "a new current review screen must retain a usable explicit refresh");
 });

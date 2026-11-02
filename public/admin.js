@@ -17,6 +17,7 @@ const state = {
   reviewManagers: [],
   accountReviewsReady: false,
   accountReviewBusy: false,
+  accountReviewRequest: null,
   accountReviewView: "pending",
   usersView: "reviews",
   auditSummary: [],
@@ -127,6 +128,9 @@ function statusTagHtml(s) {
 
 // ---- 登录页 ----
 function showLogin(error = "") {
+  // A previous administrator's asynchronous review must not own this login view.
+  state.accountReviewRequest = null;
+  state.accountReviewBusy = false;
   adminApp.innerHTML = `
     <section class="login-shell">
       <div class="login-visual">
@@ -2155,11 +2159,43 @@ function accountReviewsHtml() {
     <div class="account-review-list">${!state.accountReviewsReady ? `<p class="message error">审核列表待刷新，请刷新列表后再处理。</p>` : items.length ? items.map(accountReviewCardHtml).join("") : `<div class="panel panel-body">暂无${labels[state.accountReviewView]}记录。</div>`}</div>`;
 }
 
-async function refreshAccountReviews() {
+function beginAccountReviewRequest() {
+  const request = { user: state.user, token: state.sessionToken, content: document.querySelector("#content"), usersView: state.usersView, reviewView: state.accountReviewView };
+  state.accountReviewRequest = request;
+  state.accountReviewBusy = true;
+  return request;
+}
+
+function accountReviewSessionCurrent(request) {
+  return Boolean(request) && state.accountReviewRequest === request && state.user === request.user && state.sessionToken === request.token;
+}
+
+function accountReviewViewCurrent(request) {
+  return accountReviewSessionCurrent(request) && state.activeTab === "users" && state.usersView === request.usersView
+    && state.accountReviewView === request.reviewView && document.querySelector("#content") === request.content;
+}
+
+function finishAccountReviewRequest(request) {
+  if (state.accountReviewRequest !== request) return;
+  const sameSession = accountReviewSessionCurrent(request);
+  const repaint = accountReviewViewCurrent(request);
+  state.accountReviewRequest = null;
+  state.accountReviewBusy = false;
+  if (repaint) renderUsers();
+  else if (sameSession && state.activeTab === "users" && state.usersView === "reviews") {
+    // A reopened review view may contain fresh edits: leave it intact, allow explicit reload.
+    const refresh = document.querySelector("[data-review-refresh]");
+    if (refresh) refresh.disabled = false;
+  }
+}
+
+async function refreshAccountReviews(request) {
+  if (!accountReviewSessionCurrent(request)) return;
   // Invalidate first: a failed read must never leave a reusable stale decision card.
   state.accountReviews = [];
   state.accountReviewsReady = false;
   const [result, users] = await Promise.all([api("/api/admin/account-reviews"), api("/api/admin/users")]);
+  if (!accountReviewSessionCurrent(request)) return;
   state.accountReviews = result.reviews || [];
   state.reviewManagers = result.managers || [];
   state.users = users.users || [];
@@ -2167,7 +2203,7 @@ async function refreshAccountReviews() {
 }
 
 async function submitAccountReview(btn, renderedItem) {
-  if (state.accountReviewBusy || !state.accountReviewsReady) return;
+  if ((state.accountReviewBusy && accountReviewSessionCurrent(state.accountReviewRequest)) || !state.accountReviewsReady) return;
   const card = btn.closest("[data-review-kind]");
   const item = state.accountReviews.find(row => row.kind === card.dataset.reviewKind && row.id === card.dataset.reviewId);
   if (!item || item !== renderedItem || !reviewIsPending(item)) return;
@@ -2201,21 +2237,23 @@ async function submitAccountReview(btn, renderedItem) {
     : item.kind === "association" ? `确认关联 ${item.name} 至“${body.organization}”，并开放受限资料下载？当前角色和相册归属保持。`
       : item.kind === "wechat" ? "确认已人工核实微信身份及所选原账号？绑定已启用账号将保留原权限，新建／待审账号按所选权限开通。" : "确认已逐人核实资料及所选权限，并开通该账号？";
   if (!confirm(message)) return;
-  state.accountReviewBusy = true;
+  const request = beginAccountReviewRequest();
   btn.disabled = true;
   let submitted = false;
   try {
     await api(`/api/admin/account-reviews/${encodeURIComponent(item.kind)}/${encodeURIComponent(item.id)}/decision`, { method: "POST", body });
     submitted = true;
-    await refreshAccountReviews();
-    flash(action === "reject" ? item.kind === "association" ? "已拒绝关联；普通账户和本人相册仍可用" : "已拒绝并保留审核记录" : "审核已通过，列表已刷新");
+    if (!accountReviewSessionCurrent(request)) return;
+    await refreshAccountReviews(request);
+    if (accountReviewViewCurrent(request)) flash(action === "reject" ? item.kind === "association" ? "已拒绝关联；普通账户和本人相册仍可用" : "已拒绝并保留审核记录" : "审核已通过，列表已刷新");
   } catch (err) {
     // A POST error can also be a response lost after commit. Re-read, never retry it automatically.
+    if (!accountReviewSessionCurrent(request)) return;
     let refreshError = null;
-    if (!submitted) { try { await refreshAccountReviews(); } catch (error) { refreshError = error; } }
-    flash(submitted ? `审核已提交，列表刷新失败：${err.message}。请刷新核对，勿重复提交。`
+    if (!submitted) { try { await refreshAccountReviews(request); } catch (error) { refreshError = error; } }
+    if (accountReviewViewCurrent(request)) flash(submitted ? `审核已提交，列表刷新失败：${err.message}。请刷新核对，勿重复提交。`
       : `${err.message}${refreshError ? `；刷新失败：${refreshError.message}，请刷新核对后再处理。` : "；列表已刷新，请核对当前状态。"}`, "error");
-  } finally { state.accountReviewBusy = false; renderUsers(); }
+  } finally { finishAccountReviewRequest(request); }
 }
 
 function albumReadFieldsHtml(user = {}) {
@@ -2420,11 +2458,12 @@ function bindUserEvents() {
     btn.addEventListener("click", () => submitAccountReview(btn, renderedItem));
   });
   document.querySelectorAll("[data-review-refresh]").forEach(btn => btn.addEventListener("click", async () => {
-    if (state.accountReviewBusy) return;
-    state.accountReviewBusy = true; btn.disabled = true;
-    try { await refreshAccountReviews(); clearFlash(); }
-    catch (error) { flash(`列表刷新失败：${error.message}`, "error"); }
-    finally { state.accountReviewBusy = false; renderUsers(); }
+    if (state.accountReviewBusy && accountReviewSessionCurrent(state.accountReviewRequest)) return;
+    const request = beginAccountReviewRequest();
+    btn.disabled = true;
+    try { await refreshAccountReviews(request); if (accountReviewViewCurrent(request)) clearFlash(); }
+    catch (error) { if (accountReviewViewCurrent(request)) flash(`列表刷新失败：${error.message}`, "error"); }
+    finally { finishAccountReviewRequest(request); }
   }));
   for (const action of ["reopen", "revoke"]) {
     document.querySelectorAll(`[data-wx-${action}]`).forEach(btn => btn.addEventListener("click", async () => {
