@@ -133,10 +133,11 @@ function unifiedFixture(kind = "association", version = 3) {
   const card = { dataset: { reviewKind: kind, reviewId: review.id }, querySelector: selector => nodes[selector], querySelectorAll: () => [] };
   const approve = element({ dataset: { reviewAction: "approve" }, closest: () => card });
   const reject = element({ dataset: { reviewAction: "reject" }, closest: () => card });
+  const reopen = element({ dataset: { reviewAction: "reopen" }, closest: () => card });
   const retry = element();
   const content = element({ innerHTML: "" });
   context.document.querySelector = selector => selector === "#content" ? content : element();
-  context.document.querySelectorAll = selector => selector === "[data-review-action]" ? [approve, reject] : selector === "[data-review-refresh]" ? [retry] : selector === "[data-wx-id]" && kind === "wechat" ? [card] : [];
+  context.document.querySelectorAll = selector => selector === "[data-review-action]" ? [approve, reject, reopen] : selector === "[data-review-refresh]" ? [retry] : selector === "[data-wx-id]" && kind === "wechat" ? [card] : [];
   const requests = [], confirmations = [];
   let reviewsResponse = { reviews: [], managers: [{ id: "u_hq", name: "总部", role: "admin" }] };
   let postError = null, getError = null;
@@ -149,7 +150,7 @@ function unifiedFixture(kind = "association", version = 3) {
     return {};
   };
   const bind = () => { context.page.bindUserEvents(); assert.equal(typeof approve.handlers.click, "function", "unified approve action is bound"); };
-  return { context, review, nodes, card, approve, reject, retry, content, requests, confirmations, bind, setReviews: value => { reviewsResponse = value; }, failPost: error => { postError = error; }, failGet: error => { getError = error; } };
+  return { context, review, nodes, card, approve, reject, reopen, retry, content, requests, confirmations, bind, setReviews: value => { reviewsResponse = value; }, failPost: error => { postError = error; }, failGet: error => { getError = error; } };
 }
 
 test("统一队列渲染三种来源，资料与负责人转义；维护操作仅在次级页", () => {
@@ -319,7 +320,8 @@ test("过滤器实际点击切换同一队列，不按姓名联系方式删除�
   await filter.handlers.click();
   assert.match(f.content.innerHTML, /data-review-id="rejected"/);
   assert.match(f.content.innerHTML, /data-review-id="off"/);
-  assert.doesNotMatch(f.content.innerHTML, /data-review-action/);
+  assert.equal((f.content.innerHTML.match(/data-review-action="reopen"/g) || []).length, 1, "only the active rejected association can reopen");
+  assert.doesNotMatch(f.content.innerHTML, /data-review-action="approve"|data-review-action="reject"/);
   assert.equal(f.context.page.state.accountReviews.length, 4);
 });
 
@@ -523,4 +525,134 @@ test("离开后重进审核页的新表单不被旧请求重绘，仍可手动�
   assert.equal(laterContent.innerHTML, "重新打开审核页后输入的组织资料");
   assert.equal(f.context.page.state.message, "新页面提示");
   assert.equal(f.retry.disabled, false, "a new current review screen must retain a usable explicit refresh");
+});
+
+
+test("已拒绝关联通过明确重开操作回到新待审卡，再单独批准且旧卡不能重用", async () => {
+  const f = unifiedFixture(); f.bind();
+  const rejected = { ...f.review, status: "rejected", version: 4 };
+  f.setReviews({ reviews: [rejected], managers: f.context.page.state.reviewManagers });
+  await f.reject.handlers.click();
+  f.context.page.state.accountReviewView = "processed";
+  f.context.page.renderUsers();
+  assert.match(f.content.innerHTML, /class="btn secondary small" data-review-action="reopen"[^>]*>重新开放关联审核/);
+  f.bind(); const oldReopen = f.reopen.handlers.click;
+  const noteInput = f.nodes["[data-review-note]"];
+  delete f.nodes["[data-review-note]"]; // processed cards have no editable note field
+  const pending = { ...rejected, status: "pending", version: 5 };
+  f.setReviews({ reviews: [pending], managers: f.context.page.state.reviewManagers });
+  await oldReopen();
+  const posts = () => f.requests.filter(row => row.options?.method === "POST");
+  assert.equal(posts().length, 2, "reopen is a separate decision, never automatic approval");
+  assert.deepEqual(JSON.parse(JSON.stringify(posts()[1].options.body)), { action: "reopen", version: 4, note: rejected.note });
+  assert.match(f.confirmations[1], /重新开放.*审核/);
+  assert.match(f.confirmations[1], /不开放.*下载/);
+  assert.equal(f.context.page.state.accountReviewView, "pending");
+  assert.match(f.content.innerHTML, /确认关联并开放资料/);
+  await oldReopen(); assert.equal(posts().length, 2);
+  f.nodes["[data-review-note]"] = noteInput;
+  f.bind();
+  f.setReviews({ reviews: [{ ...pending, status: "approved", version: 6 }], managers: f.context.page.state.reviewManagers });
+  await f.approve.handlers.click();
+  assert.equal(posts().length, 3); assert.equal(posts()[2].options.body.action, "approve"); assert.equal(posts()[2].options.body.version, 5);
+});
+
+test("关联重开只允许active已拒绝业务条目，身份或停用记录不出现入口且回调不能提交", async () => {
+  for (const row of [
+    { kind: "association", status: "rejected", accountStatus: "disabled" },
+    { kind: "association", status: "approved", accountStatus: "active" },
+    { kind: "association", status: "pending", accountStatus: "active" },
+    { kind: "wechat", status: "rejected", accountStatus: "active" },
+    { kind: "wechat", status: "revoked", accountStatus: "active" },
+    { kind: "platform", status: "rejected", accountStatus: "rejected" }
+  ]) {
+    const f = unifiedFixture(row.kind);
+    Object.assign(f.review, { status: row.status, permissions: { ...f.review.permissions, accountStatus: row.accountStatus } });
+    f.context.page.state.accountReviewView = row.status === "pending" ? "pending" : row.status === "approved" ? "active" : "processed";
+    f.context.page.renderUsers();
+    assert.doesNotMatch(f.content.innerHTML, /data-review-action="reopen"/);
+    f.bind(); await f.reopen.handlers.click();
+    assert.equal(f.requests.length, 0);
+  }
+});
+
+test("取消关联重开不提交，版本冲突仅回读一次且旧回调不能重发", async () => {
+  const f = unifiedFixture();
+  f.review.status = "rejected"; f.context.page.state.accountReviewView = "processed";
+  f.bind();
+  f.context.confirm = () => false;
+  await f.reopen.handlers.click(); assert.equal(f.requests.length, 0);
+  f.context.confirm = () => true;
+  f.failPost(new Error("重开版本已变化"));
+  f.setReviews({ reviews: [{ ...f.review, version: 4 }], managers: [] });
+  const oldClick = f.reopen.handlers.click;
+  await oldClick(); await oldClick();
+  assert.equal(f.requests.filter(row => row.options?.method === "POST").length, 1);
+  assert.equal(f.requests.filter(row => row.url === "/api/admin/account-reviews").length, 1);
+  assert.match(f.content.innerHTML, /重开版本已变化/);
+});
+
+for (const action of ["approve", "reopen", "refresh"]) {
+  test(`后台延迟${action}完成只同步待审badge，保留活动编辑DOM和草稿提示`, async () => {
+    const f = unifiedFixture();
+    const badge = element({ textContent: action === "reopen" ? "0" : "1", hidden: action === "reopen" });
+    const query = f.context.document.querySelector;
+    f.context.document.querySelector = selector => selector === "[data-account-review-count]" ? badge : query(selector);
+    if (action === "reopen") { f.review.status = "rejected"; f.context.page.state.accountReviewView = "processed"; }
+    f.bind();
+    const wait = deferredResponse(), api = f.context.api;
+    const nextRows = action === "approve" ? [] : [{ ...f.review, status: "pending", version: 4 }];
+    f.setReviews({ reviews: nextRows, managers: [] });
+    f.context.api = (url, options) => (action === "refresh" ? url === "/api/admin/account-reviews" : options?.method === "POST") ? wait.promise : api(url, options);
+    const pending = action === "refresh" ? f.retry.handlers.click() : f[action].handlers.click();
+    const editor = navigateToEditor(f), draft = f.context.page.state.draft;
+    wait.resolve(action === "refresh" ? { reviews: nextRows, managers: [] } : { ok: true });
+    await pending;
+    assert.equal(badge.textContent, action === "approve" ? "0" : "1");
+    assert.equal(badge.hidden, action === "approve");
+    assert.equal(f.content.innerHTML, editor); assert.equal(f.context.page.state.draft, draft);
+    assert.equal(draft.title, "正在编辑的活动"); assert.equal(f.context.page.state.message, "当前活动编辑提示");
+    if (action === "reopen") assert.equal(f.context.page.state.accountReviewView, "processed", "background completion cannot change current view selection");
+  });
+
+  test(`后台延迟${action}跨会话完成不更新新会话badge或当前页`, async () => {
+    const f = unifiedFixture();
+    const badge = element({ textContent: "1" });
+    const query = f.context.document.querySelector;
+    f.context.document.querySelector = selector => selector === "[data-account-review-count]" ? badge : query(selector);
+    if (action === "reopen") { f.review.status = "rejected"; f.context.page.state.accountReviewView = "processed"; }
+    f.bind();
+    const wait = deferredResponse(), api = f.context.api;
+    f.context.api = (url, options) => (action === "refresh" ? url === "/api/admin/account-reviews" : options?.method === "POST") ? wait.promise : api(url, options);
+    const pending = action === "refresh" ? f.retry.handlers.click() : f[action].handlers.click();
+    f.context.page.showLogin();
+    f.context.page.state.user = { id: "later-hq", role: "admin" }; f.context.page.state.sessionToken = "later-token";
+    f.content.innerHTML = "新会话编辑页面"; badge.textContent = "9"; badge.hidden = false;
+    wait.resolve(action === "refresh" ? { reviews: [], managers: [] } : { ok: true });
+    await pending;
+    assert.equal(badge.textContent, "9"); assert.equal(badge.hidden, false);
+    assert.equal(f.content.innerHTML, "新会话编辑页面");
+  });
+}
+
+
+test("关联重开未返回时重复点击只发送一次，提交后刷新失败清除旧卡且提示核对", async () => {
+  const f = unifiedFixture();
+  f.review.status = "rejected"; f.context.page.state.accountReviewView = "processed";
+  f.bind();
+  const wait = deferredResponse(), api = f.context.api;
+  f.context.api = (url, options) => {
+    if (options?.method === "POST") { f.requests.push({ url, options }); return wait.promise; }
+    return api(url, options);
+  };
+  f.failGet(new Error("列表读回中断"));
+  const pending = f.reopen.handlers.click();
+  await f.reopen.handlers.click();
+  assert.equal(f.requests.filter(row => row.options?.method === "POST").length, 1);
+  wait.resolve({ ok: true }); await pending;
+  assert.equal(f.context.page.state.accountReviewsReady, false);
+  assert.equal(f.context.page.state.accountReviews.length, 0);
+  assert.match(f.content.innerHTML, /已提交.*刷新失败.*勿重复提交/);
+  await f.reopen.handlers.click();
+  assert.equal(f.requests.filter(row => row.options?.method === "POST").length, 1);
 });
