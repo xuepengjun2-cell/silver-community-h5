@@ -1951,3 +1951,27 @@ a { color: inherit; text-decoration: none; }
   .audit-filter-grid { grid-template-columns: 1fr 1fr; }
   .audit-filter-actions { grid-column: 1 / -1; }
 }
+
+/* Headquarters association queue: daily review first, account maintenance second. */
+.account-review-toolbar, .account-review-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.account-review-toolbar { margin-bottom: 16px; justify-content: space-between; }
+.account-review-list { display: grid; gap: 14px; margin-top: 16px; }
+.account-review-card { border: 1px solid var(--line); border-radius: 12px; padding: 18px; background: #fff; min-width: 0; }
+.account-review-summary { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.account-review-summary p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 6px 0; overflow-wrap: anywhere; }
+.account-review-source { display: inline-block; font-size: 12px; color: var(--muted); background: var(--paper); border-radius: 6px; padding: 3px 7px; }
+.account-review-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+.account-review-fields .field, .account-review-details .field { margin-bottom: 0; min-width: 0; }
+.account-review-details { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 12px; }
+.account-review-details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.account-review-details[open] > :not(summary) { margin-top: 12px; }
+.account-review-details .select, .account-review-fields .select { max-width: 100%; width: 100%; }
+.account-review-card .btn:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 720px) {
+  .account-review-fields { grid-template-columns: 1fr; }
+  .account-review-summary > .btn { width: 100%; }
+  .account-review-card { padding: 14px; }
+}
+
+.account-review-count { display: inline-block; min-width: 18px; line-height: 18px; text-align: center; background: #e8462c; color: #fff; border-radius: 9px; font-size: 11px; margin-left: 6px; padding: 0 5px; font-weight: 600; }
+.account-review-count[hidden] { display: none; }
