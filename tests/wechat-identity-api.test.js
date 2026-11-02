@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
+const { once } = require("node:events");
 
 const ROOT = path.resolve(__dirname, "..");
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -51,14 +52,14 @@ async function withServer(run, { extraSeed = {}, wechatSecret = "test-only-secre
       doc: JSON.stringify(admin), created_at: admin.createdAt
     }, ...(extraSeed.users || [])], activities: [{ id: activity.id, status: activity.status, city: activity.city, category: activity.category,
       sort_order: 1, created_at: activity.createdAt, doc: JSON.stringify(activity) }] }));
-    const port = 21000 + Math.floor(Math.random() * 20000);
+    const portFile = path.join(dir, "listener-port");
     const codes = { applicant1: "openid-first", applicant2: "openid-first", applicant3: "openid-first",
       applicant4: "openid-first", existing1: "openid-existing", existing2: "openid-existing",
       existing3: "openid-existing", existing4: "openid-existing",
       conflict: "openid-conflict" };
     child = spawn(process.execPath, ["--require", path.join(ROOT, "tests/concurrency/preload.js"), "server.js"], {
       cwd: dir,
-      env: { ...process.env, PORT: String(port), FAKE_DB_SEED: seed, FAKE_DB_DUMP: dumpFile, FAKE_WECHAT_CODES: JSON.stringify(codes),
+      env: { ...process.env, PORT: "0", FAKE_SERVER_PORT_FILE: portFile, FAKE_DB_SEED: seed, FAKE_DB_DUMP: dumpFile, FAKE_WECHAT_CODES: JSON.stringify(codes),
         FAKE_DB_GATE_FILE: gateFile, FAKE_WECHAT_GATE_FILE: wechatGateFile,
         WECHAT_MINIAPP_APPID: "wx-test", WECHAT_MINIAPP_SECRET: wechatSecret },
       stdio: ["ignore", "pipe", "pipe"]
@@ -66,8 +67,10 @@ async function withServer(run, { extraSeed = {}, wechatSecret = "test-only-secre
     let log = "";
     child.stdout.on("data", chunk => { log += chunk; });
     child.stderr.on("data", chunk => { log += chunk; });
-    for (let i = 0; i < 100 && !log.includes("running at"); i++) await sleep(100);
-    if (!log.includes("running at")) throw new Error(`server did not start: ${log}`);
+    for (let i = 0; i < 100 && !fs.existsSync(portFile) && child.exitCode === null; i++) await sleep(100);
+    if (!fs.existsSync(portFile)) throw new Error(`server did not start: ${log}`);
+    const port = Number(fs.readFileSync(portFile, "utf8"));
+    assert.ok(Number.isInteger(port) && port > 0, "fixture receives OS-assigned listener port");
     const api = async (route, { method = "GET", token, cookie, origin, contentType, body, rawBody } = {}) => {
       const response = await fetch(`http://127.0.0.1:${port}/api${route}`, {
         method,
@@ -104,7 +107,11 @@ async function withServer(run, { extraSeed = {}, wechatSecret = "test-only-secre
     await run({ api, adminToken: logged.data.token, port, gate, wechatGate,
       persisted: () => JSON.parse(fs.readFileSync(dumpFile, "utf8")) });
   } finally {
-    if (child) child.kill();
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, "exit");
+      child.kill();
+      await exited;
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -965,4 +972,132 @@ test("审核排队后重新验证审核员权限，停用引用的写入不能�
   const [, changed, denied] = await Promise.all([hold, demote, decision]);
   assert.equal(changed.status, 200); assert.equal(denied.status, 403);
   assert.equal((await api("/me", { token: opened.data.token })).data.user.associationStatus, "pending");
+}));
+
+
+test("总部重开仅将已拒绝业务关联改为新待审版本，再独立批准且不动微信身份相册权限", () => withServer(async ({ api, adminToken, persisted }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  const { user, token } = opened.data;
+  const mine = await api("/my/activity-projects", { method: "POST", token, body: { title: "重开前相册" } });
+  const route = `/admin/account-reviews/association/${user.id}/decision`;
+  const decide = (action, version, patch = {}) => api(route, { method: "POST", token: adminToken, body: { action, version, ...patch } });
+  assert.equal((await decide("reopen", 1)).status, 409, "待审不能重开");
+  assert.equal((await decide("reject", 1)).status, 200);
+  const identities = persisted().wechat_identities;
+  const before = JSON.parse(persisted().users.find(row => row.id === user.id).doc);
+  assert.equal((await decide("reopen", 1)).status, 409);
+  assert.equal((await api(route, { method: "POST", token, body: { action: "reopen", version: 2 } })).status, 403);
+  assert.equal((await decide("reopen", 2)).status, 200);
+  const after = JSON.parse(persisted().users.find(row => row.id === user.id).doc);
+  assert.equal(after.associationRevision, 3); assert.equal(after.associationStatus, "pending"); assert.equal(after.canDownload, false);
+  for (const key of ["id", "role", "status", "albumReadScope", "albumReadProjectIds", "passwordHash", "sessionRevokedAt", "wechatBindingSuspended"]) assert.deepEqual(after[key], before[key]);
+  assert.deepEqual(persisted().wechat_identities, identities);
+  assert.equal((await api(`/my/activity-projects/${mine.data.project.id}`, { token })).status, 200);
+  assert.equal((await api("/public/activities/act_download_test/download", { token })).status, 403);
+  assert.equal((await decide("reopen", 2)).status, 409); assert.equal((await decide("reopen", 3)).status, 409);
+  for (const version of [1, 2]) assert.equal((await decide("approve", version)).status, 409);
+  for (const patch of [{ managerId: "missing" }, { relatedAccountId: "test_admin" }, { organization: "" }]) assert.ok([400, 409].includes((await decide("approve", 3, patch)).status));
+  assert.equal((await decide("approve", 3, { relatedAccountId: "renewal_owner" })).status, 200);
+  assert.equal((await api("/public/activities/act_download_test/download", { token })).status, 200);
+  assert.equal((await decide("reopen", 4)).status, 409);
+  assert.equal((await decide("approve", 3)).status, 409);
+  assert.equal(JSON.parse(persisted().activity_projects.find(row => row.id === "project_own").doc).ownerId, "renewal_owner");
+  assert.equal((await api("/my/activity-projects/project_own", { token })).status, 404);
+}, { extraSeed: albumScopeFixture() }));
+
+test("账号维护停用再启用使旧关联审核卡失效，当前版本仍可批准", () => withServer(async ({ api, adminToken }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  const id = opened.data.user.id;
+  const getReview = async () => (await api("/admin/account-reviews", { token: adminToken })).data.reviews.find(row => row.id === id && row.kind === "association");
+  const before = await getReview();
+  for (const status of ["disabled", "active"]) assert.equal((await api(`/admin/users/${id}`, { method: "PUT", token: adminToken, body: { status, canDownload: false } })).status, 200);
+  const decision = version => api(`/admin/account-reviews/association/${id}/decision`, { method: "POST", token: adminToken, body: { action: "approve", version } });
+  assert.equal((await decision(before.version)).status, 409, "disable→active ABA cannot revive an old card");
+  let current = await getReview(); assert.ok(current.version > before.version);
+  for (const patch of [{ name: "已复核姓名" }, { role: "viewer" }, { canDownload: true }, { albumReadScope: "all" }, { password: "new-password" }]) {
+    const oldVersion = current.version;
+    assert.equal((await api(`/admin/users/${id}`, { method: "PUT", token: adminToken, body: patch })).status, 200);
+    assert.equal((await decision(oldVersion)).status, 409);
+    current = await getReview(); assert.ok(current.version > oldVersion);
+  }
+  assert.equal((await decision(current.version)).status, 200);
+}));
+
+test("业务关联重开拒绝停用账号且统一接口不将其他来源reopen误当reject", () => withServer(async ({ api, adminToken }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  const id = opened.data.user.id;
+  const route = `/admin/account-reviews/association/${id}/decision`;
+  assert.equal((await api(route, { method: "POST", token: adminToken, body: { action: "reject", version: 1 } })).status, 200);
+  await api(`/admin/users/${id}`, { method: "PUT", token: adminToken, body: { status: "disabled" } });
+  const reviews = (await api("/admin/account-reviews", { token: adminToken })).data.reviews;
+  const current = reviews.find(row => row.kind === "association");
+  assert.equal((await api(route, { method: "POST", token: adminToken, body: { action: "reopen", version: current.version } })).status, 409);
+  await api("/auth/wechat/apply", { method: "POST", body: onboardBody("existing1") });
+  await api("/register", { method: "POST", body: { ...onboardBody("existing1"), username: "keep-platform", password: "platform-password" } });
+  const legacy = (await api("/admin/account-reviews", { token: adminToken })).data.reviews.filter(row => row.kind !== "association");
+  for (const row of legacy) {
+    assert.equal((await api(`/admin/account-reviews/${row.kind}/${row.id}/decision`, { method: "POST", token: adminToken, body: { action: "reopen", version: row.version } })).status, 400);
+  }
+  const latest = (await api("/admin/account-reviews", { token: adminToken })).data.reviews;
+  for (const row of legacy) assert.equal(latest.find(item => item.kind === row.kind && item.id === row.id).status, row.status);
+}));
+
+test("统一审核按实际来源保留独立同联系方式H5和绑定H5，只排除纯微信新建平台行", () => withServer(async ({ api, adminToken }) => {
+  await api("/auth/wechat/apply", { method: "POST", body: onboardBody("applicant1") });
+  let queue = (await api("/admin/account-reviews", { token: adminToken })).data.reviews;
+  const wx = queue.find(row => row.kind === "wechat");
+  const created = await api(`/admin/account-reviews/wechat/${wx.id}/decision`, { method: "POST", token: adminToken, body: { action: "approve", version: wx.version, confirmNoExistingAccount: true } });
+  for (const username of ["h5-independent", "h5-bound"]) assert.equal((await api("/register", { method: "POST", body: { ...onboardBody("existing1"), username, password: "platform-password" } })).status, 201);
+  queue = (await api("/admin/account-reviews", { token: adminToken })).data.reviews;
+  const bound = queue.find(row => row.kind === "platform" && row.user.username === "h5-bound");
+  await api("/auth/wechat/apply", { method: "POST", body: onboardBody("existing1") });
+  queue = (await api("/admin/account-reviews", { token: adminToken })).data.reviews;
+  const pending = queue.find(row => row.kind === "wechat" && row.status === "pending");
+  assert.equal((await api(`/admin/account-reviews/wechat/${pending.id}/decision`, { method: "POST", token: adminToken, body: { action: "approve", version: pending.version, userId: bound.id } })).status, 200);
+  queue = (await api("/admin/account-reviews", { token: adminToken })).data.reviews;
+  const platforms = queue.filter(row => row.kind === "platform");
+  assert.deepEqual(platforms.map(row => row.user.username).sort(), ["h5-bound", "h5-independent"]);
+  assert.equal(platforms.every(row => row.contact === "13900000000"), true);
+  assert.equal(queue.filter(row => row.kind === "wechat").length, 2);
+  assert.equal(queue.some(row => row.kind === "platform" && row.userId === created.data.user.id), false);
+}));
+
+
+test("微信解绑和重新核实绑定递增业务审核版本，业务重开不恢复已撤销身份", () => withServer(async ({ api, adminToken, persisted }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  const id = opened.data.user.id;
+  const decision = (action, version) => api(`/admin/account-reviews/association/${id}/decision`, { method: "POST", token: adminToken, body: { action, version } });
+  const review = async () => (await api("/admin/account-reviews", { token: adminToken })).data.reviews.find(row => row.kind === "association" && row.id === id);
+  assert.equal((await decision("reject", 1)).status, 200);
+  const identity = persisted().wechat_identities.find(row => row.user_id === id);
+  assert.equal((await api(`/admin/wechat/applications/${identity.id}/revoke`, { method: "POST", token: adminToken, body: {} })).status, 200);
+  const revokedVersion = (await review()).version;
+  assert.ok(revokedVersion > 2, "identity revocation invalidates association cards");
+  const revoked = persisted().wechat_identities.find(row => row.id === identity.id);
+  const securityBefore = JSON.parse(persisted().users.find(row => row.id === id).doc);
+  assert.equal((await decision("reopen", 2)).status, 409);
+  assert.equal((await decision("reopen", revokedVersion)).status, 200);
+  assert.deepEqual(persisted().wechat_identities.find(row => row.id === identity.id), revoked);
+  const securityAfter = JSON.parse(persisted().users.find(row => row.id === id).doc);
+  assert.equal(securityAfter.sessionRevokedAt, securityBefore.sessionRevokedAt);
+  assert.equal((await api("/auth/wechat/session", { method: "POST", body: { code: "applicant2" } })).data.status, "revoked");
+  assert.equal((await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant3") })).status, 403);
+  // The existing dedicated identity reopen remains a separate explicit HQ step.
+  assert.equal((await api(`/admin/wechat/applications/${identity.id}/reopen`, { method: "POST", token: adminToken, body: {} })).status, 200);
+  const beforeBinding = (await review()).version;
+  assert.equal((await api(`/admin/wechat/applications/${identity.id}/approve`, { method: "POST", token: adminToken, body: { userId: id } })).status, 200);
+  assert.equal((await decision("approve", beforeBinding)).status, 409);
+  assert.equal((await decision("approve", (await review()).version)).status, 200);
+}));
+
+test("密码验证微信绑定提交后使旧业务审核版本失效且新版本可批准", () => withServer(async ({ api, adminToken }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  const id = opened.data.user.id;
+  assert.equal((await api(`/admin/users/${id}`, { method: "PUT", token: adminToken, body: { password: "bind-password" } })).status, 200);
+  const review = async () => (await api("/admin/account-reviews", { token: adminToken })).data.reviews.find(row => row.id === id && row.kind === "association");
+  const before = await review();
+  assert.equal((await api("/auth/wechat/bind", { method: "POST", body: { code: "applicant2", username: opened.data.user.username, password: "bind-password" } })).status, 200);
+  const decision = version => api(`/admin/account-reviews/association/${id}/decision`, { method: "POST", token: adminToken, body: { action: "approve", version } });
+  assert.equal((await decision(before.version)).status, 409);
+  assert.equal((await decision((await review()).version)).status, 200);
 }));

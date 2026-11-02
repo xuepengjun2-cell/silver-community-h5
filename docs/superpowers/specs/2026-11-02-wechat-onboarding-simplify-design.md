@@ -48,7 +48,10 @@
 - 同一微信重复提交至多产生一个普通账户；已绑定active用户返回原账号会话而不覆盖资料／角色。既有 `session/apply/bind` 端点保持兼容。自助账户username由服务端生成、无平台密码，不要求客户设置一套新密码。
 - 新用户doc保存 `authSource=wechat-selfservice`、`associationStatus=pending`、`associationRevision=1`、`applicationContact/applicationCity/applicationOrganization`、`associationSubmittedAt`；确认后可加 `associatedOrganization,associatedManagerId,relatedAccountId,associationReviewedBy/At,associationNote`。不新增数据库表/改变initDb。
 - `GET /api/admin/account-reviews` 返回 `{reviews,managers}`，reviews统一kind=`association|wechat|platform`、id、userId、姓名/联系方式/城市/organization、status、version、submittedAt、当前权限摘要。历史队列继续可处理，不依据联系方式自动去重。
-- `POST /api/admin/account-reviews/:kind/:id/decision`，body=`{action:approve|reject,version,organization,managerId,relatedAccountId,note,...legacyDecisionFields}`。association批准默认开放受限资料；权限、版本、账户状态及经理/原账号有效性在服务端重新核实。旧微信/H5审核复用原安全规则，普通流程不自动授予admin。
+- `POST /api/admin/account-reviews/:kind/:id/decision`，body=`{action:approve|reject|reopen,version,organization,managerId,relatedAccountId,note,...legacyDecisionFields}`。association批准默认开放受限资料；权限、版本、账户状态及经理/原账号有效性在服务端重新核实。旧微信/H5审核复用原安全规则，普通流程不自动授予admin。
+- `reopen` 仅供当前总部管理员重开 active 自助账号的 rejected 业务关联；需最新数字版本，转为新 pending 版本且 `canDownload=false`，随后另行审核批准。重复／旧版本返回409，其他 kind 不接受该动作。重开不修改微信身份、会话安全状态、角色、相册归属与范围；撤销微信仍须经原有身份核实流程处理，业务重开不能恢复微信登录。
+- 自助账号维护保存（含姓名资料更正）及微信绑定／解绑安全写入都会递增 `associationRevision`，停用再启用也不能恢复旧卡有效性。使用既有用户写锁，事务提交后才发布新账号快照／版本；旧账号行为保持。
+- 统一队列按创建来源展示：纯 `wechat-miniapp` 新建账号仅保留微信身份行，不虚构平台申请；独立 H5 申请及其后续绑定均保留，绝不按姓名或联系方式去重。
 - `/me`及登录返回的publicUser增加安全的关联状态/组织/负责人显示字段，不能输出openid、密码哈希、联系人等内部敏感字段。已签发会话经复核即可读到审批后权限，不要求重新注册。
 
 ## 实施与发布边界

@@ -43,3 +43,16 @@ Module._load = function load(request, parent, isMain) {
   }
   return loaded;
 };
+
+// Only the identity fixture requests OS-assigned listener reporting. Other test
+// servers keep their existing listener behavior and no production hook is added.
+if (process.env.FAKE_SERVER_PORT_FILE) {
+  const { Server } = require("node:net");
+  const originalListen = Server.prototype.listen;
+  Server.prototype.listen = function (...args) {
+    this.once("listening", () => {
+      fs.writeFileSync(process.env.FAKE_SERVER_PORT_FILE, String(this.address().port));
+    });
+    return originalListen.apply(this, args);
+  };
+}

@@ -1320,6 +1320,11 @@ async function approveWechatIdentity(id, reviewer, input, req, expectedVersion =
         );
         target = createdUser;
       }
+      if (target.authSource === "wechat-selfservice") {
+        activatedUser = invalidateAssociationReview(target);
+        await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(activatedUser), target.id]);
+        target = activatedUser;
+      }
       const reviewedAt = now();
       await conn.query(
         "UPDATE wechat_identities SET user_id = ?, status = ?, reviewer_id = ?, review_note = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
@@ -1374,7 +1379,7 @@ async function decideWechatIdentity(identityId, action, reviewer, body, req, exp
       if (action === "revoke") {
         const original = readDb().users.find(item => item.id === identity.user_id);
         if (!original) throw identityError("原账号不存在，请先核实", 409);
-        revokedUser = { ...original, sessionRevokedAt: userSessionRevokedAt(original) };
+        revokedUser = invalidateAssociationReview({ ...original, sessionRevokedAt: userSessionRevokedAt(original) });
         await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(revokedUser), original.id]);
       }
       await conn.query(
@@ -1420,6 +1425,22 @@ function publishUserSnapshot(user) {
     else _persistedSnapshot.users[index] = copy;
   }
 }
+// Any account/security write makes existing business-review cards stale. The
+// caller holds the user lock and publishes this revision only after commit.
+function invalidateAssociationReview(user) {
+  return user.authSource === "wechat-selfservice"
+    ? { ...user, associationRevision: user.associationRevision + 1 } : user;
+}
+async function commitAccountUser(user) {
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query("UPDATE users SET role = ?, status = ?, doc = ? WHERE id = ?", [user.role, user.status, JSON.stringify(user), user.id]);
+    await conn.commit();
+    publishUserSnapshot(user);
+  } catch (error) { await conn.rollback(); throw error; }
+  finally { conn.release(); }
+}
 function associationDownloadError(user) {
   return user.authSource === "wechat-selfservice" && user.associationStatus !== "approved"
     ? "资料下载需总部完成关联审核" : "";
@@ -1440,14 +1461,15 @@ async function decideAccountUser(kind, id, reviewer, body, req) {
     const association = kind === "association";
     if (association !== (target.authSource === "wechat-selfservice")) throw identityError("申请类型不匹配", 409);
     checkReviewVersion(body.version, association ? target.associationRevision : legacyReviewVersion(target));
-    if (association ? target.associationStatus !== "pending" || target.status !== "active"
+    const reopening = association && body.action === "reopen";
+    if (association ? target.associationStatus !== (reopening ? "rejected" : "pending") || target.status !== "active"
       : target.status !== "pending" || target.role === "admin") {
       throw identityError("申请状态已变化，请刷新后重试", 409);
     }
     const approved = body.action === "approve";
     let next;
     if (association) {
-      next = { ...target, associationStatus: approved ? "approved" : "rejected",
+      next = { ...target, associationStatus: reopening ? "pending" : approved ? "approved" : "rejected",
         associationRevision: target.associationRevision + 1, canDownload: approved,
         associationReviewedBy: reviewer.id, associationReviewedAt: now(), associationNote: String(body.note || "").trim().slice(0, 500) };
       if (approved) {
@@ -1470,15 +1492,8 @@ async function decideAccountUser(kind, id, reviewer, body, req) {
       const policy = parseAlbumReadPolicy(body, next, readDb().activityProjects || []);
       if (policy) Object.assign(next, { albumReadScope: policy.scope, albumReadProjectIds: policy.projectIds });
     }
-    const conn = await pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.query("UPDATE users SET role = ?, status = ?, doc = ? WHERE id = ?", [next.role, next.status, JSON.stringify(next), next.id]);
-      await conn.commit();
-      publishUserSnapshot(next);
-      return next;
-    } catch (error) { await conn.rollback(); throw error; }
-    finally { conn.release(); }
+    await commitAccountUser(next);
+    return next;
   });
 }
 
@@ -3301,7 +3316,10 @@ async function handleApi(req, res, pathname) {
           );
         }
         await recordWechatIdentityEvent(conn, row, "bind-existing", user.id, user.id);
+        const nextUser = invalidateAssociationReview(user);
+        if (nextUser !== user) await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(nextUser), user.id]);
         await conn.commit();
+        if (nextUser !== user) publishUserSnapshot(nextUser);
       } catch (error) {
         await conn.rollback();
         if (error && error.code === "ER_DUP_ENTRY") return sendJson(res, 409, { error: "该微信或原账号已绑定，请联系总部核对" });
@@ -5203,7 +5221,7 @@ async function handleApi(req, res, pathname) {
       if (!requireRole(req, res, ["admin"])) return;
       const [identities] = await pool.query("SELECT * FROM wechat_identities ORDER BY created_at ASC");
       const users = readDb().users;
-      const reviews = users.filter(user => user.authSource === "wechat-selfservice" || (user.applicationContact && user.role !== "admin")).map(user => ({
+      const reviews = users.filter(user => user.authSource === "wechat-selfservice" || (user.authSource !== "wechat-miniapp" && user.applicationContact && user.role !== "admin")).map(user => ({
         kind: user.authSource === "wechat-selfservice" ? "association" : "platform", id: user.id, userId: user.id,
         name: user.name, contact: user.applicationContact || "", city: user.applicationCity || "",
         organization: user.associatedOrganization || user.applicationOrganization || "",
@@ -5232,10 +5250,11 @@ async function handleApi(req, res, pathname) {
     const reviewer = requireRole(req, res, ["admin"]);
     if (!reviewer) return;
     const body = await parseBody(req, 8 * 1024);
-    if (!["approve", "reject"].includes(body.action) || body.version === undefined || body.version === null) {
+    const [, kind, id] = accountDecision;
+    const allowedActions = kind === "association" ? ["approve", "reject", "reopen"] : ["approve", "reject"];
+    if (!allowedActions.includes(body.action) || body.version === undefined || body.version === null) {
       return sendJson(res, 400, { error: "请提供审核动作及当前申请版本" });
     }
-    const [, kind, id] = accountDecision;
     try {
       if (kind === "wechat") {
         if (body.action === "approve") {
@@ -5364,7 +5383,8 @@ async function handleApi(req, res, pathname) {
       const user = requireRole(req, res, ["admin"]);
       if (!user) return;
       const db = readDb();
-      const target = db.users.find(x => x.id === adminUser[1]);
+      const storedTarget = db.users.find(x => x.id === adminUser[1]);
+      const target = storedTarget?.authSource === "wechat-selfservice" ? { ...storedTarget } : storedTarget;
       if (!target) {
         sendJson(res, 404, { error: "账号不存在" });
         return;
@@ -5405,12 +5425,17 @@ async function handleApi(req, res, pathname) {
         || (previous.canDownload !== false) !== (target.canDownload !== false)
         || stableSerialize(albumReadPolicy(previous)) !== stableSerialize(albumReadPolicy(target));
       if (securityChanged) target.sessionRevokedAt = userSessionRevokedAt(target);
-      await persistDb();
+      // A conservative bump also covers review-affecting profile edits and ABA.
+      if (target.authSource === "wechat-selfservice") {
+        Object.assign(target, invalidateAssociationReview(target));
+        await commitAccountUser(target);
+      } else await persistDb();
       if (securityChanged) await expireUserSessions(target.id);
       if (resetExistingPassword) {
         await revokeWechatBindingsForUser(target.id, user.id, "总部重置账号密码");
         target.wechatBindingSuspended = false;
-        await persistDb();
+        if (target.authSource === "wechat-selfservice") await commitAccountUser(target);
+        else await persistDb();
       }
       sendJson(res, 200, { user: publicUser(target) });
     });
