@@ -1,6 +1,6 @@
 # WeChat Self-service and HQ Association Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** One WeChat entry, immediate own-album access, HQ association before restricted downloads, one review queue.
 
@@ -34,10 +34,10 @@
 
 **Interfaces:** Implement exact endpoints and metadata in Spec. Replies use existing session envelope; add association fields to publicUser. `reviews` item uses kind/id/version, managers active admin/operator.
 
-- [ ] Write integration regressions for self-service, idempotence, denied downloads/direct calls, own scope and unchanged public share.
-- [ ] Observe failure before implementation; implement minimal locked/transactional lifecycle without initDb or package changes.
-- [ ] Test review approve/reject with CAS revision, inactive references, stale reviewer and legacy compatibility; no account merge/ownership changes.
-- [ ] Run identity/concurrency/media boundaries and independent review. Commit backend only; no public files.
+- [x] Write integration regressions for self-service, idempotence, denied downloads/direct calls, own scope and unchanged public share.
+- [x] Observe failure before implementation; implement minimal locked/transactional lifecycle without initDb or package changes.
+- [x] Test review approve/reject with CAS revision, inactive references, stale reviewer and legacy compatibility; no account merge/ownership changes.
+- [x] Run identity/concurrency/media boundaries and independent review. Commit backend only; no public files.
 
 ### Task 2: Unified admin interface
 
@@ -45,10 +45,10 @@
 
 **Interfaces:** Use Task1 review endpoints; preserve account manager functions under secondary tab. Ordinary association row approves organization/manager/downloads; optional old-account reference in details.
 
-- [ ] Pin meaningful UI interaction expectations before implementation.
-- [ ] Render one queue and one primary action per row; collect legacy conflict/role controls into details rather than removing guards.
-- [ ] Verify approval/error/refresh flows, escaping, no stale cards and matching API payload; independent review.
-- [ ] Integrate static changes only after backend release commit is clean/deployed; publish CDN with exact static baseline separately.
+- [x] Pin meaningful UI interaction expectations before implementation.
+- [x] Render one queue and one primary action per row; collect legacy conflict/role controls into details rather than removing guards.
+- [x] Verify approval/error/refresh flows, escaping, no stale cards and matching API payload; independent review.
+- [x] Integrate static changes only after backend release commit is clean/deployed; publish CDN with exact static baseline separately.
 
 ### Task 3: Native login and candidate packaging
 
@@ -56,17 +56,17 @@
 
 **Interfaces:** `wechatSession` preserves existing flow; new `onboardWechat` calls /auth/wechat/onboard and stores returned session with existing epoch/manual-logout guards. Server messages gate restricted downloads.
 
-- [ ] Write failing tests for one main WeChat entry, unbound streamlined form, direct onboarding, old binding, pending-download prompt and valid session restore.
-- [ ] Implement native UI with three application fields, city optional, password/admin login folded, no separate platform registration form.
-- [ ] Test late responses/manual logout/role gates; verify all untouched video/upload/save baseline hashes.
-- [ ] Push exact native branch candidate, run relevant CI, generate reproducible source/hash manifest and development preview if tooling is authorized/available. Never call preview upload formal publication.
+- [x] Write failing tests for one main WeChat entry, unbound streamlined form, direct onboarding, old binding, pending-download prompt and valid session restore.
+- [x] Implement native UI with three application fields, city optional, password/admin login folded, no separate platform registration form.
+- [x] Test late responses/manual logout/role gates; verify all untouched video/upload/save baseline hashes.
+- [x] Push exact native branch candidate, run relevant CI, generate reproducible source/hash manifest and development preview if tooling is authorized/available. Never call preview upload formal publication.
 
 ### Task 4: Integration and delivery
 
-- [ ] Run required checks; independent security/concurrency review of final branches.
-- [ ] GitHub-first backend-only release with public tree unchanged, then separate static commit and controlled static release.
-- [ ] Verify public caps/health, test approved/rejected download boundaries and existing album counts/ownership; no production test accounts without isolated authorization.
-- [ ] Provide native preview and mobile walkthrough. Client review/publication require the actual code baseline and truthful platform-category checks; preserve present formal version until those gates pass.
+- [x] Run required checks; independent security/concurrency review of final branches.
+- [x] GitHub-first backend-only release with public tree unchanged, then separate static commit and controlled static release.
+- [x] Verify public caps/health, test approved/rejected download boundaries and existing album counts/ownership; no production test accounts without isolated authorization.
+- [x] Provide native preview and mobile walkthrough. Client review/publication require the actual code baseline and truthful platform-category checks; preserve present formal version until those gates pass.
 
 
 ### Final scoped correction wave (2026-11-02)
@@ -75,3 +75,5 @@
 - Backend fresh verification: identity 81/81, concurrency 18/18, npm syntax checks and diff whitespace checks passed with Node24.21.0. RED evidence and exact commands remain in `scratch/final-fix/` and the final fix report; no media suite rerun for this narrow change.
 - Static stage follows in an independent local clone/branch only after backend commit: secondary HQ reopen control, background pending badge update, same-session/editor protections and cache label. Final admin tests/report follow separately.
 - Backend/static commits remain separate release targets; native candidate is untouched. Local tests are not CI, deployment, platform publication or device acceptance.
+
+本轮开发与交付步骤已完成；复选标记不代表首次注册真机验收或微信正式发布。实际状态见[交付记录](../../releases/2026-11-02-wechat-onboarding.md)。
