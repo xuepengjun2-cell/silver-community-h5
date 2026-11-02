@@ -67,3 +67,11 @@
 - [ ] GitHub-first backend-only release with public tree unchanged, then separate static commit and controlled static release.
 - [ ] Verify public caps/health, test approved/rejected download boundaries and existing album counts/ownership; no production test accounts without isolated authorization.
 - [ ] Provide native preview and mobile walkthrough. Client review/publication require the actual code baseline and truthful platform-category checks; preserve present formal version until those gates pass.
+
+
+### Final scoped correction wave (2026-11-02)
+
+- Backend stage: support deliberate rejected-association reopen to fresh pending; invalidate selfservice review versions on account maintenance and identity/security changes, publish only after commit; correct pure-WeChat queue provenance; use OS-assigned identity fixture ports and await child exit.
+- Backend fresh verification: identity 81/81, concurrency 18/18, npm syntax checks and diff whitespace checks passed with Node24.21.0. RED evidence and exact commands remain in `scratch/final-fix/` and the final fix report; no media suite rerun for this narrow change.
+- Static stage follows in an independent local clone/branch only after backend commit: secondary HQ reopen control, background pending badge update, same-session/editor protections and cache label. Final admin tests/report follow separately.
+- Backend/static commits remain separate release targets; native candidate is untouched. Local tests are not CI, deployment, platform publication or device acceptance.
