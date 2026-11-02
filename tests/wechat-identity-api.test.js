@@ -769,3 +769,200 @@ test("总部可直接创建受限演示账号，空白名单只见本人新建�
     body: { albumReadScope: "own-and-selected", albumReadProjectIds: ["project_own", "project_selected"] } })).status, 200);
   assert.equal((await api("/me", { token: newer.data.token })).data.user.id, user.id, "白名单排序/去重不改变权限，不撤销会话");
 }, { extraSeed: albumScopeFixture() }));
+
+const onboardBody = code => ({ code, name: "新社群主理人", contact: "13900000000", organization: "上海摄影社群", city: "上海", agreed: true });
+
+test("自助开通并发只创建一个无密码普通账号，默认仅本人相册且资料下载后置", () => withServer(async ({ api, adminToken, persisted }) => {
+  const requests = await Promise.all(["applicant1", "applicant2"].map(code => api("/auth/wechat/onboard", { method: "POST", body: {
+    ...onboardBody(code), userId: "renewal_owner", openid: "openid-conflict", role: "admin", canDownload: true, albumReadScope: "all"
+  } })));
+  for (const result of requests) assert.equal(result.status, 200);
+  const { user, token } = requests[0].data;
+  assert.equal(requests[1].data.user.id, user.id);
+  assert.equal(user.role, "member"); assert.equal(user.status, "active");
+  assert.equal(user.canDownload, false); assert.equal(user.associationStatus, "pending");
+  for (const key of ["openid", "contact", "applicationContact", "passwordHash", "salt"]) assert.equal(user[key], undefined);
+  const docs = persisted().users.map(row => JSON.parse(row.doc)).filter(item => item.authSource === "wechat-selfservice");
+  assert.equal(docs.length, 1);
+  assert.equal(docs[0].passwordHash, null); assert.equal(docs[0].associationRevision, 1);
+  assert.equal(docs[0].albumReadScope, "own-and-selected"); assert.deepEqual(docs[0].albumReadProjectIds, []);
+  assert.equal(docs[0].applicationOrganization, "上海摄影社群");
+  const retry = await api("/auth/wechat/onboard", { method: "POST", body: { ...onboardBody("applicant3"), name: "不能覆盖姓名" } });
+  assert.equal(retry.data.user.name, user.name);
+  assert.deepEqual((await api("/my/activity-projects", { token })).data.projects, []);
+  const mine = await api("/my/activity-projects", { method: "POST", token, body: { title: "我的相册" } });
+  assert.equal(mine.status, 201); assert.equal(mine.data.project.canManage, true);
+  assert.equal((await api("/my/activity-projects/project_hidden", { token })).status, 404);
+  assert.equal((await api("/public/activity-projects/project_shared", { token })).status, 200);
+  for (const suffix of ["download", "download.pdf"]) {
+    const denied = await api(`/public/activities/act_download_test/${suffix}`, { token });
+    assert.equal(denied.status, 403); assert.match(denied.data.error, /总部.*关联审核/);
+  }
+  assert.equal((await api("/admin/account-reviews", { token })).status, 403);
+  assert.equal((await api("/admin/account-reviews")).status, 401);
+  assert.equal((await api("/admin/account-reviews", { token: adminToken })).status, 200);
+}, { extraSeed: albumScopeFixture() }));
+
+test("自助开通校验同意和资料，旧待审拒绝撤销停用身份均不得重开", async () => {
+  await withServer(async ({ api, persisted }) => {
+    for (const patch of [{ agreed: false }, { agreed: "true" }, { name: "一" }, { contact: "12345" }, { organization: " " }, { city: "城".repeat(81) }]) {
+      assert.equal((await api("/auth/wechat/onboard", { method: "POST", body: { ...onboardBody("applicant1"), ...patch } })).status, 400);
+    }
+    assert.equal((persisted().wechat_identities || []).length, 0);
+    await api("/auth/wechat/apply", { method: "POST", body: onboardBody("applicant1") });
+    assert.equal((await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant2") })).status, 403);
+  });
+  for (const state of [{ bindingStatus: "rejected" }, { bindingStatus: "revoked" }, { status: "disabled" }, { suspended: true }]) {
+    await withServer(async ({ api }) => {
+      const denied = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("conflict") });
+      assert.equal(denied.status, 403); assert.equal(denied.data.token, undefined);
+    }, { extraSeed: renewalFixture(state) });
+  }
+});
+
+test("关联审批CAS只处理一次、关联原账号仅作记录，原会话即时读新权限", () => withServer(async ({ api, adminToken, persisted }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  assert.equal(opened.status, 200);
+  const { user, token } = opened.data;
+  const list = await api("/admin/account-reviews", { token: adminToken });
+  const review = list.data.reviews.find(item => item.kind === "association" && item.id === user.id);
+  assert.equal(review.version, 1); assert.equal(review.status, "pending");
+  assert.equal(review.contact, "13900000000");
+  assert.equal(list.data.managers.some(item => item.id === "test_admin"), true);
+  assert.equal(list.data.managers.some(item => item.id === "renewal_owner"), true);
+  const route = `/admin/account-reviews/association/${user.id}/decision`;
+  for (const patch of [{ managerId: user.id }, { managerId: "missing" }, { relatedAccountId: "test_admin" }, { relatedAccountId: user.id }]) {
+    assert.equal((await api(route, { method: "POST", token: adminToken, body: { action: "approve", version: 1, ...patch } })).status, 409);
+  }
+  const outcomes = await Promise.all(["approve", "reject"].map(action => api(route, { method: "POST", token: adminToken,
+    body: { action, version: 1, organization: "核实摄影社群", managerId: "test_admin", relatedAccountId: "renewal_owner", role: "admin", albumReadScope: "all" } })));
+  assert.deepEqual(outcomes.map(item => item.status).sort(), [200, 409]);
+  const current = (await api("/me", { token })).data.user;
+  assert.equal(current.id, user.id); assert.equal(current.role, "member");
+  const stored = JSON.parse(persisted().users.find(row => row.id === user.id).doc);
+  assert.equal(stored.associationRevision, 2); assert.equal(stored.status, "active");
+  assert.equal(stored.associationReviewedBy, "test_admin");
+  assert.equal(current.canDownload, current.associationStatus === "approved");
+  assert.deepEqual(stored.albumReadProjectIds, []);
+  if (current.associationStatus === "approved") {
+    assert.equal(stored.relatedAccountId, "renewal_owner");
+    assert.equal(current.associatedManagerName, "测试总部");
+    assert.equal((await api("/public/activities/act_download_test/download", { token })).status, 200);
+  }
+  assert.equal((await api("/my/activity-projects/project_own", { token })).status, 404);
+  assert.equal(JSON.parse(persisted().activity_projects.find(row => row.id === "project_own").doc).ownerId, "renewal_owner");
+}, { extraSeed: albumScopeFixture() }));
+
+test("总部拒绝关联不撤销普通账号，通用下载授权不能绕过未关联检查", () => withServer(async ({ api, adminToken }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  assert.equal(opened.status, 200);
+  const { user, token } = opened.data;
+  const reject = await api(`/admin/account-reviews/association/${user.id}/decision`, { method: "POST", token: adminToken,
+    body: { action: "reject", version: 1, note: "请总部线下核实" } });
+  assert.equal(reject.status, 200);
+  assert.equal((await api("/me", { token })).data.user.associationStatus, "rejected");
+  assert.equal((await api("/my/activity-projects", { method: "POST", token, body: { title: "拒绝后仍可管理" } })).status, 201);
+  await api(`/admin/users/${user.id}`, { method: "PUT", token: adminToken, body: { canDownload: true } });
+  const logged = await api("/auth/wechat/session", { method: "POST", body: { code: "applicant2" } });
+  assert.equal(logged.status, 200);
+  assert.equal((await api("/public/activities/act_download_test/download", { token: logged.data.token })).status, 403);
+}));
+
+test("自助重提已绑定账号保留userId角色下载权限与相册", () => withServer(async ({ api, persisted }) => {
+  const result = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("conflict") });
+  assert.equal(result.status, 200); assert.equal(result.data.user.id, "renewal_owner");
+  assert.equal(result.data.user.role, "operator"); assert.equal(result.data.user.canDownload, true);
+  assert.equal(result.data.user.name, "续登主理人");
+  assert.equal(JSON.parse(persisted().users.find(row => row.id === "renewal_owner").doc).associationStatus, undefined);
+  assert.equal((await api("/my/activity-projects/project_own", { token: result.data.token })).status, 200);
+}, { extraSeed: albumScopeFixture() }));
+
+test("统一审核兼容旧微信与平台申请、版本冲突且普通流程不授予管理员", () => withServer(async ({ api, adminToken }) => {
+  await api("/auth/wechat/apply", { method: "POST", body: onboardBody("applicant1") });
+  await api("/register", { method: "POST", body: { ...onboardBody("existing1"), username: "legacy-review", password: "legacy-password" } });
+  const list = (await api("/admin/account-reviews", { token: adminToken })).data;
+  assert.ok(Array.isArray(list.reviews));
+  const wechat = list.reviews.find(item => item.kind === "wechat" && item.status === "pending");
+  const platform = list.reviews.find(item => item.kind === "platform" && item.status === "pending");
+  for (const item of [wechat, platform]) {
+    assert.ok(item.version); assert.equal(item.name, "新社群主理人"); assert.equal(item.contact, "13900000000");
+    const route = `/admin/account-reviews/${item.kind}/${item.id}/decision`;
+    const approved = await api(route, { method: "POST", token: adminToken,
+      body: { action: "approve", version: item.version, role: "admin", canDownload: true, confirmNoExistingAccount: true } });
+    assert.equal(approved.status, 200); assert.notEqual(approved.data.user.role, "admin");
+    assert.equal((await api(route, { method: "POST", token: adminToken, body: { action: "reject", version: item.version } })).status, 409);
+  }
+  assert.equal((await api("/login", { method: "POST", body: { username: "legacy-review", password: "legacy-password" } })).status, 200);
+}));
+
+test("关联批准重新核实停用引用及排队期间被撤销的审核人", () => withServer(async ({ api, adminToken }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  assert.equal(opened.status, 200);
+  const route = `/admin/account-reviews/association/${opened.data.user.id}/decision`;
+  await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken, body: { status: "disabled" } });
+  for (const patch of [{ managerId: "renewal_owner" }, { relatedAccountId: "renewal_owner" }]) {
+    assert.equal((await api(route, { method: "POST", token: adminToken, body: { action: "approve", version: 1, ...patch } })).status, 409);
+  }
+  const created = await api("/admin/users", { method: "POST", token: adminToken,
+    body: { username: "second-reviewer", password: "admin-password", role: "admin" } });
+  const second = await api("/login", { method: "POST", body: { username: "second-reviewer", password: "admin-password" } });
+  await api(`/admin/users/${created.data.user.id}`, { method: "PUT", token: adminToken, body: { role: "viewer" } });
+  assert.equal((await api(route, { method: "POST", token: second.data.token, body: { action: "approve", version: 1 } })).status, 401);
+  assert.equal((await api("/me", { token: opened.data.token })).data.user.associationStatus, "pending");
+}, { extraSeed: renewalFixture() }));
+
+test("关联批准可用原会话下载资料，公开分享照片视频保存沿用旧规则", () => {
+  const seed = albumScopeFixture();
+  const project = JSON.parse(seed.activity_projects.find(row => row.id === "project_shared").doc);
+  project.media = [{ type: "image", url: "https://proj2.likeduoduiyi.cn/silver-images/test.jpg" },
+    { type: "video", url: "https://proj2.likeduoduiyi.cn/silver-case-videos/test.mp4" }];
+  seed.activity_projects.find(row => row.id === project.id).doc = JSON.stringify(project);
+  const item = { id: "case_onboard", title: "受限资料", status: "published", media: project.media, createdAt: new Date().toISOString() };
+  seed.cases = [{ id: item.id, status: item.status, doc: JSON.stringify(item), created_at: item.createdAt }];
+  return withServer(async ({ api, adminToken }) => {
+    const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+    assert.equal(opened.status, 200);
+    const { user, token } = opened.data;
+    for (const index of [0, 1]) {
+      const denied = await api(`/public/cases/${item.id}/download?i=${index}&format=json`, { token });
+      assert.equal(denied.status, 403); assert.match(denied.data.error, /总部.*关联审核/);
+      for (const session of [undefined, token]) {
+        const allowed = await api(`/public/activity-projects/${project.id}/download?i=${index}`, { token: session });
+        assert.equal(allowed.status, 200); assert.equal(allowed.data.url, project.media[index].url);
+      }
+    }
+    const approved = await api(`/admin/account-reviews/association/${user.id}/decision`, { method: "POST", token: adminToken,
+      body: { action: "approve", version: 1, relatedAccountId: "renewal_owner" } });
+    assert.equal(approved.status, 200);
+    const current = (await api("/me", { token })).data.user;
+    assert.equal(current.associationStatus, "approved"); assert.equal(current.canDownload, true);
+    assert.equal(current.associatedOrganization, "上海摄影社群"); assert.equal(current.associatedManagerId, "test_admin");
+    assert.equal((await api(`/public/cases/${item.id}/download?i=0&format=json`, { token })).status, 200);
+    assert.equal((await api("/public/activities/act_download_test/download", { token })).status, 200);
+    assert.equal((await api("/my/activity-projects/project_own", { token })).status, 404);
+    await api("/admin/users/renewal_owner", { method: "PUT", token: adminToken, body: { canDownload: false } });
+    const legacy = await api("/login", { method: "POST", body: { username: "renewal-owner", password: "fixture-password" } });
+    assert.equal((await api(`/public/cases/${item.id}/download?i=0&format=json`, { token: legacy.data.token })).status, 200,
+      "旧账户案例下载仍只要求登录，不增加原本不存在的下载权限门槛");
+  }, { extraSeed: seed });
+});
+
+test("审核排队后重新验证审核员权限，停用引用的写入不能被旧快照绕过", () => withServer(async ({ api, adminToken, gate }) => {
+  const opened = await api("/auth/wechat/onboard", { method: "POST", body: onboardBody("applicant1") });
+  assert.equal(opened.status, 200);
+  const reviewer = await api("/admin/users", { method: "POST", token: adminToken,
+    body: { username: "queued-reviewer", password: "review-password", role: "admin" } });
+  const logged = await api("/login", { method: "POST", body: { username: "queued-reviewer", password: "review-password" } });
+  const boundary = gate("DELETE FROM sessions");
+  const hold = api("/login", { method: "POST", body: { username: "test-admin", password: "test-password" } });
+  await boundary.entered();
+  const demote = api(`/admin/users/${reviewer.data.user.id}`, { method: "PUT", token: adminToken, body: { role: "viewer" } });
+  await sleep(30);
+  const decision = api(`/admin/account-reviews/association/${opened.data.user.id}/decision`, { method: "POST", token: logged.data.token,
+    body: { action: "approve", version: 1 } });
+  await sleep(30);
+  boundary.release();
+  const [, changed, denied] = await Promise.all([hold, demote, decision]);
+  assert.equal(changed.status, 200); assert.equal(denied.status, 403);
+  assert.equal((await api("/me", { token: opened.data.token })).data.user.associationStatus, "pending");
+}));
