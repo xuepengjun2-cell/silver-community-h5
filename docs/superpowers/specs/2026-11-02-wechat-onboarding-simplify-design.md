@@ -1,6 +1,6 @@
 # 微信登录、普通账号开通与总部关联流程改版
 
-状态：需求草案。已确认提交资料后开通普通账户；普通账户权限、下载提醒触发条件和总部关联含义等待用户补充。尚未修改生产代码或发布客户端。
+状态：用户已确认关键业务边界，进入实施。生产客户端与后台尚未更新本次流程。
 
 ## 已确认目标
 
@@ -20,7 +20,7 @@
 初始页只有一个主要按钮“微信登录”，小字“其他登录方式”展开密码入口；继续保留公开内容浏览和公开相册分享直达。
 
 - 已绑定且账号有效：进入工作台；有效会话复核后直接恢复。
-- 首次使用：逐步引导“已有平台账号 / 首次开通”。已有账号只验证绑定一次；首次开通填写姓名、联系方式、俱乐部／社群名称，城市作为选填信息。
+- 首次使用：微信识别未绑定后直接显示精简开通表；“已有账号？绑定原账号”为次级入口。填写姓名、联系方式、俱乐部／社群名称，城市作为选填信息。
 - 资料提交成功：进入普通账户工作台，并显示一处明确的“总部关联中”状态；不再同时展示两个申请表或要求用户反复申请。
 - 总部关联后的可用权限：由服务端返回真实权限决定，不靠隐藏按钮授权。
 - 待关联的受限操作：在实际操作位置显示明确状态与下一步，不再次注册或重复建立申请。
@@ -32,13 +32,24 @@
 
 普通条目只展示姓名、联系方式、俱乐部／社群、申请时间、当前状态和主要处理按钮。角色、资料下载、跨相册查看范围及原账号核实放入展开详情。新用户、旧账号冲突和拒绝／撤销分别使用适合的操作，不让所有人都走完整异常处理流程。
 
-## 待用户确定的业务边界
+## 用户已确认的权限与关联边界
 
-1. 语音末句是否指“下载SOP／资料时提示需要总部关联审核”。
-2. 普通账户在关联前是仅浏览，还是可以创建、上传、分享自己的相册。
-3. 总部关联是核对已有平台账户、分配俱乐部／负责人，还是两项都需要。
+- 资料提交后自助开通普通账户，即刻进入平台。新账户为 `member`、`status=active`，只能管理本人相册，允许上传、分享；`albumReadScope=own-and-selected`、指定相册列表为空。
+- 下载SOP／受限资料前，服务端检查总部关联状态和下载权限；新账户 `canDownload=false`、`associationStatus=pending`，提示“资料下载需总部完成关联审核”。公开分享相册的照片／视频保存继续按原规则开放，不纳入该门槛。
+- 总部同时核实已有平台账号与俱乐部／社群、负责人。新账户俱乐部名称沿用一个字符串字段；负责人选择启用的admin/operator，默认可由当前总部管理员负责。
+- 审核完成后 `associationStatus=approved`、`canDownload=true`；拒绝关联只限制资料下载，普通账户及自己的相册仍可用。停用账户和撤销微信仍是单独的已有管理动作。
+- **原账号关联为核实记录**：保存总部确认的 `relatedAccountId`，不自动合并两个userId、不迁移相册、不继承目标账号角色或跨账号管理权。老用户在前台验证原账号密码后可直接绑定微信；已有账号、原权限与相册所有权保持。若另需数据迁移，不能藏在一键关联中。
+- 不按姓名／联系方式自动认领原账号。同联系方式仅提示可能存在旧账号，由总部明确选择。目标原账号必须为启用的非管理员账户且不能为本人；负责人关联本身不授予跨相册访问。
+- 微信身份核验通过和总部关联完成是独立状态。新自助账户的微信身份可以approved并签发会话，其业务关联仍pending。旧pending／rejected／revoked／disabled身份不得被自助接口随意重开；旧已启用账号不被本次新默认权限覆盖。
 
-当前代码的重要事实：`viewer` 不允许创建／管理，但未设置相册阅读范围时仍可读取全部内部相册；`member` 和 `operator` 均可创建自己的相册。因此不能只改角色名称就声称新账号权限已收敛，也不能把“普通账户”当作已确定的技术角色。旧账号既有权限保持；新账号默认范围须在上述边界明确后确定。
+## 固定接口与数据约定
+
+- 新客户端使用 `POST /api/auth/wechat/onboard`，提交 `code,name,contact,organization,city,agreed:true`。新用户需姓名2–60、联系方式6–80、俱乐部/社群1–120，城市选填≤80。服务端真实交换code，不采信客户端openid/userId/role/下载权限。
+- 同一微信重复提交至多产生一个普通账户；已绑定active用户返回原账号会话而不覆盖资料／角色。既有 `session/apply/bind` 端点保持兼容。自助账户username由服务端生成、无平台密码，不要求客户设置一套新密码。
+- 新用户doc保存 `authSource=wechat-selfservice`、`associationStatus=pending`、`associationRevision=1`、`applicationContact/applicationCity/applicationOrganization`、`associationSubmittedAt`；确认后可加 `associatedOrganization,associatedManagerId,relatedAccountId,associationReviewedBy/At,associationNote`。不新增数据库表/改变initDb。
+- `GET /api/admin/account-reviews` 返回 `{reviews,managers}`，reviews统一kind=`association|wechat|platform`、id、userId、姓名/联系方式/城市/organization、status、version、submittedAt、当前权限摘要。历史队列继续可处理，不依据联系方式自动去重。
+- `POST /api/admin/account-reviews/:kind/:id/decision`，body=`{action:approve|reject,version,organization,managerId,relatedAccountId,note,...legacyDecisionFields}`。association批准默认开放受限资料；权限、版本、账户状态及经理/原账号有效性在服务端重新核实。旧微信/H5审核复用原安全规则，普通流程不自动授予admin。
+- `/me`及登录返回的publicUser增加安全的关联状态/组织/负责人显示字段，不能输出openid、密码哈希、联系人等内部敏感字段。已签发会话经复核即可读到审批后权限，不要求重新注册。
 
 ## 实施与发布边界
 
