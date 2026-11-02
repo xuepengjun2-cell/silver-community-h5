@@ -1270,7 +1270,7 @@ async function withUserWriteLock(task) {
   return run;
 }
 
-async function approveWechatIdentity(id, reviewer, input, req) {
+async function approveWechatIdentity(id, reviewer, input, req, expectedVersion = null) {
   return withUserWriteLock(async () => {
     const currentReviewer = getAuthedUser(req);
     if (!currentReviewer || currentReviewer.id !== reviewer.id || currentReviewer.role !== "admin") {
@@ -1284,6 +1284,7 @@ async function approveWechatIdentity(id, reviewer, input, req) {
       const [rows] = await conn.query("SELECT * FROM wechat_identities WHERE id = ? FOR UPDATE", [id]);
       const identity = rows[0];
       if (!identity) throw identityError("微信申请不存在", 404);
+      checkReviewVersion(expectedVersion, wechatReviewVersion(identity));
       if (identity.status !== "pending") throw identityError("申请状态已变化，请刷新后重试", 409);
       const existingUserId = String(input.userId || "").trim();
       let target = null;
@@ -1346,6 +1347,138 @@ async function approveWechatIdentity(id, reviewer, input, req) {
     } finally {
       conn.release();
     }
+  });
+}
+
+async function decideWechatIdentity(identityId, action, reviewer, body, req, expectedVersion = null) {
+  return withUserWriteLock(async () => {
+    const currentReviewer = getAuthedUser(req);
+    if (!currentReviewer || currentReviewer.id !== reviewer.id || currentReviewer.role !== "admin") {
+      throw identityError("管理员登录或权限已变化，请重新登录", 403);
+    }
+    const conn = await pool.getConnection();
+    let revokedUser = null;
+    try {
+      await conn.beginTransaction();
+      const [rows] = await conn.query("SELECT * FROM wechat_identities WHERE id = ? FOR UPDATE", [identityId]);
+      const identity = rows[0];
+      if (!identity) throw identityError("微信申请不存在", 404);
+      checkReviewVersion(expectedVersion, wechatReviewVersion(identity));
+      const allowed = action === "reject" ? identity.status === "pending"
+        : action === "reopen" ? ["rejected", "revoked"].includes(identity.status)
+          : identity.status === "approved";
+      if (!allowed) throw identityError("申请状态已变化，请刷新后重试", 409);
+      const status = { reject: "rejected", reopen: "pending", revoke: "revoked" }[action];
+      const changedAt = now();
+      const note = String(body.note || "").trim().slice(0, 500);
+      if (action === "revoke") {
+        const original = readDb().users.find(item => item.id === identity.user_id);
+        if (!original) throw identityError("原账号不存在，请先核实", 409);
+        revokedUser = { ...original, sessionRevokedAt: userSessionRevokedAt(original) };
+        await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(revokedUser), original.id]);
+      }
+      await conn.query(
+        "UPDATE wechat_identities SET status = ?, user_id = ?, reviewer_id = ?, review_note = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
+        [status, null, reviewer.id, note, changedAt, changedAt, identityId]
+      );
+      await recordWechatIdentityEvent(conn, identity, action, reviewer.id, identity.user_id, note);
+      await conn.commit();
+      if (revokedUser) {
+        Object.assign(readDb().users.find(item => item.id === revokedUser.id), revokedUser);
+        if (_persistedSnapshot) {
+          const index = _persistedSnapshot.users.findIndex(item => item.id === revokedUser.id);
+          if (index >= 0) _persistedSnapshot.users[index] = JSON.parse(JSON.stringify(revokedUser));
+        }
+      }
+      if (identity.user_id) await expireUserSessions(identity.user_id);
+      return identity.user_id;
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally { conn.release(); }
+  });
+}
+
+
+// Version tokens for legacy rows include the full review-relevant state, avoiding
+// equal-millisecond timestamp collisions without a schema migration.
+function legacyReviewVersion(value) {
+  return crypto.createHash("sha256").update(stableSerialize(value)).digest("hex");
+}
+function wechatReviewVersion(row) { return legacyReviewVersion(row); }
+function checkReviewVersion(expected, actual) {
+  if (expected !== null && expected !== actual) throw identityError("申请版本已变化，请刷新后重试", 409);
+}
+function publishUserSnapshot(user) {
+  const index = readDb().users.findIndex(item => item.id === user.id);
+  if (index < 0) readDb().users.push(user);
+  else Object.assign(readDb().users[index], user);
+  if (_persistedSnapshot) {
+    const index = _persistedSnapshot.users.findIndex(item => item.id === user.id);
+    const copy = JSON.parse(JSON.stringify(user));
+    if (index < 0) _persistedSnapshot.users.push(copy);
+    else _persistedSnapshot.users[index] = copy;
+  }
+}
+function associationDownloadError(user) {
+  return user.authSource === "wechat-selfservice" && user.associationStatus !== "approved"
+    ? "资料下载需总部完成关联审核" : "";
+}
+function reviewPermissionSummary(user) {
+  return user ? { role: user.role, accountStatus: user.status, canDownload: user.canDownload !== false,
+    albumReadScope: albumReadPolicy(user).scope, albumReadProjectIds: albumReadPolicy(user).projectIds } : null;
+}
+
+async function decideAccountUser(kind, id, reviewer, body, req) {
+  return withUserWriteLock(async () => {
+    const currentReviewer = getAuthedUser(req);
+    if (!currentReviewer || currentReviewer.id !== reviewer.id || currentReviewer.role !== "admin") {
+      throw identityError("管理员登录或权限已变化，请重新登录", 403);
+    }
+    const target = readDb().users.find(item => item.id === id);
+    if (!target) throw identityError("账号申请不存在", 404);
+    const association = kind === "association";
+    if (association !== (target.authSource === "wechat-selfservice")) throw identityError("申请类型不匹配", 409);
+    checkReviewVersion(body.version, association ? target.associationRevision : legacyReviewVersion(target));
+    if (association ? target.associationStatus !== "pending" || target.status !== "active"
+      : target.status !== "pending" || target.role === "admin") {
+      throw identityError("申请状态已变化，请刷新后重试", 409);
+    }
+    const approved = body.action === "approve";
+    let next;
+    if (association) {
+      next = { ...target, associationStatus: approved ? "approved" : "rejected",
+        associationRevision: target.associationRevision + 1, canDownload: approved,
+        associationReviewedBy: reviewer.id, associationReviewedAt: now(), associationNote: String(body.note || "").trim().slice(0, 500) };
+      if (approved) {
+        const organization = String(body.organization === undefined ? target.applicationOrganization : body.organization).trim();
+        if (!organization || organization.length > 120) throw identityError("请填写俱乐部／社群名称（1 至 120 字）");
+        const managerId = String(body.managerId || reviewer.id).trim();
+        const manager = readDb().users.find(item => item.id === managerId && item.status === "active" && ["admin", "operator"].includes(item.role));
+        if (!manager) throw identityError("负责人不存在、已停用或不具备管理角色", 409);
+        const relatedAccountId = String(body.relatedAccountId || "").trim();
+        if (relatedAccountId && !readDb().users.some(item => item.id === relatedAccountId && item.id !== target.id && item.status === "active" && item.role !== "admin")) {
+          throw identityError("原账号必须为启用的其他非管理员账户", 409);
+        }
+        Object.assign(next, { associatedOrganization: organization, associatedManagerId: manager.id, relatedAccountId: relatedAccountId || null });
+      }
+    } else {
+      const role = ["viewer", "member", "operator"].includes(body.role) ? body.role : "viewer";
+      next = { ...target, status: approved ? "active" : "rejected", role: approved ? role : target.role,
+        canDownload: approved && body.canDownload === true, applicationReviewedBy: reviewer.id,
+        applicationReviewedAt: now(), applicationNote: String(body.note || "").trim().slice(0, 500) };
+      const policy = parseAlbumReadPolicy(body, next, readDb().activityProjects || []);
+      if (policy) Object.assign(next, { albumReadScope: policy.scope, albumReadProjectIds: policy.projectIds });
+    }
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query("UPDATE users SET role = ?, status = ?, doc = ? WHERE id = ?", [next.role, next.status, JSON.stringify(next), next.id]);
+      await conn.commit();
+      publishUserSnapshot(next);
+      return next;
+    } catch (error) { await conn.rollback(); throw error; }
+    finally { conn.release(); }
   });
 }
 
@@ -1417,7 +1550,11 @@ function publicUser(user) {
     name: user.name,
     role: user.role,
     status: user.status,
-    canDownload: user.canDownload !== false
+    canDownload: user.canDownload !== false,
+    associationStatus: user.associationStatus || null,
+    associatedOrganization: user.associatedOrganization || "",
+    associatedManagerId: user.associatedManagerId || null,
+    associatedManagerName: readDb().users.find(item => item.id === user.associatedManagerId)?.name || ""
   };
 }
 
@@ -3025,6 +3162,56 @@ async function handleApi(req, res, pathname) {
     });
   }
 
+  if (req.method === "POST" && pathname === "/api/auth/wechat/onboard") {
+    const body = await parseBody(req, 8 * 1024);
+    let identity;
+    try { identity = await exchangeWechatCode(body.code, { appid: WECHAT_MINIAPP_APPID, secret: WECHAT_MINIAPP_SECRET }); }
+    catch (error) { return sendJson(res, error.statusCode || 502, { error: error.message }); }
+    return withUserWriteLock(async () => {
+      const conn = await pool.getConnection();
+      let user;
+      try {
+        await conn.beginTransaction();
+        const [rows] = await conn.query("SELECT * FROM wechat_identities WHERE appid = ? AND openid = ? FOR UPDATE", [identity.appid, identity.openid]);
+        const existing = rows[0];
+        if (existing) {
+          user = readDb().users.find(item => item.id === existing.user_id);
+          if (existing.status !== "approved" || !user || user.status !== "active" || user.role === "admin" || user.wechatBindingSuspended) {
+            throw identityError("此微信或原账号需总部核实，不能重新开通", 403);
+          }
+          await conn.commit();
+        } else {
+          if (body.agreed !== true) throw identityError("请确认同意开通普通账户");
+          const application = validateApplication(body);
+          if (!application.organization) throw identityError("请填写俱乐部／社群名称");
+          const id = createId("u");
+          const createdAt = now();
+          user = { id, username: `wx_${id.slice(2)}`, name: application.name, role: "member", status: "active",
+            canDownload: false, albumReadScope: "own-and-selected", albumReadProjectIds: [],
+            salt: null, passwordHash: null, authSource: "wechat-selfservice", associationStatus: "pending", associationRevision: 1,
+            applicationContact: application.contact, applicationCity: application.city, applicationOrganization: application.organization,
+            associationSubmittedAt: createdAt, createdAt };
+          const row = { id: createId("wxr"), ...identity };
+          await conn.query("INSERT INTO users (id, username, role, status, doc, created_at) VALUES (?,?,?,?,?,?)",
+            [id, user.username, user.role, user.status, JSON.stringify(user), createdAt]);
+          await conn.query(`INSERT INTO wechat_identities
+            (id, appid, openid, user_id, status, name, contact, city, organization, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+            [row.id, identity.appid, identity.openid, id, "approved", application.name, application.contact, application.city, application.organization, createdAt, createdAt]);
+          await recordWechatIdentityEvent(conn, row, "selfservice-onboard", id, id);
+          await conn.commit();
+          publishUserSnapshot(user);
+        }
+      } catch (error) {
+        await conn.rollback();
+        if (error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
+        if (error.code === "ER_DUP_ENTRY") return sendJson(res, 409, { error: "微信绑定已变化，请重新登录核实" });
+        throw error;
+      } finally { conn.release(); }
+      return issuePlatformSession(res, user, "wechat-miniapp", identity);
+    });
+  }
+
   if (req.method === "POST" && pathname === "/api/auth/wechat/apply") {
     const body = await parseBody(req, 8 * 1024);
     let identity;
@@ -3498,6 +3685,7 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && publicDownload) {
     const user = requireRole(req, res, VALID_ROLES);
     if (!user) return;
+    if (associationDownloadError(user)) return sendJson(res, 403, { error: associationDownloadError(user) });
     if (user.canDownload === false) return sendJson(res, 403, { error: "当前账号未开通SOP下载权限" });
     const db = readDb();
     const activity = db.activities.find(x => x.id === publicDownload[1] && x.status === "published");
@@ -3531,6 +3719,7 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && publicPdfDownload) {
     const user = requireRole(req, res, VALID_ROLES);
     if (!user) return;
+    if (associationDownloadError(user)) return sendJson(res, 403, { error: associationDownloadError(user) });
     if (user.canDownload === false) return sendJson(res, 403, { error: "当前账号未开通SOP下载权限" });
     const db = readDb();
     const activity = db.activities.find(x => x.id === publicPdfDownload[1] && x.status === "published");
@@ -3577,6 +3766,8 @@ async function handleApi(req, res, pathname) {
   if (req.method === "GET" && caseDownload) {
     const user = requireRole(req, res, VALID_ROLES);
     if (!user) return;
+    if (associationDownloadError(user)) return sendJson(res, 403, { error: associationDownloadError(user) });
+    if (user.authSource === "wechat-selfservice" && user.canDownload === false) return sendJson(res, 403, { error: "当前账号未开通资料下载权限" });
     const db = readDb();
     const item = (db.cases || []).map(publicCase).find(c => c.id === caseDownload[1] && c.status === "published");
     if (!item) return sendJson(res, 404, { error: "案例不存在或未发布" });
@@ -5005,6 +5196,63 @@ async function handleApi(req, res, pathname) {
     return;
   }
 
+  if (req.method === "GET" && pathname === "/api/admin/account-reviews") {
+    const reviewer = requireRole(req, res, ["admin"]);
+    if (!reviewer) return;
+    return withUserWriteLock(async () => {
+      if (!requireRole(req, res, ["admin"])) return;
+      const [identities] = await pool.query("SELECT * FROM wechat_identities ORDER BY created_at ASC");
+      const users = readDb().users;
+      const reviews = users.filter(user => user.authSource === "wechat-selfservice" || (user.applicationContact && user.role !== "admin")).map(user => ({
+        kind: user.authSource === "wechat-selfservice" ? "association" : "platform", id: user.id, userId: user.id,
+        name: user.name, contact: user.applicationContact || "", city: user.applicationCity || "",
+        organization: user.associatedOrganization || user.applicationOrganization || "",
+        status: user.authSource === "wechat-selfservice" ? user.associationStatus : user.status,
+        version: user.authSource === "wechat-selfservice" ? user.associationRevision : legacyReviewVersion(user),
+        submittedAt: user.associationSubmittedAt || user.createdAt,
+        permissions: reviewPermissionSummary(user), user: publicUser(user),
+        associatedManagerId: user.associatedManagerId || null, relatedAccountId: user.relatedAccountId || null,
+        note: user.associationNote || user.applicationNote || ""
+      }));
+      for (const row of identities) {
+        if (users.some(user => user.id === row.user_id && user.authSource === "wechat-selfservice")) continue;
+        const user = users.find(item => item.id === row.user_id);
+        reviews.push({ kind: "wechat", id: row.id, userId: row.user_id || null, name: row.name, contact: row.contact,
+          city: row.city, organization: row.organization, status: row.status, version: wechatReviewVersion(row),
+          submittedAt: row.created_at, permissions: reviewPermissionSummary(user), user: publicUser(user), note: row.review_note || "" });
+      }
+      const managers = users.filter(user => user.status === "active" && ["admin", "operator"].includes(user.role))
+        .map(user => ({ id: user.id, name: user.name, role: user.role }));
+      return sendJson(res, 200, { reviews, managers });
+    });
+  }
+
+  const accountDecision = pathname.match(/^\/api\/admin\/account-reviews\/(association|wechat|platform)\/([^/]+)\/decision$/);
+  if (req.method === "POST" && accountDecision) {
+    const reviewer = requireRole(req, res, ["admin"]);
+    if (!reviewer) return;
+    const body = await parseBody(req, 8 * 1024);
+    if (!["approve", "reject"].includes(body.action) || body.version === undefined || body.version === null) {
+      return sendJson(res, 400, { error: "请提供审核动作及当前申请版本" });
+    }
+    const [, kind, id] = accountDecision;
+    try {
+      if (kind === "wechat") {
+        if (body.action === "approve") {
+          const result = await approveWechatIdentity(id, reviewer, body, req, body.version);
+          return sendJson(res, 200, { ok: true, created: result.created, user: publicUser(result.user) });
+        }
+        await decideWechatIdentity(id, "reject", reviewer, body, req, body.version);
+        return sendJson(res, 200, { ok: true, status: "rejected" });
+      }
+      const user = await decideAccountUser(kind, id, reviewer, body, req);
+      return sendJson(res, 200, { ok: true, user: publicUser(user) });
+    } catch (error) {
+      if (error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
+      throw error;
+    }
+  }
+
   if (req.method === "GET" && pathname === "/api/admin/wechat/applications") {
     const reviewer = requireRole(req, res, ["admin"]);
     if (!reviewer) return;
@@ -5035,52 +5283,7 @@ async function handleApi(req, res, pathname) {
       }
     }
     try {
-      const decide = async () => {
-        const currentReviewer = getAuthedUser(req);
-        if (!currentReviewer || currentReviewer.id !== reviewer.id || currentReviewer.role !== "admin") {
-          throw identityError("管理员登录或权限已变化，请重新登录", 403);
-        }
-        const conn = await pool.getConnection();
-        let revokedUser = null;
-        try {
-          await conn.beginTransaction();
-          const [rows] = await conn.query("SELECT * FROM wechat_identities WHERE id = ? FOR UPDATE", [identityId]);
-          const identity = rows[0];
-          if (!identity) throw identityError("微信申请不存在", 404);
-          const allowed = action === "reject" ? identity.status === "pending"
-            : action === "reopen" ? ["rejected", "revoked"].includes(identity.status)
-              : identity.status === "approved";
-          if (!allowed) throw identityError("申请状态已变化，请刷新后重试", 409);
-          const status = { reject: "rejected", reopen: "pending", revoke: "revoked" }[action];
-          const changedAt = now();
-          const note = String(body.note || "").trim().slice(0, 500);
-          if (action === "revoke") {
-            const original = readDb().users.find(item => item.id === identity.user_id);
-            if (!original) throw identityError("原账号不存在，请先核实", 409);
-            revokedUser = { ...original, sessionRevokedAt: userSessionRevokedAt(original) };
-            await conn.query("UPDATE users SET doc = ? WHERE id = ?", [JSON.stringify(revokedUser), original.id]);
-          }
-          await conn.query(
-            "UPDATE wechat_identities SET status = ?, user_id = ?, reviewer_id = ?, review_note = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
-            [status, null, reviewer.id, note, changedAt, changedAt, identityId]
-          );
-          await recordWechatIdentityEvent(conn, identity, action, reviewer.id, identity.user_id, note);
-          await conn.commit();
-          if (revokedUser) {
-            Object.assign(readDb().users.find(item => item.id === revokedUser.id), revokedUser);
-            if (_persistedSnapshot) {
-              const index = _persistedSnapshot.users.findIndex(item => item.id === revokedUser.id);
-              if (index >= 0) _persistedSnapshot.users[index] = JSON.parse(JSON.stringify(revokedUser));
-            }
-          }
-          if (identity.user_id) await expireUserSessions(identity.user_id);
-          return identity.user_id;
-        } catch (error) {
-          await conn.rollback();
-          throw error;
-        } finally { conn.release(); }
-      };
-      await withUserWriteLock(decide);
+      await decideWechatIdentity(identityId, action, reviewer, body, req);
     } catch (error) {
       if (error.statusCode) return sendJson(res, error.statusCode, { error: error.message });
       throw error;
