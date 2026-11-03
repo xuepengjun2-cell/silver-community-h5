@@ -294,7 +294,7 @@ test('Sony compatibility rejects unindexed data and corrupt or undecodable pictu
     ['primary entropy',b=>{const p=b.indexOf(Buffer.from([255,196]));b[p+5]=255;}],
     ['secondary entropy',(b,f)=>{const p=b.indexOf(Buffer.from([255,196]),f.secondaryStart);b[p+5]=255;}],
     ['dimension limit',b=>{const p=b.indexOf(Buffer.from([255,192]));b.writeUInt16BE(65535,p+5);}],
-    ['invalid make offset',b=>b.writeUInt32LE(0xffffffff,28)]
+    ['invalid make offset',b=>b.writeUInt32LE(0xffffffff,30)]
   ]) {
     const f=sonyMpfFixture();mutate(f.bytes,f);fs.writeFileSync(file,f.bytes);
     await assert.rejects(validateProjectImage(file,{ext:'jpg',expectedSize:f.bytes.length}),undefined,name);
