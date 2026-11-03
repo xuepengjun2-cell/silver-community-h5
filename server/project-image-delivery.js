@@ -108,7 +108,7 @@ function webpStructure(b) {
 // authorize any additional JPEG ranges; ordinary JPEGs still require EOF.
 // Camera selection is a format hint, not authorization: compatibility still
 // requires the bounded index/padding profile and decoding of both pictures.
-function djiExif(tiff) {
+function cameraExif(tiff, make) {
   if (tiff.length < 8) return false;
   const endian = tiff.toString("latin1", 0, 2);
   if (!["II", "MM"].includes(endian)) return false;
@@ -122,7 +122,9 @@ function djiExif(tiff) {
   for (let n = 0; n < count; n++) {
     const p = offset + 2 + n * 12;
     if (u16(p) !== 0x10f) continue;
-    return u16(p + 2) === 2 && u32(p + 4) === 4 && tiff.toString("latin1", p + 8, p + 12) === "DJI\0";
+    if (u16(p + 2) !== 2 || u32(p + 4) !== make.length) return false;
+    const value = make.length <= 4 ? p + 8 : u32(p + 8);
+    return value >= 8 && value + make.length <= tiff.length && tiff.toString("latin1", value, value + make.length) === make;
   }
   return false;
 }
@@ -133,7 +135,7 @@ function jpegImage(b, collectIndex = false) {
       components = new Set(),
       scan = false,
       end = false,
-      mpf = null, dji = false, width = 0, height = 0;
+      mpf = null, dji = false, sony = false, width = 0, height = 0;
     while (p < b.length) {
       if (b[p++] !== 255) invalid();
       while (b[p] === 255) p++;
@@ -147,8 +149,11 @@ function jpegImage(b, collectIndex = false) {
       if (p + 2 > b.length) invalid();
       const n = b.readUInt16BE(p);
       if (n < 2 || p + n > b.length) invalid();
-      if (collectIndex && marker === 0xe1 && n >= 16 && b.toString("latin1", p + 2, p + 8) === "Exif\0\0")
-        dji ||= djiExif(b.subarray(p + 8, p + n));
+      if (collectIndex && marker === 0xe1 && n >= 16 && b.toString("latin1", p + 2, p + 8) === "Exif\0\0") {
+        const tiff = b.subarray(p + 8, p + n);
+        dji ||= cameraExif(tiff, "DJI\0");
+        sony ||= cameraExif(tiff, "SONY\0");
+      }
       if (collectIndex && marker === 0xe2 && n >= 6 && b.toString("latin1", p + 2, p + 6) === "MPF\0") {
         if (mpf || scan) invalid();
         mpf = { start: p + 6, end: p + n };
@@ -196,11 +201,12 @@ function jpegImage(b, collectIndex = false) {
       }
     }
     if (!frame || !scan || !end) invalid();
-    return { end: p, mpf, dji, width, height };
+    return { end: p, mpf, dji, sony, width, height };
 }
 function jpegStructure(b, camera = false) {
   const primary = jpegImage(b, true);
-  if (camera && (!primary.dji || b.length % 4096 || !primary.mpf)) invalid();
+  const sony = camera && !primary.dji && primary.sony;
+  if (camera && ((!primary.dji && !sony) || b.length % (sony ? 32768 : 4096) || !primary.mpf)) invalid();
   if (!primary.mpf) {
     if (primary.end !== b.length) invalid();
     return;
@@ -253,7 +259,7 @@ function jpegStructure(b, camera = false) {
     const attribute = u32(entry), size = u32(entry + 4), offset = u32(entry + 8);
     if ((attribute & 0x07000000) || size < 8 || u16(entry + 12) > images || u16(entry + 14) > images) invalid();
     const imageStart = n === 0 ? 0 : start + offset;
-    if (n === 0 && (offset !== 0 || (!camera && size !== primary.end))) invalid();
+    if (n === 0 && (offset !== 0 || ((!camera || sony) && size !== primary.end))) invalid();
     if (n > 0 && !offset) invalid();
     if (imageStart + size > b.length) invalid();
     ranges.push({ start: imageStart, end: imageStart + size });
@@ -262,14 +268,16 @@ function jpegStructure(b, camera = false) {
   if (camera) {
     const second = ranges[1];
     const padding = second.start - primary.end;
-    // Observed camera layout: first range ends two zero bytes before the
-    // next 4KiB block; the last block has an opaque suffix of <4KiB.
-    // Preserve this suffix without interpreting it; this is tolerant camera
-    // container acceptance, not strict CIPA MPF conformance.
-    if (padding < 2 || padding > 4097 || second.start % 4096 || ranges[0].end !== second.start - 2) invalid();
+    // Camera hints never authorize arbitrary appended bytes. Sony's indexed
+    // JPEGs have a zero-filled gap and a zero tail to a 32KiB file boundary;
+    // DJI's observed profile has a different index boundary and opaque tail.
+    if (sony) {
+      if (padding < 0 || padding >= 4096 || second.start % 512) invalid();
+    } else if (padding < 2 || padding > 4097 || second.start % 4096 || ranges[0].end !== second.start - 2) invalid();
     if (b.subarray(primary.end, second.start).some(byte => byte !== 0)) invalid();
     const tail = b.length - second.end;
-    if (tail < 0 || tail >= 4096) invalid();
+    if (tail < 0 || tail >= (sony ? 32768 : 4096)) invalid();
+    if (sony && b.subarray(second.end).some(byte => byte !== 0)) invalid();
     const auxiliary = jpegImage(b.subarray(second.start, second.end));
     if (auxiliary.end !== second.end - second.start) invalid();
     for (const image of [primary, auxiliary])
