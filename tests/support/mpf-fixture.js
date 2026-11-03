@@ -33,4 +33,18 @@ function cameraMpfFixture() {
   bytes.writeUInt32LE(secondaryStart - tiff, tiff + 74);
   return {bytes, primaryEnd: primary.length, secondaryStart, secondaryEnd: secondaryStart + secondary.length, tiff};
 }
-module.exports={mpfFixture,cameraMpfFixture};
+function sonyMpfFixture() {
+  const f=mpfFixture(true,0);
+  const tiff=Buffer.alloc(31);
+  tiff.write('II');tiff.writeUInt16LE(42,2);tiff.writeUInt32LE(8,4);tiff.writeUInt16LE(1,8);
+  tiff.writeUInt16LE(0x10f,10);tiff.writeUInt16LE(2,12);tiff.writeUInt32LE(5,14);tiff.writeUInt32LE(26,18);tiff.write('SONY\0',26,'latin1');
+  const exif=Buffer.alloc(10+tiff.length);exif.set([255,225]);exif.writeUInt16BE(exif.length-2,2);exif.write('Exif\0\0',4,'latin1');tiff.copy(exif,10);
+  const primary=Buffer.concat([f.bytes.subarray(0,2),exif,f.bytes.subarray(2,f.primaryEnd)]), secondary=f.bytes.subarray(f.secondaryStart);
+  const secondaryStart=Math.ceil((primary.length+3072)/512)*512,secondaryEnd=secondaryStart+secondary.length;
+  const total=Math.ceil(secondaryEnd/32768)*32768, index=10+exif.length;
+  const bytes=Buffer.concat([primary,Buffer.alloc(secondaryStart-primary.length),secondary,Buffer.alloc(total-secondaryEnd)]);
+  bytes.writeUInt32LE(0xa0030000,index+50);bytes.writeUInt32LE(primary.length,index+54);
+  bytes.writeUInt32LE(0x40010002,index+66);bytes.writeUInt32LE(secondaryStart-index,index+74);
+  return {bytes,primaryEnd:primary.length,secondaryStart,secondaryEnd,tiff:index};
+}
+module.exports={mpfFixture,cameraMpfFixture,sonyMpfFixture};

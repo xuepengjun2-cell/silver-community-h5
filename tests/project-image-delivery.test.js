@@ -272,7 +272,38 @@ test('GIF image requires a global or local color table',async()=>{
 });
 
 // Synthetic MPF container made solely from repository-owned, nonpersonal JPEGs.
-const {mpfFixture, cameraMpfFixture} = require('./support/mpf-fixture');
+const {mpfFixture, cameraMpfFixture, sonyMpfFixture} = require('./support/mpf-fixture');
+
+test('Sony MPF aligned zero padding preserves the uploaded JPEG bytes', async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sony-mpf-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'photo.jpg'),{bytes}=sonyMpfFixture();fs.writeFileSync(file,bytes);
+  const result=await validateProjectImage(file,{ext:'jpg',expectedSize:bytes.length});
+  assert.equal(result.fingerprint,crypto.createHash('sha256').update(bytes).digest('hex'));
+  assert.equal(result.size,bytes.length);assert.deepEqual(fs.readFileSync(file),bytes);
+});
+test('Sony compatibility rejects unindexed data and corrupt or undecodable pictures', async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sony-invalid-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'photo.jpg');
+  for(const [name,mutate] of [
+    ['other camera',b=>{b[b.indexOf(Buffer.from('SONY\0'))]=0x58;}],
+    ['nonzero tail',(b,f)=>{b[f.secondaryEnd]=1;}],
+    ['nonzero gap',(b,f)=>{b[f.primaryEnd]=1;}],
+    ['incorrect primary range',(b,f)=>b.writeUInt32LE(f.primaryEnd-1,f.tiff+54)],
+    ['overlapping secondary',(b,f)=>b.writeUInt32LE(1,f.tiff+74)],
+    ['secondary truncated',(b,f)=>{b[f.secondaryEnd-1]=0;}],
+    ['primary entropy',b=>{const p=b.indexOf(Buffer.from([255,196]));b[p+5]=255;}],
+    ['secondary entropy',(b,f)=>{const p=b.indexOf(Buffer.from([255,196]),f.secondaryStart);b[p+5]=255;}],
+    ['dimension limit',b=>{const p=b.indexOf(Buffer.from([255,192]));b.writeUInt16BE(65535,p+5);}],
+    ['invalid make offset',b=>b.writeUInt32LE(0xffffffff,28)]
+  ]) {
+    const f=sonyMpfFixture();mutate(f.bytes,f);fs.writeFileSync(file,f.bytes);
+    await assert.rejects(validateProjectImage(file,{ext:'jpg',expectedSize:f.bytes.length}),undefined,name);
+  }
+  const {bytes}=sonyMpfFixture();
+  for(const b of [bytes.subarray(0,-1),Buffer.concat([bytes,Buffer.alloc(32768)]),Buffer.concat([samples.jpg,Buffer.alloc(32768)]),Buffer.concat([mpfFixture().bytes,Buffer.alloc(32768)])]){
+    fs.writeFileSync(file,b);await assert.rejects(validateProjectImage(file,{ext:'jpg',expectedSize:b.length}));
+  }
+});
 
 for (const little of [true, false]) test(`MPF ${little?'little':'big'} endian preserves two indexed JPEGs and declared gap byte-for-byte`, async t => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'mpf-valid-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));const file=path.join(dir,'image.jpeg');
