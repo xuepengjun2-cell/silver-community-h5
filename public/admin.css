@@ -604,6 +604,9 @@ a { color: inherit; text-decoration: none; }
 .user-card-info { min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
 .user-card-info strong { display: block; font-size: 14px; font-weight: 600; color: var(--ink); }
 .user-card-info span { font-size: 12px; color: var(--muted); }
+/* 每个账号信息块独占一行，长 userId / 核对码不再和上一行挤在一起 */
+.user-card-info > span { display: block; margin-top: 2px; }
+.user-card-info > span.account-review-id { margin-top: 4px; }
 
 .user-card-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .user-card-actions .btn { flex: 1 1 auto; justify-content: center; min-width: 0; }
@@ -1224,6 +1227,13 @@ a { color: inherit; text-decoration: none; }
 .delivery-results-head span { font-size: 12px; color: var(--muted); }
 .user-block { min-width: 0; }
 .user-block .user-card { margin-bottom: 0; }
+
+/* 账号维护页：创建账号 + 账号列表。窄窗口下改为上下排列，避免卡片被压窄。 */
+.users-admin-layout { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 980px) {
+  .users-admin-layout { grid-template-columns: minmax(0, 1fr); }
+  .users-admin-layout > .panel:first-child { max-width: 560px; }
+}
 
 @media (max-width: 1000px) {
   .delivery-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
