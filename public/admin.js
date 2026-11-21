@@ -2331,7 +2331,7 @@ function renderUsers() {
       ${state.message}
       <div class="account-review-toolbar"><button class="btn small ${state.usersView === "reviews" ? "" : "secondary"}" data-users-view="reviews">关联审核</button><button class="btn small ${state.usersView === "accounts" ? "" : "secondary"}" data-users-view="accounts">账号维护</button></div>
       ${state.usersView !== "accounts" ? accountReviewsHtml() : `
-      <div style="display:grid;grid-template-columns:360px 1fr;gap:16px;align-items:start">
+      <div class="users-admin-layout">
 
         <!-- 创建账号 -->
         <div class="panel">
